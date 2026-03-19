@@ -1,0 +1,91 @@
+name: Ecosystem project request
+description: Submit a project to be listed on the AgentPay ecosystem page
+title: "[Ecosystem] "
+labels:
+  - ecosystem
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for your interest in being listed on the AgentPay ecosystem page!
+        Please fill out the details below so we can review your project.
+  - type: input
+    id: project-name
+    attributes:
+      label: Project name
+      placeholder: e.g. Acme Payments
+    validations:
+      required: true
+  - type: input
+    id: website
+    attributes:
+      label: Website URL
+      placeholder: https://example.com
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: Short description
+      description: A one-liner describing what your project does (max ~100 characters).
+      placeholder: e.g. On-ramp and checkout infrastructure for buying and selling crypto.
+    validations:
+      required: true
+  - type: dropdown
+    id: category
+    attributes:
+      label: Category
+      description: Which area best describes your project?
+      options:
+        - Payments
+        - Infrastructure
+        - DeFi
+        - FX and remittance
+        - Merchant acquiring
+        - Card issuing
+        - Enterprise treasury
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: integration
+    attributes:
+      label: AgentPay SDK integration
+      description: Describe how your project uses or plans to use the AgentPay SDK.
+    validations:
+      required: true
+  - type: dropdown
+    id: status
+    attributes:
+      label: Integration status
+      options:
+        - Live — already using the SDK in production
+        - In development — actively building the integration
+        - Planned — integration not yet started
+    validations:
+      required: true
+  - type: input
+    id: logo
+    attributes:
+      label: Logo URL
+      description: Link to a square logo (PNG or SVG, min 128x128px). We may ask for a higher-res version.
+      placeholder: https://example.com/logo.png
+    validations:
+      required: false
+  - type: input
+    id: contact
+    attributes:
+      label: Contact
+      description: How can we reach you? (email, X/Twitter handle, or Telegram)
+      placeholder: "@handle or email"
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submit checks
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: This project uses or will use the AgentPay SDK.
+          required: true
