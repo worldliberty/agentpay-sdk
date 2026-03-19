@@ -59,9 +59,9 @@ The full one-click installer does not require local Cargo, pnpm, or a preinstall
 
 ```bash
 pnpm install
-npm run build
-npm run install:cli-launcher
-npm run install:rust-binaries
+pnpm run build
+pnpm run install:cli-launcher
+pnpm run install:rust-binaries
 ```
 
 On macOS, add `export PATH="$HOME/.agentpay/bin:$PATH"` to `~/.zshrc`, then reload your shell with `source ~/.zshrc`.
@@ -77,9 +77,9 @@ On Linux, add `export PATH="$HOME/.agentpay/bin:$PATH"` to your shell startup fi
 
 ```bash
 pnpm install
-npm run build
-npm run install:cli-launcher
-npm run install:rust-binaries
+pnpm run build
+pnpm run install:cli-launcher
+pnpm run install:rust-binaries
 ```
 
 - If you only need to reconnect the current local vault after refreshing the runtime, use `agentpay admin setup --reuse-existing-wallet`

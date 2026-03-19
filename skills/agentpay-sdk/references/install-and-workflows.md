@@ -70,9 +70,9 @@ From a repo checkout:
 
 ```bash
 pnpm install
-npm run build
-npm run install:cli-launcher
-npm run install:rust-binaries
+pnpm run build
+pnpm run install:cli-launcher
+pnpm run install:rust-binaries
 ```
 
 One-click updates use the same bootstrap entrypoint:
