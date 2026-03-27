@@ -67,12 +67,18 @@ async function writeChildStdin(
   await new Promise<void>((resolve, reject) => {
     let settled = false;
 
+    const cleanup = () => {
+      stream.off('close', handleClose);
+      stream.off('error', handleError);
+      child.off('close', handleChildClose);
+    };
+
     const finish = () => {
       if (settled) {
         return;
       }
       settled = true;
-      stream.off('error', handleError);
+      cleanup();
       resolve();
     };
 
@@ -85,12 +91,28 @@ async function writeChildStdin(
         return;
       }
       settled = true;
-      stream.off('error', handleError);
+      cleanup();
       reject(error);
     };
 
+    const handleClose = () => {
+      finish();
+    };
+
+    const handleChildClose = () => {
+      finish();
+    };
+
     stream.on('error', handleError);
-    stream.end(stdin, finish);
+    stream.on('close', handleClose);
+    child.on('close', handleChildClose);
+    try {
+      stream.end(stdin, () => {
+        // Keep the error listener attached until the pipe or child actually closes.
+      });
+    } catch (error) {
+      handleError(error as NodeJS.ErrnoException);
+    }
   });
 }
 

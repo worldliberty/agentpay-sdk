@@ -26,6 +26,8 @@
 - Native transfer: `agentpay transfer-native --network <name> --to <address> --amount <amount>`
 - ERC-20 transfer: `agentpay transfer --network <name> --token <address> --to <address> --amount <amount>`
 - Approve allowance: `agentpay approve --network <name> --token <address> --spender <address> --amount <amount>`
+- x402 exact/EIP-3009 request: `agentpay x402 <url>`
+- MPP one-shot charge or persisted session request: `agentpay mpp <url> [--amount <amount>] [--deposit <amount>] [--session-state-file <path>] [--close-session] [--method <method>] [--header 'Name: value'] [--data <text> | --json-body <json>]`
 - Policy-checked raw tx request: `agentpay broadcast --network <name> --to <address> --value-wei <wei> ...`
 - Explicit sign and send: `agentpay tx broadcast --network <name> --rpc-url <url> --from <address> --to <address> --value-wei <wei> ...`
 
@@ -46,8 +48,19 @@
 - For `transfer --broadcast`, `transfer-native --broadcast`, `approve --broadcast`, and `bitrefill buy --broadcast`, tell the user to keep the original command running after they approve locally.
 - If the original broadcast command is already gone after approval, use `agentpay admin resume-manual-approval-request --approval-request-id <UUID>`.
 - `transfer-native`, `transfer`, and `approve` use `--amount`, not `--amount-wei`.
+- `mpp` accepts an optional `--amount` to verify the expected charge amount before broadcasting. When omitted, the CLI pays the server's challenge amount automatically.
+- `mpp` charge resolves the payment chain from the server challenge and works on any EVM-compatible network (standard ERC-20 transfer; Tempo chains use TIP-20 with attribution memo).
+- `mpp --deposit` only applies to session mode (Tempo-only) and overrides the initial channel deposit; without it, the CLI defaults to the challenge amount.
+- `mpp --session-state-file` persists a session channel for later reuse, and `mpp --close-session` closes and removes that persisted session after the paid response.
+- `mpp` supports generic HTTP request shaping with `--method`, repeatable `--header`, `--data`, and `--json-body`.
+- `mpp` text mode handles session event streams, including automatic top-up and voucher replenishment on `payment-need-voucher` events.
+- `mpp --json` includes a decoded `Payment-Receipt` under `payment.receipt` when the server returns one.
+- `mpp --json` also includes `payment.closeReceipt` for one-shot session flows when the automatic close step returns a receipt.
+- `mpp --json` is intended for non-streaming responses; event-stream handling targets text mode.
 - `broadcast` and `tx broadcast` use wei-denominated fields such as `--value-wei`.
 - `transfer-native`, `transfer`, `approve`, and `bitrefill buy` can also broadcast immediately with `--broadcast`.
+- `x402` supports exact/EIP-3009 payment requirements.
+- `mpp` supports charge on any EVM chain and session on Tempo chains.
 - For Bitrefill quote and preview output, `amount` is the raw onchain base-unit integer, not a human-decimal amount. Example: ETH base units are wei, and `amount: 1000000` with `decimals: 6` means `1 USDC`.
 - Destination overrides still belong to `agentpay admin tui`.
 - If the user only asks what the skill can do, answer directly from the skill instead of probing the machine.

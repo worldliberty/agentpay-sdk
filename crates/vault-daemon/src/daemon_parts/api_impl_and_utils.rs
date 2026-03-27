@@ -828,7 +828,10 @@ where
                 }
                 AgentAction::Permit2Permit { .. }
                 | AgentAction::Eip3009TransferWithAuthorization { .. }
-                | AgentAction::Eip3009ReceiveWithAuthorization { .. } => {
+                | AgentAction::Eip3009ReceiveWithAuthorization { .. }
+                | AgentAction::TempoSessionOpenTransaction { .. }
+                | AgentAction::TempoSessionTopUpTransaction { .. }
+                | AgentAction::TempoSessionVoucher { .. } => {
                     self.sign_typed_data_action(&vault_key, &payload_action)
                         .await?
                 }

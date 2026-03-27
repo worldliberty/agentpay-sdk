@@ -260,6 +260,148 @@ impl Eip3009Transfer {
     }
 }
 
+/// Tempo session open-transaction digest signed for a payment-channel request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TempoSessionOpenTransaction {
+    /// EVM network chain ID.
+    pub chain_id: u64,
+    /// ERC-20 token contract address funding the channel.
+    pub token: EvmAddress,
+    /// Channel payee / merchant recipient.
+    pub recipient: EvmAddress,
+    /// Total channel deposit in token base units.
+    #[serde(with = "u128_as_decimal_string")]
+    pub deposit_wei: u128,
+    /// Initial authorized spend included in the opening voucher.
+    #[serde(with = "u128_as_decimal_string")]
+    pub initial_amount_wei: u128,
+    /// Precomputed Tempo transaction signing hash as `0x`-prefixed 32-byte hex.
+    pub signing_hash_hex: String,
+}
+
+impl TempoSessionOpenTransaction {
+    /// Validates structural constraints and address encoding.
+    pub fn validate(&self) -> Result<(), DomainError> {
+        if self.chain_id == 0 {
+            return Err(DomainError::InvalidChainId);
+        }
+        if self.deposit_wei == 0 || self.initial_amount_wei == 0 {
+            return Err(DomainError::InvalidAmount);
+        }
+        if self.initial_amount_wei > self.deposit_wei {
+            return Err(DomainError::InvalidAmount);
+        }
+        let _ = evm_to_alloy_address(&self.token)?;
+        let _ = evm_to_alloy_address(&self.recipient)?;
+        let _ = self.signing_hash()?;
+        Ok(())
+    }
+
+    /// Returns the precomputed signing digest bytes.
+    pub fn signing_hash(&self) -> Result<[u8; 32], DomainError> {
+        decode_hex_32(&self.signing_hash_hex, "tempo session open signing hash")
+    }
+}
+
+/// Tempo session top-up transaction digest signed for an existing payment channel.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TempoSessionTopUpTransaction {
+    /// EVM network chain ID.
+    pub chain_id: u64,
+    /// ERC-20 token contract address funding the channel.
+    pub token: EvmAddress,
+    /// Channel payee / merchant recipient.
+    pub recipient: EvmAddress,
+    /// Channel id as `0x`-prefixed 32-byte hex.
+    pub channel_id_hex: String,
+    /// Incremental additional deposit in token base units.
+    #[serde(with = "u128_as_decimal_string")]
+    pub additional_deposit_wei: u128,
+    /// Precomputed Tempo transaction signing hash as `0x`-prefixed 32-byte hex.
+    pub signing_hash_hex: String,
+}
+
+impl TempoSessionTopUpTransaction {
+    /// Validates structural constraints and address encoding.
+    pub fn validate(&self) -> Result<(), DomainError> {
+        if self.chain_id == 0 {
+            return Err(DomainError::InvalidChainId);
+        }
+        if self.additional_deposit_wei == 0 {
+            return Err(DomainError::InvalidAmount);
+        }
+        let _ = evm_to_alloy_address(&self.token)?;
+        let _ = evm_to_alloy_address(&self.recipient)?;
+        let _ = self.channel_id_bytes32()?;
+        let _ = self.signing_hash()?;
+        Ok(())
+    }
+
+    /// Parses the channel id as a strict 32-byte value.
+    pub fn channel_id_bytes32(&self) -> Result<[u8; 32], DomainError> {
+        decode_hex_32(&self.channel_id_hex, "tempo session channel id")
+    }
+
+    /// Returns the precomputed signing digest bytes.
+    pub fn signing_hash(&self) -> Result<[u8; 32], DomainError> {
+        decode_hex_32(&self.signing_hash_hex, "tempo session topUp signing hash")
+    }
+}
+
+/// Tempo session voucher digest signed for an MPP channel credential.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TempoSessionVoucher {
+    /// EVM network chain ID.
+    pub chain_id: u64,
+    /// Escrow contract address used as the EIP-712 verifying contract.
+    pub escrow_contract: EvmAddress,
+    /// ERC-20 token contract address used by the channel.
+    pub token: EvmAddress,
+    /// Channel payee / merchant recipient.
+    pub recipient: EvmAddress,
+    /// Channel id as `0x`-prefixed 32-byte hex.
+    pub channel_id_hex: String,
+    /// Incremental amount being newly authorized for policy evaluation.
+    #[serde(with = "u128_as_decimal_string")]
+    pub amount_wei: u128,
+    /// Full cumulative voucher amount being signed.
+    #[serde(with = "u128_as_decimal_string")]
+    pub cumulative_amount_wei: u128,
+    /// Precomputed voucher signing hash as `0x`-prefixed 32-byte hex.
+    pub signing_hash_hex: String,
+}
+
+impl TempoSessionVoucher {
+    /// Validates structural constraints and address encoding.
+    pub fn validate(&self) -> Result<(), DomainError> {
+        if self.chain_id == 0 {
+            return Err(DomainError::InvalidChainId);
+        }
+        if self.amount_wei == 0 || self.cumulative_amount_wei == 0 {
+            return Err(DomainError::InvalidAmount);
+        }
+        if self.amount_wei > self.cumulative_amount_wei {
+            return Err(DomainError::InvalidAmount);
+        }
+        let _ = evm_to_alloy_address(&self.escrow_contract)?;
+        let _ = evm_to_alloy_address(&self.token)?;
+        let _ = evm_to_alloy_address(&self.recipient)?;
+        let _ = self.channel_id_bytes32()?;
+        let _ = self.signing_hash()?;
+        Ok(())
+    }
+
+    /// Parses the channel id as a strict 32-byte value.
+    pub fn channel_id_bytes32(&self) -> Result<[u8; 32], DomainError> {
+        decode_hex_32(&self.channel_id_hex, "tempo session channel id")
+    }
+
+    /// Returns the precomputed signing digest bytes.
+    pub fn signing_hash(&self) -> Result<[u8; 32], DomainError> {
+        decode_hex_32(&self.signing_hash_hex, "tempo session voucher signing hash")
+    }
+}
+
 /// Agent-submitted broadcast transaction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BroadcastTx {
@@ -316,7 +458,7 @@ impl BroadcastTx {
             return Err(DomainError::DelegationNotAllowed);
         }
         let data = self.data_bytes()?;
-        if parse_broadcast_policy_call(self, &data).is_ok() && self.value_wei > 0 {
+        if validate_token_broadcast_calldata(&data)? && self.value_wei > 0 {
             return Err(DomainError::Erc20CallWithNativeValue);
         }
         let _ = self.max_gas_spend_wei()?;
@@ -442,6 +584,21 @@ pub enum AgentAction {
         /// Typed authorization payload.
         authorization: Eip3009Transfer,
     },
+    /// Tempo session open transaction digest.
+    TempoSessionOpenTransaction {
+        /// Typed digest payload.
+        authorization: TempoSessionOpenTransaction,
+    },
+    /// Tempo session top-up transaction digest.
+    TempoSessionTopUpTransaction {
+        /// Typed digest payload.
+        authorization: TempoSessionTopUpTransaction,
+    },
+    /// Tempo session voucher digest.
+    TempoSessionVoucher {
+        /// Typed digest payload.
+        authorization: TempoSessionVoucher,
+    },
     /// Raw transaction broadcast request.
     BroadcastTx {
         /// Unsinged tx fields to authorize and sign.
@@ -460,6 +617,9 @@ impl AgentAction {
             Self::Permit2Permit { permit } => permit.amount_wei,
             Self::Eip3009TransferWithAuthorization { authorization }
             | Self::Eip3009ReceiveWithAuthorization { authorization } => authorization.amount_wei,
+            Self::TempoSessionOpenTransaction { authorization } => authorization.deposit_wei,
+            Self::TempoSessionTopUpTransaction { authorization } => authorization.additional_deposit_wei,
+            Self::TempoSessionVoucher { authorization } => authorization.amount_wei,
             Self::BroadcastTx { tx } => self.broadcast_effective_amount_wei(tx),
         }
     }
@@ -474,6 +634,9 @@ impl AgentAction {
             Self::Permit2Permit { permit } => permit.chain_id,
             Self::Eip3009TransferWithAuthorization { authorization }
             | Self::Eip3009ReceiveWithAuthorization { authorization } => authorization.chain_id,
+            Self::TempoSessionOpenTransaction { authorization } => authorization.chain_id,
+            Self::TempoSessionTopUpTransaction { authorization } => authorization.chain_id,
+            Self::TempoSessionVoucher { authorization } => authorization.chain_id,
             Self::BroadcastTx { tx } => tx.chain_id,
         }
     }
@@ -491,6 +654,13 @@ impl AgentAction {
             | Self::Eip3009ReceiveWithAuthorization { authorization } => {
                 AssetId::Erc20(authorization.token.clone())
             }
+            Self::TempoSessionOpenTransaction { authorization } => {
+                AssetId::Erc20(authorization.token.clone())
+            }
+            Self::TempoSessionTopUpTransaction { authorization } => {
+                AssetId::Erc20(authorization.token.clone())
+            }
+            Self::TempoSessionVoucher { authorization } => AssetId::Erc20(authorization.token.clone()),
             Self::BroadcastTx { tx } => self.broadcast_effective_asset(tx),
         }
     }
@@ -504,6 +674,9 @@ impl AgentAction {
             Self::Permit2Permit { permit } => permit.spender.clone(),
             Self::Eip3009TransferWithAuthorization { authorization }
             | Self::Eip3009ReceiveWithAuthorization { authorization } => authorization.to.clone(),
+            Self::TempoSessionOpenTransaction { authorization } => authorization.recipient.clone(),
+            Self::TempoSessionTopUpTransaction { authorization } => authorization.recipient.clone(),
+            Self::TempoSessionVoucher { authorization } => authorization.recipient.clone(),
             Self::BroadcastTx { tx } => self.broadcast_effective_recipient(tx),
         }
     }
@@ -554,6 +727,9 @@ impl AgentAction {
             Self::Eip3009ReceiveWithAuthorization { authorization } => {
                 authorization.receive_signing_hash().map(Some)
             }
+            Self::TempoSessionOpenTransaction { authorization } => authorization.signing_hash().map(Some),
+            Self::TempoSessionTopUpTransaction { authorization } => authorization.signing_hash().map(Some),
+            Self::TempoSessionVoucher { authorization } => authorization.signing_hash().map(Some),
             _ => Ok(None),
         }
     }
@@ -572,6 +748,9 @@ impl AgentAction {
             | Self::Eip3009ReceiveWithAuthorization { authorization } => {
                 authorization.validate_at(now)
             }
+            Self::TempoSessionOpenTransaction { authorization } => authorization.validate(),
+            Self::TempoSessionTopUpTransaction { authorization } => authorization.validate(),
+            Self::TempoSessionVoucher { authorization } => authorization.validate(),
             _ => {
                 if self.amount_wei() == 0 {
                     return Err(DomainError::InvalidAmount);
@@ -655,6 +834,38 @@ pub fn parse_erc20_call(calldata: &[u8]) -> Result<Erc20Call, DomainError> {
     )))
 }
 
+fn validate_token_broadcast_calldata(calldata: &[u8]) -> Result<bool, DomainError> {
+    if calldata.len() < 4 {
+        return Ok(false);
+    }
+
+    let selector = &calldata[..4];
+    if selector == approveCall::SELECTOR || selector == transferCall::SELECTOR {
+        parse_erc20_call(calldata)?;
+        return Ok(true);
+    }
+
+    if selector == permitCall::SELECTOR {
+        permitCall::abi_decode(calldata, true)
+            .map_err(|err| DomainError::InvalidErc20Calldata(err.to_string()))?;
+        return Ok(true);
+    }
+
+    if selector == transferWithAuthorizationCall::SELECTOR {
+        transferWithAuthorizationCall::abi_decode(calldata, true)
+            .map_err(|err| DomainError::InvalidErc20Calldata(err.to_string()))?;
+        return Ok(true);
+    }
+
+    if selector == receiveWithAuthorizationCall::SELECTOR {
+        receiveWithAuthorizationCall::abi_decode(calldata, true)
+            .map_err(|err| DomainError::InvalidErc20Calldata(err.to_string()))?;
+        return Ok(true);
+    }
+
+    Ok(false)
+}
+
 /// Constructs an [`AgentAction`] from ERC-20 calldata for a given contract and network.
 pub fn action_from_erc20_calldata(
     chain_id: u64,
@@ -688,23 +899,27 @@ fn parse_broadcast_policy_call(
     tx: &BroadcastTx,
     calldata: &[u8],
 ) -> Result<BroadcastPolicyProjection, DomainError> {
-    if let Ok(call) = parse_erc20_call(calldata) {
-        let asset = AssetId::Erc20(tx.to.clone());
-        return Ok(match call {
-            Erc20Call::Approve {
-                spender,
-                amount_wei,
-            } => BroadcastPolicyProjection {
-                asset,
-                recipient: spender,
-                amount_wei,
-            },
-            Erc20Call::Transfer { to, amount_wei } => BroadcastPolicyProjection {
-                asset,
-                recipient: to,
-                amount_wei,
-            },
-        });
+    if calldata.len() >= 4 {
+        let selector = &calldata[..4];
+        if selector == approveCall::SELECTOR || selector == transferCall::SELECTOR {
+            let call = parse_erc20_call(calldata)?;
+            let asset = AssetId::Erc20(tx.to.clone());
+            return Ok(match call {
+                Erc20Call::Approve {
+                    spender,
+                    amount_wei,
+                } => BroadcastPolicyProjection {
+                    asset,
+                    recipient: spender,
+                    amount_wei,
+                },
+                Erc20Call::Transfer { to, amount_wei } => BroadcastPolicyProjection {
+                    asset,
+                    recipient: to,
+                    amount_wei,
+                },
+            });
+        }
     }
 
     if calldata.len() >= 4 {

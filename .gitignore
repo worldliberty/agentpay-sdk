@@ -13,3 +13,5 @@ apps/*/dist/
 apps/*/node_modules/
 *.tgz
 .coverage/
+.docs/
+.hermes/

@@ -90,11 +90,11 @@ If you update Rust daemon code from a source checkout, rerun `npm run install:ru
 
 ## Usage
 
-The main user path is:
+AgentPay uses a self-custodial local daemon wallet:
 
 1. run `agentpay admin setup`
 2. let it install the daemon and set up a wallet
-3. use `agentpay transfer`, `agentpay transfer-native`, `agentpay approve`, or `agentpay broadcast`
+3. use `agentpay transfer`, `agentpay transfer-native`, `agentpay approve`, `agentpay broadcast`, `agentpay x402`, or `agentpay mpp`
 4. use the local admin approval commands when a policy pauses a request for manual review
 
 User-facing examples below avoid shell env vars on purpose. Prefer prompts, config files, `agentpay admin tui`, and explicit command flags.
@@ -121,7 +121,7 @@ User-facing examples below avoid shell env vars on purpose. Prefer prompts, conf
   - after uninstall, there is no local wallet left on that machine to reuse; use `agentpay admin setup --reuse-existing-wallet` before uninstalling when you want to keep the current wallet
 - `agentpay admin ...`
   - direct policy and manual-approval configuration commands
-- `agentpay transfer`, `agentpay transfer-native`, `agentpay approve`, `agentpay broadcast`
+- `agentpay transfer`, `agentpay transfer-native`, `agentpay approve`, `agentpay broadcast`, `agentpay x402`, `agentpay mpp`
   - submits signing requests through the daemon
   - uses the configured agent key id plus the macOS Keychain token by default
 - `agentpay status`
@@ -143,6 +143,7 @@ User-facing examples below avoid shell env vars on purpose. Prefer prompts, conf
   - add or update a token on one saved network: `agentpay admin token set-chain <tokenKey> <chainKey> --symbol <symbol> --native|--address <token> --decimals <count>`
   - remove one token/network mapping without deleting the token everywhere: `agentpay admin token remove-chain <tokenKey> <chainKey>`
   - remove a configured token entirely: `agentpay admin token remove <tokenKey>`
+- Fresh AgentPay configs seed `eth`, `bsc`, and `tempo`, plus built-in `BNB`, `ETH`, `USD1`, Tempo native `USD`, and `pathUSD` profiles.
 - To inspect the concrete contents behind wallet `attachedPolicyIds`, first read the ids from `agentpay config show --json`, then query the daemon policies directly with `agentpay admin list-policies --policy-id <uuid>`.
 - To apply shared-config edits to the live wallet, use `agentpay admin tui` and save the draft there, or rerun `agentpay admin setup --reuse-existing-wallet` / `agentpay-admin bootstrap --from-shared-config`.
 - `agentpay admin wallet-backup export --output ...` is the supported backup command and remains available under the `admin wallet-backup` subcommand tree.
@@ -394,6 +395,26 @@ agentpay broadcast \
   --max-fee-per-gas-wei 2000000000 \
   --value-wei 1500000000000000
 ```
+
+x402-protected HTTP request:
+
+```bash
+agentpay x402 \
+  https://api.example.com/paid
+```
+
+MPP request:
+
+```bash
+agentpay mpp \
+  https://api.example.com/tempo \
+  --header 'X-Client-Test: 1' \
+  --json-body '{"prompt":"hello"}'
+```
+
+`agentpay x402` currently targets exact/EIP-3009 payment requirements. `agentpay mpp` now supports one-shot `tempo/charge` and one-shot `tempo/session` HTTP challenges, supports `--method`, repeatable `--header`, `--data`, and `--json-body`, and uses `--amount` to confirm the expected token-unit amount before it signs or broadcasts. For `tempo/session`, `--deposit` optionally overrides the initial channel deposit, `--session-state-file` persists and reuses a session channel across CLI invocations, and `--close-session` closes a persisted session after the paid response. Without a session state file, `tempo/session` stays in one-shot open/request/close mode. In `--json` mode, successful MPP responses include any decoded `Payment-Receipt` header under `payment.receipt`, and `tempo/session` responses also include `payment.closeReceipt` when the close step returns one.
+
+For `tempo/session` event streams (`text/event-stream`), the CLI now handles `payment-need-voucher` control events in text mode, automatically topping up and posting fresh vouchers when needed. Streamed message payloads are written to stdout as they arrive. `--json` is still intended for non-streaming MPP responses.
 
 If a request hits a manual-approval policy, the CLI prints:
 

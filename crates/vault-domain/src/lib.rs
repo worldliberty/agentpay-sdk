@@ -22,7 +22,8 @@ mod u128_as_decimal_string;
 
 pub use action::{
     action_from_erc20_calldata, parse_erc20_call, AgentAction, BroadcastTx, Eip3009Transfer,
-    Erc20Call, Permit2Permit,
+    Erc20Call, Permit2Permit, TempoSessionOpenTransaction, TempoSessionTopUpTransaction,
+    TempoSessionVoucher,
 };
 pub use address::EvmAddress;
 pub use approval::{

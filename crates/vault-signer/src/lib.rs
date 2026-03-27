@@ -18,6 +18,16 @@ use uuid::Uuid;
 use vault_domain::{KeySource, Signature, VaultKey};
 use zeroize::Zeroizing;
 
+#[cfg(target_os = "windows")]
+mod windows_tpm;
+#[cfg(target_os = "windows")]
+pub use windows_tpm::{WindowsTpmKeyBlob, WindowsTpmSignerBackend};
+
+#[cfg(target_os = "linux")]
+mod linux_tpm;
+#[cfg(target_os = "linux")]
+pub use linux_tpm::{LinuxTpmKeyBlob, LinuxTpmSignerBackend};
+
 #[cfg(all(target_os = "macos", not(coverage)))]
 use core_foundation::base::{TCFType, ToVoid};
 #[cfg(all(target_os = "macos", not(coverage)))]
@@ -46,6 +56,8 @@ pub enum BackendKind {
     Tee,
     /// In-process software signer backend.
     Software,
+    /// TPM 2.0 Seal/Unseal backend (Windows/Linux).
+    Tpm,
 }
 
 /// Key creation request from daemon/admin.

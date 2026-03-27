@@ -14,7 +14,7 @@ dependencies = [
 
 [[package]]
 name = "agentpay-admin"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -38,7 +38,7 @@ dependencies = [
 
 [[package]]
 name = "agentpay-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -62,7 +62,7 @@ dependencies = [
 
 [[package]]
 name = "agentpay-daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3231,7 +3231,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vault-daemon"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "alloy-primitives",
  "argon2",
@@ -3259,7 +3259,7 @@ dependencies = [
 
 [[package]]
 name = "vault-domain"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -3275,7 +3275,7 @@ dependencies = [
 
 [[package]]
 name = "vault-policy"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "alloy-primitives",
  "alloy-sol-types",
@@ -3288,7 +3288,7 @@ dependencies = [
 
 [[package]]
 name = "vault-sdk-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "serde_json",
@@ -3305,7 +3305,7 @@ dependencies = [
 
 [[package]]
 name = "vault-signer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "core-foundation",
@@ -3315,18 +3315,20 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "serde",
+ "serde_json",
  "sha2",
  "thiserror",
  "time",
  "tokio",
  "uuid",
  "vault-domain",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
 [[package]]
 name = "vault-transport-unix"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3346,7 +3348,7 @@ dependencies = [
 
 [[package]]
 name = "vault-transport-xpc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "block",

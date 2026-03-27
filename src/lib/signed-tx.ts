@@ -1,9 +1,9 @@
 import {
+  type Address,
+  type Hex,
   isAddressEqual,
   parseTransaction,
   recoverTransactionAddress,
-  type Address,
-  type Hex
 } from 'viem';
 
 export interface ExpectedSignedBroadcastTransaction {
@@ -60,28 +60,37 @@ function normalizeTxType(value: string): string {
 
 function assertEqual<T>(actual: T, expected: T, label: string): void {
   if (actual !== expected) {
-    throw new Error(`signed raw transaction ${label} mismatch: expected ${expected}, received ${actual}`);
+    throw new Error(
+      `signed raw transaction ${label} mismatch: expected ${expected}, received ${actual}`,
+    );
   }
 }
 
+function normalizeOptionalPriorityFee(value: bigint | undefined): bigint {
+  return value ?? 0n;
+}
+
 export async function assertSignedBroadcastTransactionMatchesRequest(
-  expected: ExpectedSignedBroadcastTransaction
+  expected: ExpectedSignedBroadcastTransaction,
 ): Promise<SignedBroadcastInspection> {
   const parsed = parseTransaction(expected.rawTxHex);
   const recoveredFrom = await recoverTransactionAddress({
-    serializedTransaction:
-      expected.rawTxHex as Parameters<typeof recoverTransactionAddress>[0]['serializedTransaction']
+    serializedTransaction: expected.rawTxHex as Parameters<
+      typeof recoverTransactionAddress
+    >[0]['serializedTransaction'],
   });
 
   if (!isAddressEqual(recoveredFrom, expected.from)) {
     throw new Error(
-      `signed raw transaction from mismatch: expected ${expected.from}, received ${recoveredFrom}`
+      `signed raw transaction from mismatch: expected ${expected.from}, received ${recoveredFrom}`,
     );
   }
 
   const parsedTo = parsed.to;
   if (!parsedTo || !isAddressEqual(parsedTo, expected.to)) {
-    throw new Error(`signed raw transaction to mismatch: expected ${expected.to}, received ${parsedTo ?? 'null'}`);
+    throw new Error(
+      `signed raw transaction to mismatch: expected ${expected.to}, received ${parsedTo ?? 'null'}`,
+    );
   }
 
   /* c8 ignore next 3 -- supported signed transactions produced by viem always include a nonce */
@@ -93,7 +102,7 @@ export async function assertSignedBroadcastTransactionMatchesRequest(
   if (expected.allowHigherNonce) {
     if (parsed.nonce < expected.nonce) {
       throw new Error(
-        `signed raw transaction nonce mismatch: expected at least ${expected.nonce}, received ${parsed.nonce}`
+        `signed raw transaction nonce mismatch: expected at least ${expected.nonce}, received ${parsed.nonce}`,
       );
     }
   } else {
@@ -101,14 +110,20 @@ export async function assertSignedBroadcastTransactionMatchesRequest(
   }
   assertEqual(parsed.value ?? 0n, expected.value, 'value');
   assertEqual(parsed.gas, expected.gasLimit, 'gasLimit');
-  assertEqual(parsed.maxFeePerGas, expected.maxFeePerGas, 'maxFeePerGas');
-  assertEqual(parsed.maxPriorityFeePerGas, expected.maxPriorityFeePerGas, 'maxPriorityFeePerGas');
+  assertEqual(parsed.maxFeePerGas ?? 0n, expected.maxFeePerGas, 'maxFeePerGas');
+  assertEqual(
+    normalizeOptionalPriorityFee(parsed.maxPriorityFeePerGas),
+    expected.maxPriorityFeePerGas,
+    'maxPriorityFeePerGas',
+  );
   assertEqual(parsed.type, normalizeTxType(expected.txType), 'txType');
 
   const parsedData = normalizeHex((parsed.data ?? '0x') as Hex);
   const expectedData = normalizeHex(expected.data);
   if (parsedData !== expectedData) {
-    throw new Error(`signed raw transaction data mismatch: expected ${expectedData}, received ${parsedData}`);
+    throw new Error(
+      `signed raw transaction data mismatch: expected ${expectedData}, received ${parsedData}`,
+    );
   }
 
   return {

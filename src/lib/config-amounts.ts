@@ -1,5 +1,5 @@
 import type { WlfiConfig } from '@worldlibertyfinancial/agent-config';
-import { formatUnits, parseUnits } from 'viem';
+import { type Address, formatUnits, parseUnits } from 'viem';
 
 const U128_MAX = (1n << 128n) - 1n;
 
@@ -74,6 +74,41 @@ export function resolveConfiguredErc20Asset(
   throw new Error(
     `token ${tokenAddress} on chain ${chainId} is not configured; save it first so decimals can be inferred`,
   );
+}
+
+export type TokenMetadataFetcher = (
+  rpcUrl: string,
+  token: Address,
+) => Promise<{ symbol: string | null; decimals: number }>;
+
+/**
+ * Try local config first; fall back to an on-chain RPC call for decimals/symbol
+ * when the token has not been pre-configured.
+ */
+export async function resolveErc20AssetWithRpcFallback(
+  config: WlfiConfig,
+  chainId: number,
+  tokenAddress: Address,
+  rpcUrl: string,
+  fetchMetadata: TokenMetadataFetcher,
+): Promise<ResolvedAssetMetadata> {
+  let configuredError: Error | null = null;
+  try {
+    return resolveConfiguredErc20Asset(config, chainId, tokenAddress);
+  } catch (error) {
+    configuredError = error instanceof Error ? error : new Error(String(error));
+  }
+
+  try {
+    const metadata = await fetchMetadata(rpcUrl, tokenAddress);
+    return {
+      assetId: `erc20:${tokenAddress}`,
+      decimals: metadata.decimals,
+      symbol: metadata.symbol ?? tokenAddress,
+    };
+  } catch {
+    throw configuredError ?? new Error(`token ${tokenAddress} metadata lookup failed`);
+  }
 }
 
 export function resolveConfiguredNativeAsset(

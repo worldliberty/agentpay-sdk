@@ -1,6 +1,6 @@
 {
   "name": "@worldlibertyfinancial/agentpay-sdk",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Single-entrypoint AgentPay CLI",
   "license": "MIT",
   "type": "module",
@@ -26,6 +26,8 @@
     "build": "turbo run build && tsup --config tsup.config.ts",
     "build:installer-bundle": "node ./scripts/build-installer-bundle.mjs",
     "check": "turbo run check typecheck && cargo test --workspace --no-run",
+    "example:mpp:demo": "node example/mpp/server/buy-tempo-testnet.mjs",
+    "example:mpp:server": "node example/mpp/server/server.mjs",
     "install:cli-launcher": "node ./scripts/install-cli-launcher.mjs",
     "install:rust-binaries": "node ./scripts/install-rust-binaries.mjs",
     "postinstall": "node ./scripts/install-rust-binaries.mjs",
@@ -58,10 +60,14 @@
     "tsx": "^4.21.0",
     "turbo": "^2.4.4",
     "typescript": "^5.8.2",
-    "viem": "^2.37.5"
+    "viem": "^2.47.6"
   },
   "dependencies": {
+    "@x402/evm": "2.7.0",
+    "@x402/fetch": "2.7.0",
     "cuimp": "^1.10.0",
-    "playwright-core": "^1.58.2"
+    "mppx": "0.4.8",
+    "playwright-core": "^1.58.2",
+    "undici": "^6.21.3"
   }
 }
