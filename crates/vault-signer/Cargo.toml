@@ -10,13 +10,10 @@ interactive-secure-enclave-tests = []
 
 [dependencies]
 async-trait.workspace = true
-core-foundation.workspace = true
 hex.workspace = true
 k256.workspace = true
 libc.workspace = true
 serde.workspace = true
-security-framework.workspace = true
-security-framework-sys.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 time.workspace = true
@@ -24,5 +21,25 @@ uuid.workspace = true
 vault-domain = { path = "../vault-domain" }
 zeroize.workspace = true
 
+# macOS Secure Enclave backend requires Core Foundation and Security framework.
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation.workspace = true
+security-framework.workspace = true
+security-framework-sys.workspace = true
+
+# Windows TPM backend requires tokio for spawn_blocking and serde_json for
+# sealed blob serialization.
+[target.'cfg(target_os = "windows")'.dependencies]
+tokio.workspace = true
+serde_json.workspace = true
+windows-sys = { version = "0.61", features = ["Win32_System_TpmBaseServices"] }
+
+# Linux TPM backend requires tokio for spawn_blocking and serde_json for
+# sealed blob serialization.
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio.workspace = true
+serde_json.workspace = true
+
 [dev-dependencies]
 tokio.workspace = true
+serde_json.workspace = true

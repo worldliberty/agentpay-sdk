@@ -95,8 +95,11 @@ export interface WaitForOnchainReceiptDeps {
 }
 
 export function resolveEstimatedPriorityFeePerGasWei(fees: BroadcastFeeEstimate): bigint {
-  const resolved = fees.maxPriorityFeePerGas ?? fees.gasPrice;
-  if (resolved === null || resolved <= 0n) {
+  if (fees.maxPriorityFeePerGas !== null && fees.maxPriorityFeePerGas !== undefined) {
+    return fees.maxPriorityFeePerGas;
+  }
+  const resolved = fees.gasPrice;
+  if (resolved === null) {
     throw new Error(
       'Could not determine maxPriorityFeePerGas; pass --max-priority-fee-per-gas-wei',
     );

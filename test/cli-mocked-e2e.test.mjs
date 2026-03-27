@@ -1350,7 +1350,7 @@ test('admin token set-chain validation failures fail closed in root mode', () =>
   }
 });
 
-test('tx broadcast fee and signer edge paths cover manual approval and missing raw tx handling', async () => {
+test('tx broadcast fee and signer edge paths cover zero-priority fees, manual approval, and missing raw tx handling', async () => {
   const { homeDir, agentpayHome } = makeIsolatedHome();
   const rustBinDir = path.join(agentpayHome, 'bin');
   fs.mkdirSync(rustBinDir, { recursive: true, mode: 0o700 });
@@ -1364,8 +1364,8 @@ test('tx broadcast fee and signer edge paths cover manual approval and missing r
     nonce: 1,
     to: TO_ADDRESS,
     gas: 21000n,
-    maxFeePerGas: 1_000_000_000n,
-    maxPriorityFeePerGas: 1_000_000_000n,
+    maxFeePerGas: 1n,
+    maxPriorityFeePerGas: 0n,
     value: 0n,
     data: '0x',
     type: 'eip1559',
@@ -1496,7 +1496,7 @@ test('tx broadcast fee and signer edge paths cover manual approval and missing r
     assert.equal(feeFallbackFailure.status, 1, combinedOutput(feeFallbackFailure));
     assert.match(combinedOutput(feeFallbackFailure), /Could not determine maxFeePerGas/u);
 
-    const broadcastPriorityFeeFailure = await runCliAsync(
+    const broadcastZeroPrioritySuccess = await runCliAsync(
       [
         'broadcast',
         '--network',
@@ -1532,14 +1532,11 @@ test('tx broadcast fee and signer edge paths cover manual approval and missing r
       },
     );
     assert.equal(
-      broadcastPriorityFeeFailure.status,
-      1,
-      combinedOutput(broadcastPriorityFeeFailure),
+      broadcastZeroPrioritySuccess.status,
+      0,
+      combinedOutput(broadcastZeroPrioritySuccess),
     );
-    assert.match(
-      combinedOutput(broadcastPriorityFeeFailure),
-      /Could not determine maxPriorityFeePerGas/u,
-    );
+    assert.equal(JSON.parse(broadcastZeroPrioritySuccess.stdout).tx_hash_hex, signedTxHash);
 
     const manualApprovalText = await runCliAsync(
       [...commonArgs, '--max-fee-per-gas-wei', '1'].filter((item) => item !== '--json'),

@@ -8,6 +8,8 @@ use async_trait::async_trait;
 use clap::{Parser, ValueEnum};
 use vault_daemon::{DaemonConfig, InMemoryDaemon, PersistentStoreConfig};
 use vault_signer::{SecureEnclaveSignerBackend, SoftwareSignerBackend};
+#[cfg(target_os = "linux")]
+use vault_signer::LinuxTpmSignerBackend;
 use vault_transport_unix::UnixDaemonServer;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -19,6 +21,8 @@ const MAX_SECRET_STDIN_BYTES: u64 = 16 * 1024;
 enum SignerBackendKind {
     SecureEnclave,
     Software,
+    #[cfg(target_os = "linux")]
+    Tpm,
 }
 
 #[derive(Debug, Parser)]
@@ -63,11 +67,20 @@ struct Cli {
         long,
         env = "AGENTPAY_SIGNER_BACKEND",
         value_enum,
-        default_value_t = SignerBackendKind::SecureEnclave,
-        value_name = "secure-enclave|software",
+        default_value_t = default_signer_backend(),
+        value_name = "BACKEND",
         help = "Signer backend for daemon key creation and signing"
     )]
     signer_backend: SignerBackendKind,
+    #[cfg(target_os = "linux")]
+    #[arg(
+        long,
+        env = "AGENTPAY_TPM_DEVICE",
+        default_value = "/dev/tpmrm0",
+        value_name = "PATH",
+        help = "TPM device path for Linux TPM signer backend"
+    )]
+    tpm_device: PathBuf,
     #[arg(
         long = "allow-admin-euid",
         env = "AGENTPAY_ALLOW_ADMIN_EUID",
@@ -95,6 +108,21 @@ struct Cli {
         help = "Legacy compatibility alias that grants the same non-root client euid(s) both admin and agent access. Root (0) is always allowed."
     )]
     allow_client_euid: Vec<u32>,
+}
+
+/// Returns the platform-appropriate default signer backend.
+///
+/// - macOS: Secure Enclave (hardware-backed, non-exportable keys)
+/// - Linux/other: Software (in-process secp256k1, Argon2-encrypted state)
+const fn default_signer_backend() -> SignerBackendKind {
+    #[cfg(target_os = "macos")]
+    {
+        SignerBackendKind::SecureEnclave
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        SignerBackendKind::Software
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +167,17 @@ trait DaemonRuntime {
         allowed_peer_euids: AllowedPeerEuids,
         vault_password: Zeroizing<String>,
         state_file: PathBuf,
+        signer_backend_label: &'static str,
+    ) -> Result<()>;
+
+    #[cfg(target_os = "linux")]
+    async fn run_tpm(
+        &self,
+        daemon_socket: PathBuf,
+        allowed_peer_euids: AllowedPeerEuids,
+        vault_password: Zeroizing<String>,
+        state_file: PathBuf,
+        tpm_device: PathBuf,
         signer_backend_label: &'static str,
     ) -> Result<()>;
 }
@@ -220,6 +259,19 @@ where
                     allowed_peer_euids,
                     vault_password,
                     state_file,
+                    signer_backend_label,
+                )
+                .await
+        }
+        #[cfg(target_os = "linux")]
+        SignerBackendKind::Tpm => {
+            runtime
+                .run_tpm(
+                    daemon_socket,
+                    allowed_peer_euids,
+                    vault_password,
+                    state_file,
+                    cli.tpm_device,
                     signer_backend_label,
                 )
                 .await
@@ -317,12 +369,36 @@ impl DaemonRuntime for RealDaemonRuntime {
         let daemon = Arc::new(daemon.context("failed to initialize daemon")?);
         run_bound_daemon(server, daemon, signer_backend_label).await
     }
+
+    #[cfg(target_os = "linux")]
+    async fn run_tpm(
+        &self,
+        daemon_socket: PathBuf,
+        allowed_peer_euids: AllowedPeerEuids,
+        mut vault_password: Zeroizing<String>,
+        state_file: PathBuf,
+        tpm_device: PathBuf,
+        signer_backend_label: &'static str,
+    ) -> Result<()> {
+        let server = bind_server(daemon_socket, &allowed_peer_euids).await?;
+        let daemon = InMemoryDaemon::new_with_persistent_store(
+            &vault_password,
+            LinuxTpmSignerBackend::new(tpm_device),
+            DaemonConfig::default(),
+            PersistentStoreConfig::new(state_file),
+        );
+        vault_password.zeroize();
+        let daemon = Arc::new(daemon.context("failed to initialize daemon")?);
+        run_bound_daemon(server, daemon, signer_backend_label).await
+    }
 }
 
 fn relay_signer_backend_label(backend: SignerBackendKind) -> &'static str {
     match backend {
         SignerBackendKind::SecureEnclave => "secure-enclave",
         SignerBackendKind::Software => "software",
+        #[cfg(target_os = "linux")]
+        SignerBackendKind::Tpm => "tpm",
     }
 }
 
@@ -340,6 +416,12 @@ fn validate_signer_backend_runtime(backend: SignerBackendKind) -> Result<()> {
         if matches!(backend, SignerBackendKind::SecureEnclave) && euid != 0 {
             bail!("secure enclave daemon mode requires root daemon context (current euid: {euid})");
         }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Tpm variant only exists on Linux, but guard against misconfigured builds.
+        let _ = backend;
     }
 
     Ok(())
@@ -688,6 +770,16 @@ mod tests {
             state_file: PathBuf,
             signer_backend_label: &'static str,
         },
+        #[cfg(target_os = "linux")]
+        Tpm {
+            daemon_socket: PathBuf,
+            allowed_admin: BTreeSet<u32>,
+            allowed_agent: BTreeSet<u32>,
+            vault_password: String,
+            state_file: PathBuf,
+            tpm_device: PathBuf,
+            signer_backend_label: &'static str,
+        },
     }
 
     struct FakeRuntime {
@@ -748,6 +840,34 @@ mod tests {
                 None => Ok(()),
             }
         }
+
+        #[cfg(target_os = "linux")]
+        async fn run_tpm(
+            &self,
+            daemon_socket: PathBuf,
+            allowed_peer_euids: AllowedPeerEuids,
+            vault_password: Zeroizing<String>,
+            state_file: PathBuf,
+            tpm_device: PathBuf,
+            signer_backend_label: &'static str,
+        ) -> Result<()> {
+            self.calls
+                .lock()
+                .expect("lock")
+                .push(RuntimeCall::Tpm {
+                    daemon_socket,
+                    allowed_admin: allowed_peer_euids.admin,
+                    allowed_agent: allowed_peer_euids.agent,
+                    vault_password: vault_password.to_string(),
+                    state_file,
+                    tpm_device,
+                    signer_backend_label,
+                });
+            match self.fail_message {
+                Some(message) => Err(anyhow!(message)),
+                None => Ok(()),
+            }
+        }
     }
 
     fn sample_cli(root: &Path, signer_backend: SignerBackendKind) -> Cli {
@@ -758,6 +878,8 @@ mod tests {
             daemon_socket: Some(root.join("socket").join("daemon.sock")),
             secure_enclave_label_prefix: "com.agentpay.test".to_string(),
             signer_backend,
+            #[cfg(target_os = "linux")]
+            tpm_device: "/dev/tpmrm0".into(),
             allow_admin_euid: vec![11],
             allow_agent_euid: vec![22],
             allow_client_euid: vec![33],

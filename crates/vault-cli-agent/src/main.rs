@@ -6,7 +6,10 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use uuid::Uuid;
 use vault_daemon::{DaemonError, KeyManagerDaemonApi};
-use vault_domain::{AgentAction, BroadcastTx, EvmAddress};
+use vault_domain::{
+    AgentAction, BroadcastTx, Eip3009Transfer, EvmAddress, Signature,
+    TempoSessionOpenTransaction, TempoSessionTopUpTransaction, TempoSessionVoucher,
+};
 use vault_sdk_agent::{AgentOperations, AgentSdk, AgentSdkError};
 use vault_transport_unix::{assert_root_owned_daemon_socket_path, UnixDaemonClient};
 
@@ -142,6 +145,101 @@ enum Commands {
         #[arg(long, value_parser = parse_positive_u128)]
         amount_wei: u128,
     },
+    #[command(about = "Request an EIP-3009 transferWithAuthorization signature through policy checks")]
+    Eip3009TransferWithAuthorization {
+        #[arg(long, value_parser = parse_positive_u64)]
+        network: u64,
+        #[arg(long)]
+        token: EvmAddress,
+        #[arg(long)]
+        token_name: String,
+        #[arg(long)]
+        token_version: Option<String>,
+        #[arg(long)]
+        from: EvmAddress,
+        #[arg(long)]
+        to: EvmAddress,
+        #[arg(long, value_parser = parse_positive_u128)]
+        amount_wei: u128,
+        #[arg(long, value_parser = parse_non_negative_u64)]
+        valid_after: u64,
+        #[arg(long, value_parser = parse_positive_u64)]
+        valid_before: u64,
+        #[arg(long)]
+        nonce_hex: String,
+    },
+    #[command(about = "Request an EIP-3009 receiveWithAuthorization signature through policy checks")]
+    Eip3009ReceiveWithAuthorization {
+        #[arg(long, value_parser = parse_positive_u64)]
+        network: u64,
+        #[arg(long)]
+        token: EvmAddress,
+        #[arg(long)]
+        token_name: String,
+        #[arg(long)]
+        token_version: Option<String>,
+        #[arg(long)]
+        from: EvmAddress,
+        #[arg(long)]
+        to: EvmAddress,
+        #[arg(long, value_parser = parse_positive_u128)]
+        amount_wei: u128,
+        #[arg(long, value_parser = parse_non_negative_u64)]
+        valid_after: u64,
+        #[arg(long, value_parser = parse_positive_u64)]
+        valid_before: u64,
+        #[arg(long)]
+        nonce_hex: String,
+    },
+    #[command(about = "Request a Tempo session open-transaction digest signature through policy checks")]
+    TempoSessionOpenTransaction {
+        #[arg(long, value_parser = parse_positive_u64)]
+        network: u64,
+        #[arg(long)]
+        token: EvmAddress,
+        #[arg(long)]
+        recipient: EvmAddress,
+        #[arg(long, value_parser = parse_positive_u128)]
+        deposit_wei: u128,
+        #[arg(long, value_parser = parse_positive_u128)]
+        initial_amount_wei: u128,
+        #[arg(long)]
+        signing_hash_hex: String,
+    },
+    #[command(about = "Request a Tempo session top-up transaction digest signature through policy checks")]
+    TempoSessionTopUpTransaction {
+        #[arg(long, value_parser = parse_positive_u64)]
+        network: u64,
+        #[arg(long)]
+        token: EvmAddress,
+        #[arg(long)]
+        recipient: EvmAddress,
+        #[arg(long)]
+        channel_id_hex: String,
+        #[arg(long, value_parser = parse_positive_u128)]
+        additional_deposit_wei: u128,
+        #[arg(long)]
+        signing_hash_hex: String,
+    },
+    #[command(about = "Request a Tempo session voucher digest signature through policy checks")]
+    TempoSessionVoucher {
+        #[arg(long, value_parser = parse_positive_u64)]
+        network: u64,
+        #[arg(long)]
+        escrow_contract: EvmAddress,
+        #[arg(long)]
+        token: EvmAddress,
+        #[arg(long)]
+        recipient: EvmAddress,
+        #[arg(long)]
+        channel_id_hex: String,
+        #[arg(long, value_parser = parse_positive_u128)]
+        amount_wei: u128,
+        #[arg(long, value_parser = parse_positive_u128)]
+        cumulative_amount_wei: u128,
+        #[arg(long)]
+        signing_hash_hex: String,
+    },
     #[command(about = "Submit a raw transaction broadcast request through policy checks")]
     Broadcast {
         #[arg(long, value_parser = parse_positive_u64)]
@@ -202,6 +300,33 @@ struct ManualApprovalRequiredOutput {
     command: String,
     approval_request_id: String,
     cli_approval_command: String,
+}
+
+fn compact_recoverable_signature_hex(signature: &Signature) -> Option<String> {
+    let r_hex = signature.r_hex.as_deref()?.strip_prefix("0x")?;
+    let s_hex = signature.s_hex.as_deref()?.strip_prefix("0x")?;
+    if r_hex.len() != 64 || s_hex.len() != 64 {
+        return None;
+    }
+
+    let recovery_byte = match signature.v? {
+        0 | 1 => signature.v? as u8 + 27,
+        27 | 28 => signature.v? as u8,
+        _ => return None,
+    };
+
+    Some(format!("0x{r_hex}{s_hex}{recovery_byte:02x}"))
+}
+
+fn signature_output_parts(signature: &Signature) -> (String, Option<String>, Option<String>, Option<u64>) {
+    let signature_hex = compact_recoverable_signature_hex(signature)
+        .unwrap_or_else(|| format!("0x{}", hex::encode(&signature.bytes)));
+    (
+        signature_hex,
+        signature.r_hex.clone(),
+        signature.s_hex.clone(),
+        signature.v,
+    )
 }
 
 #[tokio::main]
@@ -285,6 +410,7 @@ where
                 Some(signature) => signature,
                 None => return Ok(CommandRunOutcome::ManualApprovalRequired),
             };
+            let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);
             let output = AgentCommandOutput {
                 command: "transfer".to_string(),
                 network: network.to_string(),
@@ -294,10 +420,10 @@ where
                 estimated_max_gas_spend_wei: None,
                 tx_type: None,
                 delegation_enabled: None,
-                signature_hex: format!("0x{}", hex::encode(signature.bytes)),
-                r_hex: None,
-                s_hex: None,
-                v: None,
+                signature_hex,
+                r_hex,
+                s_hex,
+                v,
                 raw_tx_hex: None,
                 tx_hash_hex: None,
             };
@@ -323,6 +449,7 @@ where
                 Some(signature) => signature,
                 None => return Ok(CommandRunOutcome::ManualApprovalRequired),
             };
+            let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);
             let output = AgentCommandOutput {
                 command: "transfer-native".to_string(),
                 network: network.to_string(),
@@ -332,10 +459,10 @@ where
                 estimated_max_gas_spend_wei: None,
                 tx_type: None,
                 delegation_enabled: None,
-                signature_hex: format!("0x{}", hex::encode(signature.bytes)),
-                r_hex: None,
-                s_hex: None,
-                v: None,
+                signature_hex,
+                r_hex,
+                s_hex,
+                v,
                 raw_tx_hex: None,
                 tx_hash_hex: None,
             };
@@ -363,6 +490,7 @@ where
                 Some(signature) => signature,
                 None => return Ok(CommandRunOutcome::ManualApprovalRequired),
             };
+            let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);
             let output = AgentCommandOutput {
                 command: "approve".to_string(),
                 network: network.to_string(),
@@ -372,14 +500,329 @@ where
                 estimated_max_gas_spend_wei: None,
                 tx_type: None,
                 delegation_enabled: None,
-                signature_hex: format!("0x{}", hex::encode(signature.bytes)),
-                r_hex: None,
-                s_hex: None,
-                v: None,
+                signature_hex,
+                r_hex,
+                s_hex,
+                v,
                 raw_tx_hex: None,
                 tx_hash_hex: None,
             };
             print_status("approve request signed", output_format, quiet);
+            print_agent_output(&output, output_format, output_target)?;
+        }
+        Commands::Eip3009TransferWithAuthorization {
+            network,
+            token,
+            token_name,
+            token_version,
+            from,
+            to,
+            amount_wei,
+            valid_after,
+            valid_before,
+            nonce_hex,
+        } => {
+            let token_str = token.to_string();
+            let to_str = to.to_string();
+            let authorization = Eip3009Transfer {
+                chain_id: network,
+                token,
+                token_name,
+                token_version,
+                from,
+                to,
+                amount_wei,
+                valid_after,
+                valid_before,
+                nonce_hex,
+            };
+            print_status(
+                "submitting eip3009 transferWithAuthorization request",
+                output_format,
+                quiet,
+            );
+            let signature = match await_signature_or_handle_manual_approval(
+                "eip3009-transfer-with-authorization",
+                daemon_socket,
+                output_format,
+                output_target,
+                sdk.eip3009_transfer_with_authorization(authorization),
+            )
+            .await?
+            {
+                Some(signature) => signature,
+                None => return Ok(CommandRunOutcome::ManualApprovalRequired),
+            };
+            let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);
+            let output = AgentCommandOutput {
+                command: "eip3009-transfer-with-authorization".to_string(),
+                network: network.to_string(),
+                asset: format!("erc20:{token_str}"),
+                counterparty: to_str,
+                amount_wei: amount_wei.to_string(),
+                estimated_max_gas_spend_wei: None,
+                tx_type: None,
+                delegation_enabled: None,
+                signature_hex,
+                r_hex,
+                s_hex,
+                v,
+                raw_tx_hex: None,
+                tx_hash_hex: None,
+            };
+            print_status(
+                "eip3009 transferWithAuthorization request signed",
+                output_format,
+                quiet,
+            );
+            print_agent_output(&output, output_format, output_target)?;
+        }
+        Commands::Eip3009ReceiveWithAuthorization {
+            network,
+            token,
+            token_name,
+            token_version,
+            from,
+            to,
+            amount_wei,
+            valid_after,
+            valid_before,
+            nonce_hex,
+        } => {
+            let token_str = token.to_string();
+            let to_str = to.to_string();
+            let authorization = Eip3009Transfer {
+                chain_id: network,
+                token,
+                token_name,
+                token_version,
+                from,
+                to,
+                amount_wei,
+                valid_after,
+                valid_before,
+                nonce_hex,
+            };
+            print_status(
+                "submitting eip3009 receiveWithAuthorization request",
+                output_format,
+                quiet,
+            );
+            let signature = match await_signature_or_handle_manual_approval(
+                "eip3009-receive-with-authorization",
+                daemon_socket,
+                output_format,
+                output_target,
+                sdk.eip3009_receive_with_authorization(authorization),
+            )
+            .await?
+            {
+                Some(signature) => signature,
+                None => return Ok(CommandRunOutcome::ManualApprovalRequired),
+            };
+            let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);
+            let output = AgentCommandOutput {
+                command: "eip3009-receive-with-authorization".to_string(),
+                network: network.to_string(),
+                asset: format!("erc20:{token_str}"),
+                counterparty: to_str,
+                amount_wei: amount_wei.to_string(),
+                estimated_max_gas_spend_wei: None,
+                tx_type: None,
+                delegation_enabled: None,
+                signature_hex,
+                r_hex,
+                s_hex,
+                v,
+                raw_tx_hex: None,
+                tx_hash_hex: None,
+            };
+            print_status(
+                "eip3009 receiveWithAuthorization request signed",
+                output_format,
+                quiet,
+            );
+            print_agent_output(&output, output_format, output_target)?;
+        }
+        Commands::TempoSessionOpenTransaction {
+            network,
+            token,
+            recipient,
+            deposit_wei,
+            initial_amount_wei,
+            signing_hash_hex,
+        } => {
+            let token_str = token.to_string();
+            let recipient_str = recipient.to_string();
+            let authorization = TempoSessionOpenTransaction {
+                chain_id: network,
+                token,
+                recipient,
+                deposit_wei,
+                initial_amount_wei,
+                signing_hash_hex,
+            };
+            print_status(
+                "submitting tempo session open transaction signature request",
+                output_format,
+                quiet,
+            );
+            let signature = match await_signature_or_handle_manual_approval(
+                "tempo-session-open-transaction",
+                daemon_socket,
+                output_format,
+                output_target,
+                sdk.tempo_session_open_transaction(authorization),
+            )
+            .await?
+            {
+                Some(signature) => signature,
+                None => return Ok(CommandRunOutcome::ManualApprovalRequired),
+            };
+            let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);
+            let output = AgentCommandOutput {
+                command: "tempo-session-open-transaction".to_string(),
+                network: network.to_string(),
+                asset: format!("erc20:{token_str}"),
+                counterparty: recipient_str,
+                amount_wei: deposit_wei.to_string(),
+                estimated_max_gas_spend_wei: None,
+                tx_type: None,
+                delegation_enabled: None,
+                signature_hex,
+                r_hex,
+                s_hex,
+                v,
+                raw_tx_hex: None,
+                tx_hash_hex: None,
+            };
+            print_status(
+                "tempo session open transaction signature request signed",
+                output_format,
+                quiet,
+            );
+            print_agent_output(&output, output_format, output_target)?;
+        }
+        Commands::TempoSessionTopUpTransaction {
+            network,
+            token,
+            recipient,
+            channel_id_hex,
+            additional_deposit_wei,
+            signing_hash_hex,
+        } => {
+            let token_str = token.to_string();
+            let recipient_str = recipient.to_string();
+            let authorization = TempoSessionTopUpTransaction {
+                chain_id: network,
+                token,
+                recipient,
+                channel_id_hex,
+                additional_deposit_wei,
+                signing_hash_hex,
+            };
+            print_status(
+                "submitting tempo session topUp transaction signature request",
+                output_format,
+                quiet,
+            );
+            let signature = match await_signature_or_handle_manual_approval(
+                "tempo-session-top-up-transaction",
+                daemon_socket,
+                output_format,
+                output_target,
+                sdk.tempo_session_top_up_transaction(authorization),
+            )
+            .await?
+            {
+                Some(signature) => signature,
+                None => return Ok(CommandRunOutcome::ManualApprovalRequired),
+            };
+            let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);
+            let output = AgentCommandOutput {
+                command: "tempo-session-top-up-transaction".to_string(),
+                network: network.to_string(),
+                asset: format!("erc20:{token_str}"),
+                counterparty: recipient_str,
+                amount_wei: additional_deposit_wei.to_string(),
+                estimated_max_gas_spend_wei: None,
+                tx_type: None,
+                delegation_enabled: None,
+                signature_hex,
+                r_hex,
+                s_hex,
+                v,
+                raw_tx_hex: None,
+                tx_hash_hex: None,
+            };
+            print_status(
+                "tempo session topUp transaction signature request signed",
+                output_format,
+                quiet,
+            );
+            print_agent_output(&output, output_format, output_target)?;
+        }
+        Commands::TempoSessionVoucher {
+            network,
+            escrow_contract,
+            token,
+            recipient,
+            channel_id_hex,
+            amount_wei,
+            cumulative_amount_wei,
+            signing_hash_hex,
+        } => {
+            let token_str = token.to_string();
+            let recipient_str = recipient.to_string();
+            let authorization = TempoSessionVoucher {
+                chain_id: network,
+                escrow_contract,
+                token,
+                recipient,
+                channel_id_hex,
+                amount_wei,
+                cumulative_amount_wei,
+                signing_hash_hex,
+            };
+            print_status(
+                "submitting tempo session voucher signature request",
+                output_format,
+                quiet,
+            );
+            let signature = match await_signature_or_handle_manual_approval(
+                "tempo-session-voucher",
+                daemon_socket,
+                output_format,
+                output_target,
+                sdk.tempo_session_voucher(authorization),
+            )
+            .await?
+            {
+                Some(signature) => signature,
+                None => return Ok(CommandRunOutcome::ManualApprovalRequired),
+            };
+            let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);
+            let output = AgentCommandOutput {
+                command: "tempo-session-voucher".to_string(),
+                network: network.to_string(),
+                asset: format!("erc20:{token_str}"),
+                counterparty: recipient_str,
+                amount_wei: amount_wei.to_string(),
+                estimated_max_gas_spend_wei: None,
+                tx_type: None,
+                delegation_enabled: None,
+                signature_hex,
+                r_hex,
+                s_hex,
+                v,
+                raw_tx_hex: None,
+                tx_hash_hex: None,
+            };
+            print_status(
+                "tempo session voucher signature request signed",
+                output_format,
+                quiet,
+            );
             print_agent_output(&output, output_format, output_target)?;
         }
         Commands::Broadcast {
@@ -584,8 +1027,8 @@ mod tests {
         await_signature_or_handle_manual_approval, ensure_output_parent,
         print_manual_approval_required_output, render_cli_error, resolve_agent_auth_token,
         resolve_output_format, resolve_output_target, run_command, should_print_status,
-        write_output_file, Cli, CommandRunOutcome, Commands, ManualApprovalRequiredOutput,
-        OutputFormat, OutputTarget,
+        signature_output_parts, write_output_file, Cli, CommandRunOutcome, Commands,
+        ManualApprovalRequiredOutput, OutputFormat, OutputTarget,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -596,7 +1039,10 @@ mod tests {
     use tokio::runtime::Builder;
     use uuid::Uuid;
     use vault_daemon::DaemonError;
-    use vault_domain::{BroadcastTx, EvmAddress, Signature};
+    use vault_domain::{
+        BroadcastTx, EvmAddress, Signature, TempoSessionOpenTransaction,
+        TempoSessionTopUpTransaction, TempoSessionVoucher,
+    };
     use vault_policy::PolicyError;
     use vault_sdk_agent::{AgentOperations, AgentSdkError};
 
@@ -609,6 +1055,21 @@ mod tests {
             token: EvmAddress,
             to: EvmAddress,
             amount_wei: u128,
+        },
+        Eip3009Transfer {
+            authorization: vault_domain::Eip3009Transfer,
+        },
+        Eip3009Receive {
+            authorization: vault_domain::Eip3009Transfer,
+        },
+        TempoSessionOpen {
+            authorization: TempoSessionOpenTransaction,
+        },
+        TempoSessionTopUp {
+            authorization: TempoSessionTopUpTransaction,
+        },
+        TempoVoucher {
+            authorization: TempoSessionVoucher,
         },
         TransferNative {
             chain_id: u64,
@@ -718,16 +1179,57 @@ mod tests {
 
         async fn eip3009_transfer_with_authorization(
             &self,
-            _authorization: vault_domain::Eip3009Transfer,
+            authorization: vault_domain::Eip3009Transfer,
         ) -> Result<Signature, AgentSdkError> {
-            panic!("unused in test");
+            self.calls
+                .lock()
+                .expect("lock")
+                .push(FakeCall::Eip3009Transfer { authorization });
+            self.result()
         }
 
         async fn eip3009_receive_with_authorization(
             &self,
-            _authorization: vault_domain::Eip3009Transfer,
+            authorization: vault_domain::Eip3009Transfer,
         ) -> Result<Signature, AgentSdkError> {
-            panic!("unused in test");
+            self.calls
+                .lock()
+                .expect("lock")
+                .push(FakeCall::Eip3009Receive { authorization });
+            self.result()
+        }
+
+        async fn tempo_session_open_transaction(
+            &self,
+            authorization: TempoSessionOpenTransaction,
+        ) -> Result<Signature, AgentSdkError> {
+            self.calls
+                .lock()
+                .expect("lock")
+                .push(FakeCall::TempoSessionOpen { authorization });
+            self.result()
+        }
+
+        async fn tempo_session_top_up_transaction(
+            &self,
+            authorization: TempoSessionTopUpTransaction,
+        ) -> Result<Signature, AgentSdkError> {
+            self.calls
+                .lock()
+                .expect("lock")
+                .push(FakeCall::TempoSessionTopUp { authorization });
+            self.result()
+        }
+
+        async fn tempo_session_voucher(
+            &self,
+            authorization: TempoSessionVoucher,
+        ) -> Result<Signature, AgentSdkError> {
+            self.calls
+                .lock()
+                .expect("lock")
+                .push(FakeCall::TempoVoucher { authorization });
+            self.result()
         }
 
         async fn sign_erc20_calldata(
@@ -779,6 +1281,27 @@ mod tests {
             raw_tx_hex: Some("0x1234".to_string()),
             tx_hash_hex: Some("0xabcd".to_string()),
         }
+    }
+
+    #[test]
+    fn signature_output_parts_prefers_compact_recoverable_signature_hex() {
+        let signature = Signature {
+            bytes: vec![0xaa, 0xbb, 0xcc],
+            r_hex: Some(format!("0x{}", "11".repeat(32))),
+            s_hex: Some(format!("0x{}", "22".repeat(32))),
+            v: Some(1),
+            raw_tx_hex: None,
+            tx_hash_hex: None,
+        };
+
+        let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);
+        assert_eq!(
+            signature_hex,
+            format!("0x{}{}1c", "11".repeat(32), "22".repeat(32))
+        );
+        assert_eq!(r_hex, signature.r_hex.clone());
+        assert_eq!(s_hex, signature.s_hex.clone());
+        assert_eq!(v, Some(1));
     }
 
     fn temp_path(prefix: &str, ext: &str) -> PathBuf {
@@ -1029,6 +1552,176 @@ mod tests {
         ])
         .expect("parse");
         assert!(matches!(cli.command, Commands::Approve { .. }));
+    }
+
+    #[test]
+    fn canonical_eip3009_transfer_with_authorization_command_is_accepted() {
+        let cli = Cli::try_parse_from([
+            "agentpay-agent",
+            "--agent-key-id",
+            TEST_AGENT_KEY_ID,
+            "--agent-auth-token",
+            "test-auth-token",
+            "--daemon-socket",
+            "/tmp/agentpay.sock",
+            "eip3009-transfer-with-authorization",
+            "--network",
+            "1",
+            "--token",
+            "0x1000000000000000000000000000000000000000",
+            "--token-name",
+            "USD Coin",
+            "--token-version",
+            "2",
+            "--from",
+            "0x4000000000000000000000000000000000000000",
+            "--to",
+            "0x2000000000000000000000000000000000000000",
+            "--amount-wei",
+            "1",
+            "--valid-after",
+            "0",
+            "--valid-before",
+            "1000",
+            "--nonce-hex",
+            "0x1111111111111111111111111111111111111111111111111111111111111111",
+        ])
+        .expect("parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Eip3009TransferWithAuthorization { .. }
+        ));
+    }
+
+    #[test]
+    fn canonical_eip3009_receive_with_authorization_command_is_accepted() {
+        let cli = Cli::try_parse_from([
+            "agentpay-agent",
+            "--agent-key-id",
+            TEST_AGENT_KEY_ID,
+            "--agent-auth-token",
+            "test-auth-token",
+            "--daemon-socket",
+            "/tmp/agentpay.sock",
+            "eip3009-receive-with-authorization",
+            "--network",
+            "1",
+            "--token",
+            "0x1000000000000000000000000000000000000000",
+            "--token-name",
+            "USD Coin",
+            "--from",
+            "0x4000000000000000000000000000000000000000",
+            "--to",
+            "0x2000000000000000000000000000000000000000",
+            "--amount-wei",
+            "1",
+            "--valid-after",
+            "0",
+            "--valid-before",
+            "1000",
+            "--nonce-hex",
+            "0x1111111111111111111111111111111111111111111111111111111111111111",
+        ])
+        .expect("parse");
+        assert!(matches!(
+            cli.command,
+            Commands::Eip3009ReceiveWithAuthorization { .. }
+        ));
+    }
+
+    #[test]
+    fn canonical_tempo_session_open_transaction_command_is_accepted() {
+        let cli = Cli::try_parse_from([
+            "agentpay-agent",
+            "--agent-key-id",
+            TEST_AGENT_KEY_ID,
+            "--agent-auth-token",
+            "test-auth-token",
+            "--daemon-socket",
+            "/tmp/agentpay.sock",
+            "tempo-session-open-transaction",
+            "--network",
+            "4217",
+            "--token",
+            "0x1000000000000000000000000000000000000000",
+            "--recipient",
+            "0x2000000000000000000000000000000000000000",
+            "--deposit-wei",
+            "1000000",
+            "--initial-amount-wei",
+            "1000000",
+            "--signing-hash-hex",
+            "0x1111111111111111111111111111111111111111111111111111111111111111",
+        ])
+        .expect("parse");
+        assert!(matches!(
+            cli.command,
+            Commands::TempoSessionOpenTransaction { .. }
+        ));
+    }
+
+    #[test]
+    fn canonical_tempo_session_voucher_command_is_accepted() {
+        let cli = Cli::try_parse_from([
+            "agentpay-agent",
+            "--agent-key-id",
+            TEST_AGENT_KEY_ID,
+            "--agent-auth-token",
+            "test-auth-token",
+            "--daemon-socket",
+            "/tmp/agentpay.sock",
+            "tempo-session-voucher",
+            "--network",
+            "4217",
+            "--escrow-contract",
+            "0x3000000000000000000000000000000000000000",
+            "--token",
+            "0x1000000000000000000000000000000000000000",
+            "--recipient",
+            "0x2000000000000000000000000000000000000000",
+            "--channel-id-hex",
+            "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "--amount-wei",
+            "1000000",
+            "--cumulative-amount-wei",
+            "1000000",
+            "--signing-hash-hex",
+            "0x3333333333333333333333333333333333333333333333333333333333333333",
+        ])
+        .expect("parse");
+        assert!(matches!(cli.command, Commands::TempoSessionVoucher { .. }));
+    }
+
+    #[test]
+    fn canonical_tempo_session_top_up_transaction_command_is_accepted() {
+        let cli = Cli::try_parse_from([
+            "agentpay-agent",
+            "--agent-key-id",
+            TEST_AGENT_KEY_ID,
+            "--agent-auth-token",
+            "test-auth-token",
+            "--daemon-socket",
+            "/tmp/agentpay.sock",
+            "tempo-session-top-up-transaction",
+            "--network",
+            "4217",
+            "--token",
+            "0x1000000000000000000000000000000000000000",
+            "--recipient",
+            "0x2000000000000000000000000000000000000000",
+            "--channel-id-hex",
+            "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "--additional-deposit-wei",
+            "1000000",
+            "--signing-hash-hex",
+            "0x3333333333333333333333333333333333333333333333333333333333333333",
+        ])
+        .expect("parse");
+        assert!(matches!(
+            cli.command,
+            Commands::TempoSessionTopUpTransaction { .. }
+        ));
     }
 
     #[test]
@@ -1320,6 +2013,267 @@ mod tests {
         assert!(approve_json
             .contains("\"counterparty\": \"0x3000000000000000000000000000000000000000\""));
         fs::remove_file(&approve_output).expect("cleanup approve");
+
+        let eip3009_transfer_output = temp_path("eip3009-transfer-output", "json");
+        let eip3009_transfer_ops = FakeAgentOps {
+            calls: Mutex::new(Vec::new()),
+            outcome: FakeOutcome::Signature(sample_signature()),
+        };
+        let transfer_authorization = vault_domain::Eip3009Transfer {
+            chain_id: 8453,
+            token: token.clone(),
+            token_name: "USD Coin".to_string(),
+            token_version: Some("2".to_string()),
+            from: "0x4000000000000000000000000000000000000000"
+                .parse()
+                .expect("from"),
+            to: to.clone(),
+            amount_wei: 17,
+            valid_after: 0,
+            valid_before: 1_000,
+            nonce_hex: "0x1111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
+        };
+        let outcome = runtime
+            .block_on(run_command(
+                Commands::Eip3009TransferWithAuthorization {
+                    network: transfer_authorization.chain_id,
+                    token: transfer_authorization.token.clone(),
+                    token_name: transfer_authorization.token_name.clone(),
+                    token_version: transfer_authorization.token_version.clone(),
+                    from: transfer_authorization.from.clone(),
+                    to: transfer_authorization.to.clone(),
+                    amount_wei: transfer_authorization.amount_wei,
+                    valid_after: transfer_authorization.valid_after,
+                    valid_before: transfer_authorization.valid_before,
+                    nonce_hex: transfer_authorization.nonce_hex.clone(),
+                },
+                true,
+                &daemon_socket,
+                OutputFormat::Json,
+                &OutputTarget::File {
+                    path: eip3009_transfer_output.clone(),
+                    overwrite: false,
+                },
+                &eip3009_transfer_ops,
+            ))
+            .expect("eip3009 transfer run");
+        assert_eq!(outcome, CommandRunOutcome::Completed);
+        assert_eq!(
+            eip3009_transfer_ops.calls.lock().expect("lock").as_slice(),
+            &[FakeCall::Eip3009Transfer {
+                authorization: transfer_authorization.clone(),
+            }]
+        );
+        let eip3009_transfer_json = read_file(&eip3009_transfer_output);
+        assert!(
+            eip3009_transfer_json
+                .contains("\"command\": \"eip3009-transfer-with-authorization\"")
+        );
+        fs::remove_file(&eip3009_transfer_output).expect("cleanup eip3009 transfer");
+
+        let eip3009_receive_output = temp_path("eip3009-receive-output", "json");
+        let eip3009_receive_ops = FakeAgentOps {
+            calls: Mutex::new(Vec::new()),
+            outcome: FakeOutcome::Signature(sample_signature()),
+        };
+        let receive_authorization = vault_domain::Eip3009Transfer {
+            chain_id: 8453,
+            token: token.clone(),
+            token_name: "USD Coin".to_string(),
+            token_version: None,
+            from: "0x5000000000000000000000000000000000000000"
+                .parse()
+                .expect("from"),
+            to: to.clone(),
+            amount_wei: 19,
+            valid_after: 0,
+            valid_before: 1_000,
+            nonce_hex: "0x2222222222222222222222222222222222222222222222222222222222222222"
+                .to_string(),
+        };
+        let outcome = runtime
+            .block_on(run_command(
+                Commands::Eip3009ReceiveWithAuthorization {
+                    network: receive_authorization.chain_id,
+                    token: receive_authorization.token.clone(),
+                    token_name: receive_authorization.token_name.clone(),
+                    token_version: receive_authorization.token_version.clone(),
+                    from: receive_authorization.from.clone(),
+                    to: receive_authorization.to.clone(),
+                    amount_wei: receive_authorization.amount_wei,
+                    valid_after: receive_authorization.valid_after,
+                    valid_before: receive_authorization.valid_before,
+                    nonce_hex: receive_authorization.nonce_hex.clone(),
+                },
+                true,
+                &daemon_socket,
+                OutputFormat::Json,
+                &OutputTarget::File {
+                    path: eip3009_receive_output.clone(),
+                    overwrite: false,
+                },
+                &eip3009_receive_ops,
+            ))
+            .expect("eip3009 receive run");
+        assert_eq!(outcome, CommandRunOutcome::Completed);
+        assert_eq!(
+            eip3009_receive_ops.calls.lock().expect("lock").as_slice(),
+            &[FakeCall::Eip3009Receive {
+                authorization: receive_authorization.clone(),
+            }]
+        );
+        let eip3009_receive_json = read_file(&eip3009_receive_output);
+        assert!(
+            eip3009_receive_json
+                .contains("\"command\": \"eip3009-receive-with-authorization\"")
+        );
+        fs::remove_file(&eip3009_receive_output).expect("cleanup eip3009 receive");
+
+        let tempo_open_output = temp_path("tempo-open-output", "json");
+        let tempo_open_ops = FakeAgentOps {
+            calls: Mutex::new(Vec::new()),
+            outcome: FakeOutcome::Signature(sample_signature()),
+        };
+        let tempo_open_authorization = TempoSessionOpenTransaction {
+            chain_id: 4217,
+            token: token.clone(),
+            recipient: to.clone(),
+            deposit_wei: 1_000_000,
+            initial_amount_wei: 1_000_000,
+            signing_hash_hex: "0x1111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
+        };
+        let outcome = runtime
+            .block_on(run_command(
+                Commands::TempoSessionOpenTransaction {
+                    network: tempo_open_authorization.chain_id,
+                    token: tempo_open_authorization.token.clone(),
+                    recipient: tempo_open_authorization.recipient.clone(),
+                    deposit_wei: tempo_open_authorization.deposit_wei,
+                    initial_amount_wei: tempo_open_authorization.initial_amount_wei,
+                    signing_hash_hex: tempo_open_authorization.signing_hash_hex.clone(),
+                },
+                true,
+                &daemon_socket,
+                OutputFormat::Json,
+                &OutputTarget::File {
+                    path: tempo_open_output.clone(),
+                    overwrite: false,
+                },
+                &tempo_open_ops,
+            ))
+            .expect("tempo open run");
+        assert_eq!(outcome, CommandRunOutcome::Completed);
+        assert_eq!(
+            tempo_open_ops.calls.lock().expect("lock").as_slice(),
+            &[FakeCall::TempoSessionOpen {
+                authorization: tempo_open_authorization.clone(),
+            }]
+        );
+        let tempo_open_json = read_file(&tempo_open_output);
+        assert!(tempo_open_json.contains("\"command\": \"tempo-session-open-transaction\""));
+        fs::remove_file(&tempo_open_output).expect("cleanup tempo open");
+
+        let tempo_top_up_output = temp_path("tempo-top-up-output", "json");
+        let tempo_top_up_ops = FakeAgentOps {
+            calls: Mutex::new(Vec::new()),
+            outcome: FakeOutcome::Signature(sample_signature()),
+        };
+        let tempo_top_up_authorization = TempoSessionTopUpTransaction {
+            chain_id: 4217,
+            token: token.clone(),
+            recipient: to.clone(),
+            channel_id_hex:
+                "0x2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string(),
+            additional_deposit_wei: 1_000_000,
+            signing_hash_hex: "0x3333333333333333333333333333333333333333333333333333333333333333"
+                .to_string(),
+        };
+        let outcome = runtime
+            .block_on(run_command(
+                Commands::TempoSessionTopUpTransaction {
+                    network: tempo_top_up_authorization.chain_id,
+                    token: tempo_top_up_authorization.token.clone(),
+                    recipient: tempo_top_up_authorization.recipient.clone(),
+                    channel_id_hex: tempo_top_up_authorization.channel_id_hex.clone(),
+                    additional_deposit_wei: tempo_top_up_authorization.additional_deposit_wei,
+                    signing_hash_hex: tempo_top_up_authorization.signing_hash_hex.clone(),
+                },
+                true,
+                &daemon_socket,
+                OutputFormat::Json,
+                &OutputTarget::File {
+                    path: tempo_top_up_output.clone(),
+                    overwrite: false,
+                },
+                &tempo_top_up_ops,
+            ))
+            .expect("tempo topUp run");
+        assert_eq!(outcome, CommandRunOutcome::Completed);
+        assert_eq!(
+            tempo_top_up_ops.calls.lock().expect("lock").as_slice(),
+            &[FakeCall::TempoSessionTopUp {
+                authorization: tempo_top_up_authorization.clone(),
+            }]
+        );
+        let tempo_top_up_json = read_file(&tempo_top_up_output);
+        assert!(tempo_top_up_json.contains("\"command\": \"tempo-session-top-up-transaction\""));
+        fs::remove_file(&tempo_top_up_output).expect("cleanup tempo topUp");
+
+        let tempo_voucher_output = temp_path("tempo-voucher-output", "json");
+        let tempo_voucher_ops = FakeAgentOps {
+            calls: Mutex::new(Vec::new()),
+            outcome: FakeOutcome::Signature(sample_signature()),
+        };
+        let tempo_voucher_authorization = TempoSessionVoucher {
+            chain_id: 4217,
+            escrow_contract: "0x3300000000000000000000000000000000000000"
+                .parse()
+                .expect("escrow"),
+            token: token.clone(),
+            recipient: to.clone(),
+            channel_id_hex:
+                "0x2222222222222222222222222222222222222222222222222222222222222222"
+                    .to_string(),
+            amount_wei: 1_000_000,
+            cumulative_amount_wei: 1_000_000,
+            signing_hash_hex: "0x3333333333333333333333333333333333333333333333333333333333333333"
+                .to_string(),
+        };
+        let outcome = runtime
+            .block_on(run_command(
+                Commands::TempoSessionVoucher {
+                    network: tempo_voucher_authorization.chain_id,
+                    escrow_contract: tempo_voucher_authorization.escrow_contract.clone(),
+                    token: tempo_voucher_authorization.token.clone(),
+                    recipient: tempo_voucher_authorization.recipient.clone(),
+                    channel_id_hex: tempo_voucher_authorization.channel_id_hex.clone(),
+                    amount_wei: tempo_voucher_authorization.amount_wei,
+                    cumulative_amount_wei: tempo_voucher_authorization.cumulative_amount_wei,
+                    signing_hash_hex: tempo_voucher_authorization.signing_hash_hex.clone(),
+                },
+                true,
+                &daemon_socket,
+                OutputFormat::Json,
+                &OutputTarget::File {
+                    path: tempo_voucher_output.clone(),
+                    overwrite: false,
+                },
+                &tempo_voucher_ops,
+            ))
+            .expect("tempo voucher run");
+        assert_eq!(outcome, CommandRunOutcome::Completed);
+        assert_eq!(
+            tempo_voucher_ops.calls.lock().expect("lock").as_slice(),
+            &[FakeCall::TempoVoucher {
+                authorization: tempo_voucher_authorization.clone(),
+            }]
+        );
+        let tempo_voucher_json = read_file(&tempo_voucher_output);
+        assert!(tempo_voucher_json.contains("\"command\": \"tempo-session-voucher\""));
+        fs::remove_file(&tempo_voucher_output).expect("cleanup tempo voucher");
 
         let broadcast_output = temp_path("broadcast-output", "json");
         let broadcast_ops = FakeAgentOps {

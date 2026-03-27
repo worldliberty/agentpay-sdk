@@ -1012,11 +1012,52 @@ fn permit2_and_eip3009_actions_produce_signing_hashes() {
     .signing_hash()
     .expect("eip3009 receive hash")
     .expect("receive typed hash");
+    let tempo_open_hash = AgentAction::TempoSessionOpenTransaction {
+        authorization: TempoSessionOpenTransaction {
+            chain_id: 4217,
+            token: "0x6666666666666666666666666666666666666666"
+                .parse()
+                .expect("token"),
+            recipient: "0x7777777777777777777777777777777777777777"
+                .parse()
+                .expect("recipient"),
+            deposit_wei: 1_000_000,
+            initial_amount_wei: 1_000_000,
+            signing_hash_hex: format!("0x{}", hex::encode([0x44u8; 32])),
+        },
+    }
+    .signing_hash()
+    .expect("tempo open hash")
+    .expect("tempo open typed hash");
+    let tempo_voucher_hash = AgentAction::TempoSessionVoucher {
+        authorization: TempoSessionVoucher {
+            chain_id: 4217,
+            escrow_contract: "0x8888888888888888888888888888888888888888"
+                .parse()
+                .expect("escrow"),
+            token: "0x6666666666666666666666666666666666666666"
+                .parse()
+                .expect("token"),
+            recipient: "0x7777777777777777777777777777777777777777"
+                .parse()
+                .expect("recipient"),
+            channel_id_hex: format!("0x{}", hex::encode([0x55u8; 32])),
+            amount_wei: 1_000_000,
+            cumulative_amount_wei: 1_000_000,
+            signing_hash_hex: format!("0x{}", hex::encode([0x66u8; 32])),
+        },
+    }
+    .signing_hash()
+    .expect("tempo voucher hash")
+    .expect("tempo voucher typed hash");
 
     assert_ne!(permit_hash, [0u8; 32]);
     assert_ne!(transfer_hash, [0u8; 32]);
     assert_ne!(receive_hash, [0u8; 32]);
+    assert_ne!(tempo_open_hash, [0u8; 32]);
+    assert_ne!(tempo_voucher_hash, [0u8; 32]);
     assert_ne!(transfer_hash, receive_hash);
+    assert_ne!(tempo_open_hash, tempo_voucher_hash);
 }
 
 #[test]
@@ -1202,6 +1243,42 @@ fn permit2_and_eip3009_validation_reject_invalid_inputs() {
         Eip3009Transfer {
             nonce_hex: "0x1234".to_string(),
             ..base_eip3009
+        }
+        .validate(),
+        Err(DomainError::InvalidTypedDataDomain(_))
+    ));
+    assert!(matches!(
+        TempoSessionOpenTransaction {
+            chain_id: 4217,
+            token: "0x1111111111111111111111111111111111111111"
+                .parse()
+                .expect("token"),
+            recipient: "0x2222222222222222222222222222222222222222"
+                .parse()
+                .expect("recipient"),
+            deposit_wei: 1,
+            initial_amount_wei: 2,
+            signing_hash_hex: format!("0x{}", hex::encode([0x11u8; 32])),
+        }
+        .validate(),
+        Err(DomainError::InvalidAmount)
+    ));
+    assert!(matches!(
+        TempoSessionVoucher {
+            chain_id: 4217,
+            escrow_contract: "0x3333333333333333333333333333333333333333"
+                .parse()
+                .expect("escrow"),
+            token: "0x1111111111111111111111111111111111111111"
+                .parse()
+                .expect("token"),
+            recipient: "0x2222222222222222222222222222222222222222"
+                .parse()
+                .expect("recipient"),
+            channel_id_hex: "0x1234".to_string(),
+            amount_wei: 1,
+            cumulative_amount_wei: 1,
+            signing_hash_hex: format!("0x{}", hex::encode([0x22u8; 32])),
         }
         .validate(),
         Err(DomainError::InvalidTypedDataDomain(_))

@@ -12,7 +12,8 @@ use vault_daemon::{DaemonError, KeyManagerDaemonApi};
 use vault_domain::{
     action_from_erc20_calldata, AgentAction, AgentCredentials, BroadcastTx, DomainError,
     Eip3009Transfer, EvmAddress, NonceReleaseRequest, NonceReservation, NonceReservationRequest,
-    Permit2Permit, SignRequest, Signature,
+    Permit2Permit, SignRequest, Signature, TempoSessionOpenTransaction,
+    TempoSessionTopUpTransaction, TempoSessionVoucher,
 };
 use zeroize::Zeroizing;
 
@@ -72,6 +73,24 @@ pub trait AgentOperations: Send + Sync {
     async fn eip3009_receive_with_authorization(
         &self,
         authorization: Eip3009Transfer,
+    ) -> Result<Signature, AgentSdkError>;
+
+    /// Requests a Tempo session open-transaction digest signature.
+    async fn tempo_session_open_transaction(
+        &self,
+        authorization: TempoSessionOpenTransaction,
+    ) -> Result<Signature, AgentSdkError>;
+
+    /// Requests a Tempo session top-up transaction digest signature.
+    async fn tempo_session_top_up_transaction(
+        &self,
+        authorization: TempoSessionTopUpTransaction,
+    ) -> Result<Signature, AgentSdkError>;
+
+    /// Requests a Tempo session voucher digest signature.
+    async fn tempo_session_voucher(
+        &self,
+        authorization: TempoSessionVoucher,
     ) -> Result<Signature, AgentSdkError>;
 
     /// Parses ERC-20 calldata and signs derived action (`approve` / `transfer`).
@@ -233,6 +252,30 @@ where
         authorization: Eip3009Transfer,
     ) -> Result<Signature, AgentSdkError> {
         self.sign_action(AgentAction::Eip3009ReceiveWithAuthorization { authorization })
+            .await
+    }
+
+    async fn tempo_session_open_transaction(
+        &self,
+        authorization: TempoSessionOpenTransaction,
+    ) -> Result<Signature, AgentSdkError> {
+        self.sign_action(AgentAction::TempoSessionOpenTransaction { authorization })
+            .await
+    }
+
+    async fn tempo_session_top_up_transaction(
+        &self,
+        authorization: TempoSessionTopUpTransaction,
+    ) -> Result<Signature, AgentSdkError> {
+        self.sign_action(AgentAction::TempoSessionTopUpTransaction { authorization })
+            .await
+    }
+
+    async fn tempo_session_voucher(
+        &self,
+        authorization: TempoSessionVoucher,
+    ) -> Result<Signature, AgentSdkError> {
+        self.sign_action(AgentAction::TempoSessionVoucher { authorization })
             .await
     }
 

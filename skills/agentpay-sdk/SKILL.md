@@ -16,11 +16,13 @@ If the user asks what this skill can do, answer from this list first. Do not pro
 - install `agentpay`
 - bootstrap `agentpay` and the AgentPay skill pack with the one-click installer
 - explain whether the wallet can be reused or needs first-run setup
-- guide the user through local wallet setup
+- guide the user through local wallet setup (self-custodial daemon mode)
 - export, verify, and restore encrypted offline wallet backups
 - check balances and stop for funding when money or gas is missing
 - generate funding instructions and a QR
 - send native assets, send ERC-20 tokens, approve allowances, and broadcast transactions
+- pay x402-protected APIs (EIP-3009 signing)
+- pay MPP-protected APIs on any EVM chain (charge on any chain, session on Tempo)
 - use supported plugin-backed merchant payment flows when relevant
 - guide the user through policy configuration in the TUI
 - route manual approvals to the local admin approval commands
@@ -43,6 +45,15 @@ If the user asks what this skill can do, answer from this list first. Do not pro
 - `agentpay admin wallet-backup export --output <PATH>` creates an encrypted offline backup.
 - Do not use `sudo agentpay ...`.
 - Do not tell users to run `agentpay daemon` directly.
+
+## Wallet Model
+
+AgentPay uses a self-custodial local daemon wallet.
+
+- Setup: `agentpay admin setup`
+- Local Rust daemon manages keys, policy enforcement, manual approval, and wallet backup
+- Supports `transfer`, `transfer-native`, `approve`, `broadcast`, `x402`, and `mpp`
+- Tempo session mode is available through `agentpay mpp`
 
 ## Default Payment Assumption
 
@@ -69,20 +80,21 @@ If the user asks what this skill can do, answer from this list first. Do not pro
 
 ## Deterministic Flow
 
-1. Classify the request as explain capabilities, install, setup wallet, back up wallet, restore wallet, fund wallet, set policy, send native asset, send ERC-20, approve allowance, broadcast raw tx, plugin-backed merchant payment, or uninstall.
+1. Classify the request as explain capabilities, install, setup wallet, back up wallet, restore wallet, fund wallet, set policy, send native asset, send ERC-20, approve allowance, broadcast raw tx, pay MPP API, plugin-backed merchant payment, or uninstall.
 2. If the user is only asking what this skill can do, answer from `What This Skill Covers` and stop there.
-3. For wallet or payment work, start with `agentpay config show --json` and `agentpay wallet --json`.
-4. If the wallet is unavailable and the task needs one, tell the user to run `agentpay admin setup` locally.
-5. If the wallet exists but the user needs to re-run setup without changing vaults, use `agentpay admin setup --reuse-existing-wallet`.
-6. If the user needs disaster recovery on a new machine and has an encrypted backup, use `agentpay admin setup --restore-wallet-from <PATH>`.
-7. For plugin-backed merchant payments, use the relevant current CLI plugin flow. If the user is specifically using Bitrefill, or the request is to pay a traditional merchant that only accepts cards and Bitrefill is the supported path, use Bitrefill.
-8. If the user did not specify network or asset for a payment, fill in `bsc` and `USD1` before asking follow-up questions.
-9. For policy configuration, default to `agentpay admin tui`.
-10. Before any outbound action, check funding.
-11. If funding is missing, stop and ask the user to top up the wallet.
-12. If a request is queued for manual approval, tell the user it is waiting for approval and use the local admin CLI approval commands.
-13. For `transfer --broadcast`, `transfer-native --broadcast`, `approve --broadcast`, and `bitrefill buy --broadcast`, tell the user to keep that original command running while they approve it.
-14. Only then run the exact current CLI command.
+3. For wallet or payment work, start with `agentpay config show --json`.
+4. Run `agentpay wallet --json` to check wallet status.
+5. If the wallet is unavailable and the task needs one, tell the user to run `agentpay admin setup` locally.
+6. If the wallet exists but the user needs to re-run setup without changing vaults, use `agentpay admin setup --reuse-existing-wallet`.
+7. If the user needs disaster recovery on a new machine and has an encrypted backup, use `agentpay admin setup --restore-wallet-from <PATH>`.
+8. For policy configuration, default to `agentpay admin tui`.
+9. If a request is queued for manual approval, tell the user it is waiting for approval and use the local admin CLI approval commands.
+10. For `transfer --broadcast`, `transfer-native --broadcast`, `approve --broadcast`, and `bitrefill buy --broadcast`, tell the user to keep that original command running while they approve it.
+11. For plugin-backed merchant payments, use the relevant current CLI plugin flow. If the user is specifically using Bitrefill, or the request is to pay a traditional merchant that only accepts cards and Bitrefill is the supported path, use Bitrefill.
+12. If the user did not specify network or asset for a payment, fill in `bsc` and `USD1` before asking follow-up questions.
+13. Before any outbound action, check funding.
+14. If funding is missing, stop and ask the user to top up the wallet.
+15. Only then run the exact current CLI command.
 
 ## Funding Rule
 
@@ -174,6 +186,16 @@ If the user asks what this skill can do, answer from this list first. Do not pro
   - amount
   - recipient
   - spender
+
+## MPP Services
+
+AgentPay can pay for any MPP-enabled API using `agentpay mpp`. No API keys or accounts are needed — payment happens inline via the HTTP 402 protocol. The CLI resolves the payment chain from the server challenge and supports any EVM-compatible network.
+
+- Discover current MPP LLM/search services from `https://mpp.dev/services/llms.txt`. Do not rely on a static in-repo service directory.
+- `--amount` is optional. When omitted, the CLI pays the server's challenge amount automatically. When provided, the CLI verifies the challenge amount matches before paying.
+- The wallet must hold the payment token on the chain specified by the service challenge.
+- `mpp` supports charge on any EVM-compatible chain.
+- Session mode (escrow channels) is Tempo-only.
 
 ## Extra References
 

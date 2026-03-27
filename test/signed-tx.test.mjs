@@ -56,6 +56,57 @@ test('assertSignedBroadcastTransactionMatchesRequest accepts matching signed tx 
   );
 });
 
+test('assertSignedBroadcastTransactionMatchesRequest treats missing parsed zero priority fee as zero', async () => {
+  const signedTx = await import(`${modulePath.href}?case=${Date.now()}-zero-priority-fee`);
+  const rawTxHex = await buildSignedTx({
+    value: 0n,
+    data: '0x',
+    maxPriorityFeePerGas: 0n,
+  });
+
+  await assert.doesNotReject(() =>
+    signedTx.assertSignedBroadcastTransactionMatchesRequest({
+      rawTxHex,
+      from: account.address,
+      to: '0x0000000000000000000000000000000000000001',
+      chainId: 1,
+      nonce: 7,
+      value: 0n,
+      data: '0x',
+      gasLimit: 21000n,
+      maxFeePerGas: 5n,
+      maxPriorityFeePerGas: 0n,
+      txType: '0x02',
+    }),
+  );
+});
+
+test('assertSignedBroadcastTransactionMatchesRequest still rejects non-zero expected priority fee', async () => {
+  const signedTx = await import(`${modulePath.href}?case=${Date.now()}-nonzero-priority-mismatch`);
+  const rawTxHex = await buildSignedTx({
+    value: 0n,
+    data: '0x',
+    maxPriorityFeePerGas: 0n,
+  });
+
+  await assert.rejects(
+    signedTx.assertSignedBroadcastTransactionMatchesRequest({
+      rawTxHex,
+      from: account.address,
+      to: '0x0000000000000000000000000000000000000001',
+      chainId: 1,
+      nonce: 7,
+      value: 0n,
+      data: '0x',
+      gasLimit: 21000n,
+      maxFeePerGas: 5n,
+      maxPriorityFeePerGas: 1n,
+      txType: '0x02',
+    }),
+    /maxPriorityFeePerGas mismatch: expected 1, received 0/u,
+  );
+});
+
 test('assertSignedBroadcastTransactionMatchesRequest rejects mismatched sender recovery', async () => {
   const signedTx = await import(`${modulePath.href}?case=${Date.now()}-from-mismatch`);
   const rawTxHex = await buildSignedTx();

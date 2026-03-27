@@ -1,18 +1,45 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import * as configPackage from '../packages/config/src/index.js';
-import * as rpcPackage from '../packages/rpc/src/index.js';
-import type { ChainProfile, TokenChainProfile, WlfiConfig } from '../packages/config/src/index.js';
+import { type ClientEvmSigner, ExactEvmScheme } from '@x402/evm';
+import { ExactEvmSchemeV1, NETWORKS as X402_EVM_V1_NETWORKS } from '@x402/evm/v1';
+import {
+  decodePaymentResponseHeader,
+  type PaymentRequirements,
+  wrapFetchWithPayment,
+  x402Client,
+} from '@x402/fetch';
 import { Command, Option } from 'commander';
-import { type Address, type Hex, isAddress, isHex } from 'viem';
+import {
+  type Address,
+  createPublicClient,
+  encodeAbiParameters,
+  encodeFunctionData,
+  type Hex,
+  hashTypedData,
+  http,
+  isAddress,
+  isHex,
+  keccak256,
+  parseSignature,
+  toHex,
+} from 'viem';
+import { prepareTransactionRequest } from 'viem/actions';
+import { tempo as tempoChain, tempoModerato } from 'viem/chains';
+import {
+  Abis as TempoAbis,
+  Actions as TempoActions,
+  Transaction as TempoTransaction,
+} from 'viem/tempo';
+import type { ChainProfile, TokenChainProfile, WlfiConfig } from '../packages/config/src/index.js';
+import * as configPackage from '../packages/config/src/index.js';
 import { assertSafeRpcUrl } from '../packages/config/src/index.js';
+import * as rpcPackage from '../packages/rpc/src/index.js';
+import { resolveValidatedAdminDaemonSocket } from './lib/admin-daemon-socket.js';
 import {
   blockedRawAdminPassthroughMessage,
   rewriteAdminHelpText,
 } from './lib/admin-passthrough.js';
-import { resolveCliVersion } from './lib/cli-version.js';
-import { resolveValidatedAdminDaemonSocket } from './lib/admin-daemon-socket.js';
 import { runAdminResetCli, runAdminUninstallCli } from './lib/admin-reset.js';
 import {
   resolveAdminSetupVaultPassword,
@@ -38,8 +65,8 @@ import {
   encodeErc20ApproveData,
   encodeErc20TransferData,
   formatBroadcastedAssetOutput,
-  resolveEstimatedPriorityFeePerGasWei,
   resolveAssetBroadcastPlan,
+  resolveEstimatedPriorityFeePerGasWei,
   waitForOnchainReceipt,
 } from './lib/asset-broadcast.js';
 import {
@@ -49,12 +76,15 @@ import {
   readBootstrapSetupSummaryFile,
   redactBootstrapAgentCredentialsFile,
 } from './lib/bootstrap-credentials.js';
+import { resolveCliVersion } from './lib/cli-version.js';
 import {
+  formatConfiguredAmount,
   normalizeAgentAmountOutput,
   normalizePositiveDecimalInput,
   parseConfiguredAmount,
   resolveConfiguredErc20Asset,
   resolveConfiguredNativeAsset,
+  resolveErc20AssetWithRpcFallback,
   rewriteAmountPolicyErrorMessage,
 } from './lib/config-amounts.js';
 import {
@@ -62,9 +92,7 @@ import {
   resolveConfigMutationCommandLabel,
   type WritableConfigKey,
 } from './lib/config-mutation.js';
-import {
-  assertTrustedDaemonSocketPath,
-} from './lib/fs-trust.js';
+import { assertTrustedDaemonSocketPath } from './lib/fs-trust.js';
 import {
   AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE,
   hasAgentAuthTokenInKeychain,
@@ -75,6 +103,16 @@ import {
   withDynamicLocalAdminMutationAccess,
   withLocalAdminMutationAccess,
 } from './lib/local-admin-access.js';
+import {
+  encodeMppAttributionMemo,
+  type MppReceipt,
+  parseMppChallengeFromHeaders,
+  parseMppReceiptFromHeaders,
+  isTempoChain,
+  resolveMppChainId,
+  resolveMppEscrowContract,
+  serializeMppCredentialHeader,
+} from './lib/mpp.js';
 import { resolveCliNetworkProfile, resolveCliRpcUrl } from './lib/network-selection.js';
 import { assertRpcChainIdMatches } from './lib/rpc-guard.js';
 import {
@@ -86,16 +124,17 @@ import {
 import { assertSignedBroadcastTransactionMatchesRequest } from './lib/signed-tx.js';
 import { registerRepairCommand, registerStatusCommand } from './lib/status-repair-cli.js';
 import {
+  closeGlobalFetchProxyDispatcherFromEnv,
+  installGlobalFetchProxyDispatcherFromEnv,
+} from './lib/http-proxy.js';
+import { resolveWalletBackupPassword, verifyWalletBackupFile } from './lib/wallet-backup.js';
+import { exportEncryptedWalletBackup } from './lib/wallet-backup-admin.js';
+import {
   formatWalletProfileText,
   resolveWalletAddress,
   resolveWalletProfileWithBalances,
   walletProfileFromBootstrapSummary,
 } from './lib/wallet-profile.js';
-import { exportEncryptedWalletBackup } from './lib/wallet-backup-admin.js';
-import {
-  resolveWalletBackupPassword,
-  verifyWalletBackupFile,
-} from './lib/wallet-backup.js';
 import { registerBuiltinCliPlugins } from './plugins/index.js';
 
 const configExports = (
@@ -123,9 +162,9 @@ const {
   writeConfig,
 } = configExports;
 
-const rpcExports = ('default' in rpcPackage ? rpcPackage.default : rpcPackage) as typeof import(
-  '../packages/rpc/src/index.ts'
-);
+const rpcExports = (
+  'default' in rpcPackage ? rpcPackage.default : rpcPackage
+) as typeof import('../packages/rpc/src/index.ts');
 const {
   broadcastRawTransaction,
   estimateFees,
@@ -137,6 +176,7 @@ const {
   getNativeBalance,
   getNonce,
   getTokenBalance,
+  getTokenMetadata,
   getTransactionByHash,
   getTransactionReceiptByHash,
 } = rpcExports;
@@ -265,7 +305,9 @@ function isRustManualApprovalBroadcastTx(value: unknown): value is RustManualApp
   );
 }
 
-function isRustManualApprovalRequestOutput(value: unknown): value is RustManualApprovalRequestOutput {
+function isRustManualApprovalRequestOutput(
+  value: unknown,
+): value is RustManualApprovalRequestOutput {
   if (!isPlainObject(value) || !isPlainObject(value.action)) {
     return false;
   }
@@ -328,9 +370,10 @@ function resolveManualApprovalRequestById(
   return request;
 }
 
-function resolveApprovedBroadcastManualApprovalRequest(
-  request: RustManualApprovalRequestOutput,
-): { request: RustManualApprovalRequestOutput; action: RustManualApprovalBroadcastAction } {
+function resolveApprovedBroadcastManualApprovalRequest(request: RustManualApprovalRequestOutput): {
+  request: RustManualApprovalRequestOutput;
+  action: RustManualApprovalBroadcastAction;
+} {
   if (request.status === 'pending') {
     throw new Error(
       `manual approval request '${request.id}' is still pending; approve it before resuming`,
@@ -344,7 +387,10 @@ function resolveApprovedBroadcastManualApprovalRequest(
       `manual approval request '${request.id}' is already completed; nothing needs to be resumed`,
     );
   }
-  if (request.action.kind !== 'BroadcastTx' || !isRustManualApprovalBroadcastTx(request.action.tx)) {
+  if (
+    request.action.kind !== 'BroadcastTx' ||
+    !isRustManualApprovalBroadcastTx(request.action.tx)
+  ) {
     throw new Error(
       `manual approval request '${request.id}' is not a resumable broadcast transaction`,
     );
@@ -407,10 +453,7 @@ function printManualApprovalRequired(
   console.log(rendered);
 }
 
-function printManualApprovalWaiting(
-  output: RustManualApprovalRequiredOutput,
-  asJson: boolean,
-) {
+function printManualApprovalWaiting(output: RustManualApprovalRequiredOutput, asJson: boolean) {
   if (asJson) {
     console.error(
       formatJson({
@@ -542,6 +585,12 @@ function formatJson(payload: unknown) {
   );
 }
 
+function formatJsonLine(payload: unknown) {
+  return JSON.stringify(payload, (_key, value) =>
+    typeof value === 'bigint' ? value.toString() : value,
+  );
+}
+
 function stringifyOptionalValue(value: { toString(): string } | null | undefined): string | null {
   return value === null || value === undefined ? null : value.toString();
 }
@@ -556,6 +605,1718 @@ function print(payload: unknown, asJson: boolean) {
     return;
   }
   console.log(formatJson(payload));
+}
+
+function headersToObject(headers: Headers): Record<string, string> {
+  const result: Record<string, string> = {};
+  headers.forEach((value, key) => {
+    result[key] = value;
+  });
+  return result;
+}
+
+function parseResponseBody(text: string, contentType: string | null): unknown {
+  if (!text) {
+    return null;
+  }
+  if (contentType?.toLowerCase().includes('json')) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+  return text;
+}
+
+async function printHttpCommandResponse(input: {
+  protocol: 'x402' | 'mpp';
+  response: Response;
+  asJson: boolean;
+  payment?: unknown;
+  summaryLines?: string[];
+}) {
+  const bodyText = await input.response.text();
+  if (input.asJson) {
+    print(
+      {
+        protocol: input.protocol,
+        url: input.response.url,
+        status: input.response.status,
+        ok: input.response.ok,
+        headers: headersToObject(input.response.headers),
+        body: parseResponseBody(bodyText, input.response.headers.get('content-type')),
+        payment: input.payment ?? null,
+      },
+      true,
+    );
+    return;
+  }
+  if (bodyText) {
+    process.stdout.write(bodyText.endsWith('\n') ? bodyText : `${bodyText}\n`);
+  }
+  for (const line of input.summaryLines ?? []) {
+    console.error(line);
+  }
+}
+
+function collectRepeatedOptionValue(value: string, previous: string[] = []): string[] {
+  return [...previous, value];
+}
+
+function parseHttpHeaderOption(value: string): [string, string] {
+  const separatorIndex = value.indexOf(':');
+  if (separatorIndex <= 0) {
+    throw new Error('--header must use the format "Name: value"');
+  }
+
+  const name = value.slice(0, separatorIndex).trim();
+  if (!name) {
+    throw new Error('--header must include a header name');
+  }
+
+  return [name, value.slice(separatorIndex + 1).trimStart()];
+}
+
+function hasHeaderName(headers: Headers, target: string): boolean {
+  for (const [name] of headers.entries()) {
+    if (name.toLowerCase() === target.toLowerCase()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalizeHttpMethod(value: string | undefined, hasBody: boolean): string {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return hasBody ? 'POST' : 'GET';
+  }
+
+  const method = normalized.toUpperCase();
+  if (!/^[!#$%&'*+.^_`|~0-9A-Z-]+$/u.test(method)) {
+    throw new Error('method must be a valid HTTP method token');
+  }
+  return method;
+}
+
+function buildHttpRequestInit(input: {
+  method?: string;
+  header?: string[];
+  data?: string;
+  jsonBody?: string;
+}): RequestInit {
+  if (input.data !== undefined && input.jsonBody !== undefined) {
+    throw new Error('Pass either --data or --json-body, not both');
+  }
+
+  let body: string | undefined;
+  if (input.jsonBody !== undefined) {
+    try {
+      JSON.parse(input.jsonBody);
+    } catch {
+      throw new Error('jsonBody must be valid JSON');
+    }
+    body = input.jsonBody;
+  } else if (input.data !== undefined) {
+    body = input.data;
+  }
+
+  const method = normalizeHttpMethod(input.method, body !== undefined);
+  if ((method === 'GET' || method === 'HEAD') && body !== undefined) {
+    throw new Error(`${method} requests cannot include a request body`);
+  }
+
+  const headers = new Headers();
+  for (const header of input.header ?? []) {
+    const [name, value] = parseHttpHeaderOption(header);
+    headers.append(name, value);
+  }
+  if (input.jsonBody !== undefined && !hasHeaderName(headers, 'content-type')) {
+    headers.set('content-type', 'application/json');
+  }
+  const hasHeaders = Array.from(headers.keys()).length > 0;
+
+  return {
+    method,
+    ...(hasHeaders ? { headers } : {}),
+    ...(body !== undefined ? { body } : {}),
+  };
+}
+
+function withAuthorizationHeader(
+  headers: RequestInit['headers'] | undefined,
+  authorization: string,
+): Headers {
+  const next = new Headers(headers);
+  next.set('Authorization', authorization);
+  return next;
+}
+
+function buildMppPaymentSummaryLines(payment: {
+  txHash?: string;
+  receipt?: MppReceipt | null;
+  channelId?: string;
+  closeReceipt?: MppReceipt | null;
+}): string[] {
+  const lines: string[] = [];
+  if (payment.txHash) {
+    lines.push(`MPP payment tx hash: ${payment.txHash}`);
+  }
+  if (payment.channelId) {
+    lines.push(`MPP channel id: ${payment.channelId}`);
+  }
+  if (payment.receipt) {
+    const label = payment.receipt.intent
+      ? `${payment.receipt.method}/${payment.receipt.intent}`
+      : payment.receipt.method;
+    const details = [`reference=${payment.receipt.reference}`];
+    if (typeof payment.receipt.txHash === 'string' && payment.receipt.txHash.trim()) {
+      details.push(`txHash=${payment.receipt.txHash}`);
+    }
+    lines.push(`MPP receipt (${label}): ${details.join(' ')}`);
+  }
+  if (payment.closeReceipt) {
+    const label = payment.closeReceipt.intent
+      ? `${payment.closeReceipt.method}/${payment.closeReceipt.intent}`
+      : payment.closeReceipt.method;
+    lines.push(`MPP close receipt (${label}): reference=${payment.closeReceipt.reference}`);
+  }
+  return lines;
+}
+
+function isLikelyInsufficientFundsError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  const message = error.message.toLowerCase();
+  return (
+    message.includes('insufficient funds') ||
+    message.includes('exceeds the balance of the account') ||
+    message.includes('sender account balance')
+  );
+}
+
+function formatMppSessionTokenAmount(
+  amountWei: bigint,
+  decimals: number,
+  tokenLabel: string,
+): string {
+  return `${formatConfiguredAmount(amountWei, decimals)} ${tokenLabel} (${amountWei.toString()} raw units)`;
+}
+
+async function rewriteMppSessionInsufficientFundsError(input: {
+  error: unknown;
+  stage: 'open' | 'topUp';
+  rpcUrl: string;
+  token: Address;
+  walletAddress: Address;
+  decimals: number;
+  requestAmountWei?: bigint;
+  depositWei?: bigint;
+  additionalDepositWei?: bigint;
+  targetDepositWei?: bigint;
+  requiredCumulativeAmountWei?: bigint;
+}): Promise<Error> {
+  if (!isLikelyInsufficientFundsError(input.error)) {
+    return input.error instanceof Error ? input.error : new Error(String(input.error));
+  }
+
+  let tokenLabel: string = input.token;
+  let balance: {
+    raw: bigint;
+    formatted: string;
+  } | null = null;
+
+  try {
+    const tokenBalance = await getTokenBalance(
+      input.rpcUrl,
+      input.token,
+      input.walletAddress,
+      input.decimals,
+    );
+    tokenLabel = tokenBalance.symbol?.trim() || tokenLabel;
+    balance = {
+      raw: tokenBalance.raw,
+      formatted: tokenBalance.formatted,
+    };
+  } catch {
+    // Best-effort enrichment only. Preserve the original balance error if RPC metadata reads fail.
+  }
+
+  const lines = [
+    `tempo/session ${input.stage} could not be prepared because the wallet balance is insufficient.`,
+  ];
+  if (input.requestAmountWei !== undefined) {
+    lines.push(
+      `required payment amount: ${formatMppSessionTokenAmount(
+        input.requestAmountWei,
+        input.decimals,
+        tokenLabel,
+      )}`,
+    );
+  }
+  if (input.depositWei !== undefined) {
+    lines.push(
+      `required session deposit: ${formatMppSessionTokenAmount(
+        input.depositWei,
+        input.decimals,
+        tokenLabel,
+      )}`,
+    );
+  }
+  if (input.additionalDepositWei !== undefined) {
+    lines.push(
+      `required additional session deposit: ${formatMppSessionTokenAmount(
+        input.additionalDepositWei,
+        input.decimals,
+        tokenLabel,
+      )}`,
+    );
+  }
+  if (input.targetDepositWei !== undefined) {
+    lines.push(
+      `target session deposit: ${formatMppSessionTokenAmount(
+        input.targetDepositWei,
+        input.decimals,
+        tokenLabel,
+      )}`,
+    );
+  }
+  if (input.requiredCumulativeAmountWei !== undefined) {
+    lines.push(
+      `required cumulative paid amount: ${formatMppSessionTokenAmount(
+        input.requiredCumulativeAmountWei,
+        input.decimals,
+        tokenLabel,
+      )}`,
+    );
+  }
+  if (balance) {
+    lines.push(
+      `wallet token balance: ${balance.formatted} ${tokenLabel} (${balance.raw.toString()} raw units)`,
+    );
+    const depositRequirement = input.additionalDepositWei ?? input.depositWei;
+    if (depositRequirement !== undefined && balance.raw < depositRequirement) {
+      lines.push(
+        `minimum deposit shortfall (fees excluded): ${formatMppSessionTokenAmount(
+          depositRequirement - balance.raw,
+          input.decimals,
+          tokenLabel,
+        )}`,
+      );
+    }
+  } else {
+    lines.push(`payment token: ${tokenLabel}`);
+  }
+  lines.push(
+    `underlying error: ${input.error instanceof Error ? input.error.message : String(input.error)}`,
+  );
+  return new Error(lines.join('\n'));
+}
+
+interface TempoSessionState {
+  version: 1;
+  kind: 'tempo_session';
+  chainId: number;
+  rpcUrl: string;
+  escrowContract: Address;
+  token: Address;
+  recipient: Address;
+  walletAddress: Address;
+  channelId: Hex;
+  depositWei: string;
+  cumulativeAmountWei: string;
+}
+
+const PRIVATE_FILE_MODE = 0o600;
+const MAX_SESSION_STATE_FILE_BYTES = 64 * 1024;
+
+function safeLstat(targetPath: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(targetPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function resolveOptionalSessionStatePath(value: string | undefined): string | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+  const resolvedPath = path.resolve(value.trim());
+  if (!path.basename(resolvedPath).trim()) {
+    throw new Error('sessionStateFile path is required');
+  }
+  return resolvedPath;
+}
+
+function parseTempoSessionState(value: unknown): TempoSessionState {
+  if (!isPlainObject(value)) {
+    throw new Error('tempo session state must be an object');
+  }
+  if (value.version !== 1 || value.kind !== 'tempo_session') {
+    throw new Error('tempo session state file has an unsupported format');
+  }
+
+  return {
+    version: 1,
+    kind: 'tempo_session',
+    chainId: parsePositiveIntegerString(String(value.chainId), 'tempo session state.chainId'),
+    rpcUrl: assertSafeRpcUrl(
+      requiredString(String(value.rpcUrl ?? ''), 'tempo session state.rpcUrl'),
+      'tempo session state.rpcUrl',
+    ),
+    escrowContract: assertAddress(
+      requiredString(String(value.escrowContract ?? ''), 'tempo session state.escrowContract'),
+      'tempo session state.escrowContract',
+    ),
+    token: assertAddress(
+      requiredString(String(value.token ?? ''), 'tempo session state.token'),
+      'tempo session state.token',
+    ),
+    recipient: assertAddress(
+      requiredString(String(value.recipient ?? ''), 'tempo session state.recipient'),
+      'tempo session state.recipient',
+    ),
+    walletAddress: assertAddress(
+      requiredString(String(value.walletAddress ?? ''), 'tempo session state.walletAddress'),
+      'tempo session state.walletAddress',
+    ),
+    channelId: assertHex(
+      requiredString(String(value.channelId ?? ''), 'tempo session state.channelId'),
+      'tempo session state.channelId',
+    ),
+    depositWei: normalizeUnsignedIntegerValue(value.depositWei, 'tempo session state.depositWei'),
+    cumulativeAmountWei: normalizeUnsignedIntegerValue(
+      value.cumulativeAmountWei,
+      'tempo session state.cumulativeAmountWei',
+      { allowZero: true },
+    ),
+  };
+}
+
+function readTempoSessionStateFile(sessionStatePath: string | undefined): TempoSessionState | null {
+  if (!sessionStatePath) {
+    return null;
+  }
+
+  const stats = safeLstat(sessionStatePath);
+  if (!stats) {
+    return null;
+  }
+  if (stats.isSymbolicLink()) {
+    throw new Error(`session state file '${sessionStatePath}' must not be a symlink`);
+  }
+  if (!stats.isFile()) {
+    throw new Error(`session state file '${sessionStatePath}' must be a regular file`);
+  }
+  if (stats.size > MAX_SESSION_STATE_FILE_BYTES) {
+    throw new Error(
+      `session state file '${sessionStatePath}' must not exceed ${MAX_SESSION_STATE_FILE_BYTES} bytes`,
+    );
+  }
+
+  const raw = fs.readFileSync(sessionStatePath, 'utf8');
+  return parseTempoSessionState(JSON.parse(raw));
+}
+
+function writeTempoSessionStateFile(
+  sessionStatePath: string | undefined,
+  state: TempoSessionState,
+): void {
+  if (!sessionStatePath) {
+    return;
+  }
+
+  const parent = path.dirname(sessionStatePath);
+  fs.mkdirSync(parent, { recursive: true });
+
+  const existing = safeLstat(sessionStatePath);
+  if (existing?.isSymbolicLink()) {
+    throw new Error(`session state file '${sessionStatePath}' must not be a symlink`);
+  }
+  if (existing && !existing.isFile()) {
+    throw new Error(`session state file '${sessionStatePath}' must be a regular file`);
+  }
+
+  const tempPath = path.join(
+    parent,
+    `.${path.basename(sessionStatePath)}.tmp-${process.pid}-${Date.now()}`,
+  );
+  try {
+    fs.writeFileSync(tempPath, `${JSON.stringify(state, null, 2)}\n`, {
+      encoding: 'utf8',
+      mode: PRIVATE_FILE_MODE,
+      flag: 'wx',
+    });
+    try {
+      fs.chmodSync(tempPath, PRIVATE_FILE_MODE);
+    } catch {}
+    fs.renameSync(tempPath, sessionStatePath);
+    try {
+      fs.chmodSync(sessionStatePath, PRIVATE_FILE_MODE);
+    } catch {}
+  } finally {
+    try {
+      if (fs.existsSync(tempPath)) {
+        fs.rmSync(tempPath, { force: true });
+      }
+    } catch {}
+  }
+}
+
+function deleteTempoSessionStateFile(sessionStatePath: string | undefined): void {
+  if (!sessionStatePath) {
+    return;
+  }
+  try {
+    fs.rmSync(sessionStatePath, { force: true });
+  } catch {}
+}
+
+function createTempoSessionState(input: {
+  chainId: number;
+  rpcUrl: string;
+  escrowContract: Address;
+  token: Address;
+  recipient: Address;
+  walletAddress: Address;
+  channelId: Hex;
+  depositWei: bigint;
+  cumulativeAmountWei: bigint;
+}): TempoSessionState {
+  return {
+    version: 1,
+    kind: 'tempo_session',
+    chainId: input.chainId,
+    rpcUrl: input.rpcUrl,
+    escrowContract: input.escrowContract,
+    token: input.token,
+    recipient: input.recipient,
+    walletAddress: input.walletAddress,
+    channelId: input.channelId,
+    depositWei: input.depositWei.toString(),
+    cumulativeAmountWei: input.cumulativeAmountWei.toString(),
+  };
+}
+
+function resolveTempoSessionCumulativeAmountWei(
+  receipt: MppReceipt | null | undefined,
+  fallback: bigint,
+): bigint {
+  if (typeof receipt?.acceptedCumulative === 'string' && receipt.acceptedCumulative.trim()) {
+    return parseBigIntString(receipt.acceptedCumulative, 'payment.receipt.acceptedCumulative');
+  }
+  if (typeof receipt?.spent === 'string' && receipt.spent.trim()) {
+    return parseBigIntString(receipt.spent, 'payment.receipt.spent');
+  }
+  return fallback;
+}
+
+interface TempoSessionNeedVoucherEvent {
+  channelId: Hex;
+  requiredCumulative: string;
+  acceptedCumulative: string;
+  deposit: string;
+}
+
+function parseTempoSessionSseEvent(
+  chunk: string,
+):
+  | { type: 'message'; data: string }
+  | { type: 'payment-need-voucher'; data: TempoSessionNeedVoucherEvent }
+  | { type: 'payment-receipt'; data: MppReceipt }
+  | null {
+  const lines = chunk
+    .split(/\r?\n/u)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.length > 0 && !line.startsWith(':'));
+  if (lines.length === 0) {
+    return null;
+  }
+
+  let eventType = 'message';
+  const dataLines: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith('event:')) {
+      eventType = line.slice(6).trim();
+      continue;
+    }
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+  const data = dataLines.join('\n');
+
+  if (eventType === 'message') {
+    return { type: 'message', data };
+  }
+  if (eventType === 'payment-need-voucher') {
+    const parsed = JSON.parse(data) as Record<string, unknown>;
+    return {
+      type: 'payment-need-voucher',
+      data: {
+        channelId: assertHex(
+          requiredString(String(parsed.channelId ?? ''), 'payment-need-voucher.channelId'),
+          'payment-need-voucher.channelId',
+        ),
+        requiredCumulative: requiredString(
+          String(parsed.requiredCumulative ?? ''),
+          'payment-need-voucher.requiredCumulative',
+        ),
+        acceptedCumulative: requiredString(
+          String(parsed.acceptedCumulative ?? ''),
+          'payment-need-voucher.acceptedCumulative',
+        ),
+        deposit: requiredString(String(parsed.deposit ?? ''), 'payment-need-voucher.deposit'),
+      },
+    };
+  }
+  if (eventType === 'payment-receipt') {
+    return {
+      type: 'payment-receipt',
+      data:
+        parseMppReceiptFromHeaders(
+          new Headers({
+            'Payment-Receipt': Buffer.from(data, 'utf8').toString('base64url'),
+          }),
+        ) ??
+        (() => {
+          throw new Error('invalid payment-receipt event');
+        })(),
+    };
+  }
+  return null;
+}
+
+const TEMPO_VOUCHER_DOMAIN_NAME = 'Tempo Stream Channel';
+const TEMPO_VOUCHER_DOMAIN_VERSION = '1';
+const tempoEscrowAbi = [
+  {
+    type: 'function',
+    name: 'open',
+    inputs: [
+      { name: 'payee', type: 'address' },
+      { name: 'token', type: 'address' },
+      { name: 'deposit', type: 'uint128' },
+      { name: 'salt', type: 'bytes32' },
+      { name: 'authorizedSigner', type: 'address' },
+    ],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+  {
+    type: 'function',
+    name: 'topUp',
+    inputs: [
+      { name: 'channelId', type: 'bytes32' },
+      { name: 'additionalDeposit', type: 'uint256' },
+    ],
+    outputs: [],
+    stateMutability: 'nonpayable',
+  },
+] as const;
+
+function resolveTempoChainDefinition(chainId: number) {
+  if (chainId === tempoChain.id) {
+    return tempoChain;
+  }
+  if (chainId === tempoModerato.id) {
+    return tempoModerato;
+  }
+  throw new Error(`agentpay mpp tempo support requires a known Tempo chain, received ${chainId}`);
+}
+
+function randomHex(size: number, label: string): Hex {
+  return assertHex(toHex(globalThis.crypto.getRandomValues(new Uint8Array(size))), label);
+}
+
+function computeTempoSessionChannelId(input: {
+  payer: Address;
+  recipient: Address;
+  token: Address;
+  salt: Hex;
+  authorizedSigner: Address;
+  escrowContract: Address;
+  chainId: number;
+}): Hex {
+  return assertHex(
+    keccak256(
+      encodeAbiParameters(
+        [
+          { name: 'payer', type: 'address' },
+          { name: 'payee', type: 'address' },
+          { name: 'token', type: 'address' },
+          { name: 'salt', type: 'bytes32' },
+          { name: 'authorizedSigner', type: 'address' },
+          { name: 'escrowContract', type: 'address' },
+          { name: 'chainId', type: 'uint256' },
+        ],
+        [
+          input.payer,
+          input.recipient,
+          input.token,
+          input.salt,
+          input.authorizedSigner,
+          input.escrowContract,
+          BigInt(input.chainId),
+        ],
+      ),
+    ),
+    'tempo session channelId',
+  );
+}
+
+function computeTempoSessionVoucherSigningHash(input: {
+  chainId: number;
+  escrowContract: Address;
+  channelId: Hex;
+  cumulativeAmountWei: bigint;
+}): Hex {
+  return assertHex(
+    hashTypedData({
+      domain: {
+        name: TEMPO_VOUCHER_DOMAIN_NAME,
+        version: TEMPO_VOUCHER_DOMAIN_VERSION,
+        chainId: input.chainId,
+        verifyingContract: input.escrowContract,
+      },
+      types: {
+        Voucher: [
+          { name: 'channelId', type: 'bytes32' },
+          { name: 'cumulativeAmount', type: 'uint128' },
+        ],
+      },
+      primaryType: 'Voucher',
+      message: {
+        channelId: input.channelId,
+        cumulativeAmount: input.cumulativeAmountWei,
+      },
+    }),
+    'tempo session voucher signing hash',
+  );
+}
+
+function normalizeUnsignedIntegerValue(
+  value: unknown,
+  label: string,
+  options: { allowZero?: boolean } = {},
+): string {
+  let normalized: string;
+  if (typeof value === 'bigint') {
+    normalized = value.toString();
+  } else if (typeof value === 'number') {
+    if (!Number.isFinite(value) || !Number.isSafeInteger(value)) {
+      throw new Error(`${label} must be a safe integer`);
+    }
+    normalized = String(value);
+  } else if (typeof value === 'string') {
+    normalized = value.trim();
+  } else {
+    throw new Error(`${label} must be an unsigned integer`);
+  }
+
+  const parsed = parseBigIntString(normalized, label);
+  if (!options.allowZero && parsed <= 0n) {
+    throw new Error(`${label} must be greater than zero`);
+  }
+  return parsed.toString();
+}
+
+function buildBroadcastCommandArgs(plan: {
+  chainId: number;
+  nonce: number;
+  to: Address;
+  valueWei: bigint;
+  dataHex: Hex;
+  gasLimit: bigint;
+  maxFeePerGasWei: bigint;
+  maxPriorityFeePerGasWei: bigint;
+  txType: string;
+}): string[] {
+  return [
+    'broadcast',
+    '--network',
+    String(plan.chainId),
+    '--nonce',
+    String(plan.nonce),
+    '--to',
+    plan.to,
+    '--value-wei',
+    plan.valueWei.toString(),
+    '--data-hex',
+    plan.dataHex,
+    '--gas-limit',
+    plan.gasLimit.toString(),
+    '--max-fee-per-gas-wei',
+    plan.maxFeePerGasWei.toString(),
+    '--max-priority-fee-per-gas-wei',
+    plan.maxPriorityFeePerGasWei.toString(),
+    '--tx-type',
+    plan.txType,
+  ];
+}
+
+function resolveRpcUrlForChainId(
+  config: WlfiConfig,
+  chainId: number,
+  explicitRpcUrl: string | undefined,
+  fallbackRpcUrl?: string | null,
+): string {
+  if (explicitRpcUrl?.trim()) {
+    return assertSafeRpcUrl(explicitRpcUrl, 'rpcUrl');
+  }
+
+  const chainProfile = resolveChainProfile(String(chainId), config);
+  const configuredRpcUrl = chainProfile?.rpcUrl?.trim();
+  if (configuredRpcUrl) {
+    return assertSafeRpcUrl(configuredRpcUrl, 'rpcUrl');
+  }
+
+  if (fallbackRpcUrl?.trim()) {
+    return assertSafeRpcUrl(fallbackRpcUrl, 'rpcUrl');
+  }
+
+  throw new Error(
+    `rpcUrl is required for chain ${chainId}; configure that chain or pass --rpc-url`,
+  );
+}
+
+function hexDataByteLength(value: Hex, label: string): number {
+  if ((value.length - 2) % 2 !== 0) {
+    throw new Error(`${label} must have an even number of hex digits`);
+  }
+  return (value.length - 2) / 2;
+}
+
+function normalizeRecoverableSignatureHex(
+  output: Pick<RustBroadcastOutput, 'signature_hex' | 'r_hex' | 's_hex' | 'v'>,
+  label: string,
+): Hex {
+  if (output.r_hex && output.s_hex && output.v !== undefined) {
+    const rHex = assertHex(output.r_hex, `${label}.r`);
+    const sHex = assertHex(output.s_hex, `${label}.s`);
+    if (hexDataByteLength(rHex, `${label}.r`) !== 32) {
+      throw new Error(`${label}.r must be 32 bytes`);
+    }
+    if (hexDataByteLength(sHex, `${label}.s`) !== 32) {
+      throw new Error(`${label}.s must be 32 bytes`);
+    }
+
+    const recoveryByte =
+      output.v === 0 || output.v === 1
+        ? output.v + 27
+        : output.v === 27 || output.v === 28
+          ? output.v
+          : (() => {
+              throw new Error(`${label}.v must be 0, 1, 27, or 28`);
+            })();
+
+    return assertHex(
+      `0x${rHex.slice(2)}${sHex.slice(2)}${recoveryByte.toString(16).padStart(2, '0')}`,
+      label,
+    );
+  }
+
+  return assertHex(output.signature_hex, label);
+}
+
+async function signAgentEip3009TransferWithAuthorization(input: {
+  auth: AgentCommandAuthOptions;
+  config: WlfiConfig;
+  chainId: number;
+  token: Address;
+  tokenName: string;
+  tokenVersion?: string;
+  from: Address;
+  to: Address;
+  amountWei: bigint;
+  validAfter: string;
+  validBefore: string;
+  nonceHex: Hex;
+}): Promise<Hex> {
+  const commandArgs = [
+    'eip3009-transfer-with-authorization',
+    '--network',
+    String(input.chainId),
+    '--token',
+    input.token,
+    '--token-name',
+    input.tokenName,
+    ...(input.tokenVersion ? ['--token-version', input.tokenVersion] : []),
+    '--from',
+    input.from,
+    '--to',
+    input.to,
+    '--amount-wei',
+    input.amountWei.toString(),
+    '--valid-after',
+    input.validAfter,
+    '--valid-before',
+    input.validBefore,
+    '--nonce-hex',
+    input.nonceHex,
+  ];
+
+  const result = await runAgentCommandJson<RustBroadcastOutput>({
+    commandArgs,
+    auth: input.auth,
+    config: input.config,
+    asJson: false,
+    waitForManualApproval: true,
+  });
+  if (!result) {
+    throw new Error('agentpay-agent did not return an EIP-3009 signature');
+  }
+  return normalizeRecoverableSignatureHex(result, 'signatureHex');
+}
+
+async function signAgentTempoSessionOpenTransaction(input: {
+  auth: AgentCommandAuthOptions;
+  config: WlfiConfig;
+  chainId: number;
+  token: Address;
+  recipient: Address;
+  depositWei: bigint;
+  initialAmountWei: bigint;
+  signingHashHex: Hex;
+}): Promise<Hex> {
+  const result = await runAgentCommandJson<RustBroadcastOutput>({
+    commandArgs: [
+      'tempo-session-open-transaction',
+      '--network',
+      String(input.chainId),
+      '--token',
+      input.token,
+      '--recipient',
+      input.recipient,
+      '--deposit-wei',
+      input.depositWei.toString(),
+      '--initial-amount-wei',
+      input.initialAmountWei.toString(),
+      '--signing-hash-hex',
+      input.signingHashHex,
+    ],
+    auth: input.auth,
+    config: input.config,
+    asJson: false,
+    waitForManualApproval: true,
+  });
+  if (!result) {
+    throw new Error('agentpay-agent did not return a Tempo session open transaction signature');
+  }
+  return normalizeRecoverableSignatureHex(result, 'signatureHex');
+}
+
+async function signAgentTempoSessionVoucher(input: {
+  auth: AgentCommandAuthOptions;
+  config: WlfiConfig;
+  chainId: number;
+  escrowContract: Address;
+  token: Address;
+  recipient: Address;
+  channelId: Hex;
+  amountWei: bigint;
+  cumulativeAmountWei: bigint;
+  signingHashHex: Hex;
+}): Promise<Hex> {
+  const result = await runAgentCommandJson<RustBroadcastOutput>({
+    commandArgs: [
+      'tempo-session-voucher',
+      '--network',
+      String(input.chainId),
+      '--escrow-contract',
+      input.escrowContract,
+      '--token',
+      input.token,
+      '--recipient',
+      input.recipient,
+      '--channel-id-hex',
+      input.channelId,
+      '--amount-wei',
+      input.amountWei.toString(),
+      '--cumulative-amount-wei',
+      input.cumulativeAmountWei.toString(),
+      '--signing-hash-hex',
+      input.signingHashHex,
+    ],
+    auth: input.auth,
+    config: input.config,
+    asJson: false,
+    waitForManualApproval: true,
+  });
+  if (!result) {
+    throw new Error('agentpay-agent did not return a Tempo session voucher signature');
+  }
+  return normalizeRecoverableSignatureHex(result, 'signatureHex');
+}
+
+async function signAgentTempoSessionTopUpTransaction(input: {
+  auth: AgentCommandAuthOptions;
+  config: WlfiConfig;
+  chainId: number;
+  token: Address;
+  recipient: Address;
+  channelId: Hex;
+  additionalDepositWei: bigint;
+  signingHashHex: Hex;
+}): Promise<Hex> {
+  const result = await runAgentCommandJson<RustBroadcastOutput>({
+    commandArgs: [
+      'tempo-session-top-up-transaction',
+      '--network',
+      String(input.chainId),
+      '--token',
+      input.token,
+      '--recipient',
+      input.recipient,
+      '--channel-id-hex',
+      input.channelId,
+      '--additional-deposit-wei',
+      input.additionalDepositWei.toString(),
+      '--signing-hash-hex',
+      input.signingHashHex,
+    ],
+    auth: input.auth,
+    config: input.config,
+    asJson: false,
+    waitForManualApproval: true,
+  });
+  if (!result) {
+    throw new Error('agentpay-agent did not return a Tempo session topUp transaction signature');
+  }
+  return normalizeRecoverableSignatureHex(result, 'signatureHex');
+}
+
+async function buildTempoSessionOpenPayload(input: {
+  auth: AgentCommandAuthOptions;
+  config: WlfiConfig;
+  rpcUrl: string;
+  chainId: number;
+  token: Address;
+  recipient: Address;
+  escrowContract: Address;
+  walletAddress: Address;
+  decimals: number;
+  amountWei: bigint;
+  depositWei: bigint;
+  feePayer: boolean;
+}): Promise<{
+  channelId: Hex;
+  payload: {
+    action: 'open';
+    type: 'transaction';
+    channelId: Hex;
+    transaction: Hex;
+    cumulativeAmount: string;
+    signature: Hex;
+    authorizedSigner: Address;
+  };
+}> {
+  const authorizedSigner = input.walletAddress;
+  const salt = randomHex(32, 'tempo session salt');
+  const channelId = computeTempoSessionChannelId({
+    payer: input.walletAddress,
+    recipient: input.recipient,
+    token: input.token,
+    salt,
+    authorizedSigner,
+    escrowContract: input.escrowContract,
+    chainId: input.chainId,
+  });
+
+  const client = createPublicClient({
+    chain: resolveTempoChainDefinition(input.chainId),
+    transport: http(input.rpcUrl),
+  });
+  const approveData = encodeFunctionData({
+    abi: TempoAbis.tip20,
+    functionName: 'approve',
+    args: [input.escrowContract, input.depositWei],
+  });
+  const openData = encodeFunctionData({
+    abi: tempoEscrowAbi,
+    functionName: 'open',
+    args: [input.recipient, input.token, input.depositWei, salt, authorizedSigner],
+  });
+  const prepared = await (async () => {
+    try {
+      return await prepareTransactionRequest(
+        client as never,
+        {
+          account: input.walletAddress,
+          calls: [
+            { to: input.token, data: approveData },
+            { to: input.escrowContract, data: openData },
+          ],
+          feeToken: input.token,
+          ...(input.feePayer ? { feePayer: true } : {}),
+        } as never,
+      );
+    } catch (error) {
+      throw await rewriteMppSessionInsufficientFundsError({
+        error,
+        stage: 'open',
+        rpcUrl: input.rpcUrl,
+        token: input.token,
+        walletAddress: input.walletAddress,
+        decimals: input.decimals,
+        requestAmountWei: input.amountWei,
+        depositWei: input.depositWei,
+      });
+    }
+  })();
+  const unsignedTransaction = {
+    ...prepared,
+    from: input.walletAddress,
+    type: 'tempo' as const,
+  };
+  const envelope = TempoTransaction.z_TxEnvelopeTempo.from(unsignedTransaction as never);
+  const signingHashHex = assertHex(
+    TempoTransaction.z_TxEnvelopeTempo.getSignPayload(envelope, {
+      from: input.walletAddress,
+    }) as Hex,
+    'tempo session open signing hash',
+  );
+  const transactionSignatureHex = await signAgentTempoSessionOpenTransaction({
+    auth: input.auth,
+    config: input.config,
+    chainId: input.chainId,
+    token: input.token,
+    recipient: input.recipient,
+    depositWei: input.depositWei,
+    initialAmountWei: input.amountWei,
+    signingHashHex,
+  });
+  const transaction = assertHex(
+    await TempoTransaction.serialize(
+      unsignedTransaction as never,
+      parseSignature(transactionSignatureHex) as never,
+    ),
+    'tempo session serialized transaction',
+  );
+  const voucherSigningHashHex = computeTempoSessionVoucherSigningHash({
+    chainId: input.chainId,
+    escrowContract: input.escrowContract,
+    channelId,
+    cumulativeAmountWei: input.amountWei,
+  });
+  const voucherSignatureHex = await signAgentTempoSessionVoucher({
+    auth: input.auth,
+    config: input.config,
+    chainId: input.chainId,
+    escrowContract: input.escrowContract,
+    token: input.token,
+    recipient: input.recipient,
+    channelId,
+    amountWei: input.amountWei,
+    cumulativeAmountWei: input.amountWei,
+    signingHashHex: voucherSigningHashHex,
+  });
+
+  return {
+    channelId,
+    payload: {
+      action: 'open',
+      type: 'transaction',
+      channelId,
+      transaction,
+      cumulativeAmount: input.amountWei.toString(),
+      signature: voucherSignatureHex,
+      authorizedSigner,
+    },
+  };
+}
+
+async function buildTempoSessionClosePayload(input: {
+  auth: AgentCommandAuthOptions;
+  config: WlfiConfig;
+  chainId: number;
+  escrowContract: Address;
+  token: Address;
+  recipient: Address;
+  channelId: Hex;
+  cumulativeAmountWei: bigint;
+}): Promise<{
+  action: 'voucher' | 'close';
+  channelId: Hex;
+  cumulativeAmount: string;
+  signature: Hex;
+}> {
+  return buildTempoSessionVoucherPayload({
+    ...input,
+    amountWei: input.cumulativeAmountWei,
+    action: 'close',
+  });
+}
+
+async function buildTempoSessionVoucherPayload(input: {
+  auth: AgentCommandAuthOptions;
+  config: WlfiConfig;
+  chainId: number;
+  escrowContract: Address;
+  token: Address;
+  recipient: Address;
+  channelId: Hex;
+  amountWei: bigint;
+  cumulativeAmountWei: bigint;
+  action: 'voucher' | 'close';
+}): Promise<{
+  action: 'voucher' | 'close';
+  channelId: Hex;
+  cumulativeAmount: string;
+  signature: Hex;
+}> {
+  const signingHashHex = computeTempoSessionVoucherSigningHash({
+    chainId: input.chainId,
+    escrowContract: input.escrowContract,
+    channelId: input.channelId,
+    cumulativeAmountWei: input.cumulativeAmountWei,
+  });
+  const signatureHex = await signAgentTempoSessionVoucher({
+    auth: input.auth,
+    config: input.config,
+    chainId: input.chainId,
+    escrowContract: input.escrowContract,
+    token: input.token,
+    recipient: input.recipient,
+    channelId: input.channelId,
+    amountWei: input.amountWei,
+    cumulativeAmountWei: input.cumulativeAmountWei,
+    signingHashHex,
+  });
+
+  return {
+    action: input.action,
+    channelId: input.channelId,
+    cumulativeAmount: input.cumulativeAmountWei.toString(),
+    signature: signatureHex,
+  };
+}
+
+async function buildTempoSessionTopUpPayload(input: {
+  auth: AgentCommandAuthOptions;
+  config: WlfiConfig;
+  rpcUrl: string;
+  chainId: number;
+  token: Address;
+  recipient: Address;
+  escrowContract: Address;
+  walletAddress: Address;
+  decimals: number;
+  channelId: Hex;
+  requestAmountWei?: bigint;
+  additionalDepositWei: bigint;
+  targetDepositWei?: bigint;
+  requiredCumulativeAmountWei?: bigint;
+  feePayer: boolean;
+}): Promise<{
+  payload: {
+    action: 'topUp';
+    type: 'transaction';
+    channelId: Hex;
+    transaction: Hex;
+    additionalDeposit: string;
+  };
+}> {
+  const client = createPublicClient({
+    chain: resolveTempoChainDefinition(input.chainId),
+    transport: http(input.rpcUrl),
+  });
+  const approveData = encodeFunctionData({
+    abi: TempoAbis.tip20,
+    functionName: 'approve',
+    args: [input.escrowContract, input.additionalDepositWei],
+  });
+  const topUpData = encodeFunctionData({
+    abi: tempoEscrowAbi,
+    functionName: 'topUp',
+    args: [input.channelId, input.additionalDepositWei],
+  });
+  const prepared = await (async () => {
+    try {
+      return await prepareTransactionRequest(
+        client as never,
+        {
+          account: input.walletAddress,
+          calls: [
+            { to: input.token, data: approveData },
+            { to: input.escrowContract, data: topUpData },
+          ],
+          feeToken: input.token,
+          ...(input.feePayer ? { feePayer: true } : {}),
+        } as never,
+      );
+    } catch (error) {
+      throw await rewriteMppSessionInsufficientFundsError({
+        error,
+        stage: 'topUp',
+        rpcUrl: input.rpcUrl,
+        token: input.token,
+        walletAddress: input.walletAddress,
+        decimals: input.decimals,
+        requestAmountWei: input.requestAmountWei,
+        additionalDepositWei: input.additionalDepositWei,
+        targetDepositWei: input.targetDepositWei,
+        requiredCumulativeAmountWei: input.requiredCumulativeAmountWei,
+      });
+    }
+  })();
+  const unsignedTransaction = {
+    ...prepared,
+    from: input.walletAddress,
+    type: 'tempo' as const,
+  };
+  const envelope = TempoTransaction.z_TxEnvelopeTempo.from(unsignedTransaction as never);
+  const signingHashHex = assertHex(
+    TempoTransaction.z_TxEnvelopeTempo.getSignPayload(envelope, {
+      from: input.walletAddress,
+    }) as Hex,
+    'tempo session topUp signing hash',
+  );
+  const transactionSignatureHex = await signAgentTempoSessionTopUpTransaction({
+    auth: input.auth,
+    config: input.config,
+    chainId: input.chainId,
+    token: input.token,
+    recipient: input.recipient,
+    channelId: input.channelId,
+    additionalDepositWei: input.additionalDepositWei,
+    signingHashHex,
+  });
+  const transaction = assertHex(
+    await TempoTransaction.serialize(
+      unsignedTransaction as never,
+      parseSignature(transactionSignatureHex) as never,
+    ),
+    'tempo session topUp serialized transaction',
+  );
+
+  return {
+    payload: {
+      action: 'topUp',
+      type: 'transaction',
+      channelId: input.channelId,
+      transaction,
+      additionalDeposit: input.additionalDepositWei.toString(),
+    },
+  };
+}
+
+async function handleTempoSessionStreamResponse(input: {
+  response: Response;
+  asJson: boolean;
+  challenge: ReturnType<typeof parseMppChallengeFromHeaders>;
+  auth: AgentCommandAuthOptions;
+  config: WlfiConfig;
+  targetUrl: string;
+  chainId: number;
+  rpcUrl: string;
+  token: Address;
+  recipient: Address;
+  escrowContract: Address;
+  walletAddress: Address;
+  decimals: number;
+  sessionStatePath?: string;
+  closeSession: boolean;
+  defaultDepositWei: bigint;
+  activeChannelId: Hex;
+  activeDepositWei: bigint;
+  activeCumulativeAmountWei: bigint;
+  source: string;
+}) {
+  if (!input.response.body) {
+    throw new Error('tempo/session event stream response has no body');
+  }
+
+  const reader = input.response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let latestReceipt: MppReceipt | null = parseMppReceiptFromHeaders(input.response.headers);
+  let activeChannelId = input.activeChannelId;
+  let activeDepositWei = input.activeDepositWei;
+  let activeCumulativeAmountWei = input.activeCumulativeAmountWei;
+  let spentWei = resolveTempoSessionCumulativeAmountWei(latestReceipt, activeCumulativeAmountWei);
+  const emitJsonEvent = (event: string, payload: Record<string, unknown> = {}) => {
+    if (!input.asJson) {
+      return;
+    }
+    process.stdout.write(
+      `${formatJsonLine({
+        event,
+        protocol: 'mpp',
+        ...payload,
+      })}\n`,
+    );
+  };
+
+  emitJsonEvent('mppStreamStart', {
+    url: input.response.url || input.targetUrl,
+    status: input.response.status,
+    ok: input.response.ok,
+    headers: headersToObject(input.response.headers),
+    payment: {
+      challengeId: input.challenge.id,
+      method: input.challenge.method,
+      intent: input.challenge.intent,
+      channelId: activeChannelId,
+      receipt: latestReceipt,
+    },
+  });
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      buffer = parts.pop() ?? '';
+
+      for (const part of parts) {
+        const event = parseTempoSessionSseEvent(part);
+        if (!event) {
+          continue;
+        }
+
+        if (event.type === 'message') {
+          if (input.asJson) {
+            emitJsonEvent('mppStreamMessage', { data: event.data });
+          } else if (event.data) {
+            process.stdout.write(event.data.endsWith('\n') ? event.data : `${event.data}\n`);
+          }
+          continue;
+        }
+
+        if (event.type === 'payment-receipt') {
+          latestReceipt = event.data;
+          emitJsonEvent('mppStreamReceipt', { receipt: event.data });
+          if (typeof event.data.channelId === 'string' && event.data.channelId.trim()) {
+            activeChannelId = assertHex(event.data.channelId, 'payment.receipt.channelId');
+          }
+          activeCumulativeAmountWei = resolveTempoSessionCumulativeAmountWei(
+            event.data,
+            activeCumulativeAmountWei,
+          );
+          spentWei =
+            typeof event.data.spent === 'string' && event.data.spent.trim()
+              ? parseBigIntString(event.data.spent, 'payment.receipt.spent')
+              : activeCumulativeAmountWei;
+          if (input.sessionStatePath && !input.closeSession) {
+            writeTempoSessionStateFile(
+              input.sessionStatePath,
+              createTempoSessionState({
+                chainId: input.chainId,
+                rpcUrl: input.rpcUrl,
+                escrowContract: input.escrowContract,
+                token: input.token,
+                recipient: input.recipient,
+                walletAddress: input.walletAddress,
+                channelId: activeChannelId,
+                depositWei: activeDepositWei,
+                cumulativeAmountWei: activeCumulativeAmountWei,
+              }),
+            );
+          }
+          continue;
+        }
+
+        const acceptedCumulativeWei = parseBigIntString(
+          event.data.acceptedCumulative,
+          'payment-need-voucher.acceptedCumulative',
+        );
+        if (acceptedCumulativeWei > activeCumulativeAmountWei) {
+          activeCumulativeAmountWei = acceptedCumulativeWei;
+        }
+        const requiredCumulativeWei = parseBigIntString(
+          event.data.requiredCumulative,
+          'payment-need-voucher.requiredCumulative',
+        );
+        emitJsonEvent('mppStreamNeedVoucher', {
+          needVoucher: event.data,
+        });
+        if (requiredCumulativeWei > activeDepositWei) {
+          const targetDepositWei =
+            input.defaultDepositWei > requiredCumulativeWei
+              ? input.defaultDepositWei
+              : requiredCumulativeWei;
+          const additionalDepositWei = targetDepositWei - activeDepositWei;
+          const topUp = await buildTempoSessionTopUpPayload({
+            auth: input.auth,
+            config: input.config,
+            rpcUrl: input.rpcUrl,
+            chainId: input.chainId,
+            token: input.token,
+            recipient: input.recipient,
+            escrowContract: input.escrowContract,
+            walletAddress: input.walletAddress,
+            decimals: input.decimals,
+            channelId: activeChannelId,
+            requestAmountWei:
+              requiredCumulativeWei > acceptedCumulativeWei
+                ? requiredCumulativeWei - acceptedCumulativeWei
+                : undefined,
+            additionalDepositWei,
+            targetDepositWei,
+            requiredCumulativeAmountWei: requiredCumulativeWei,
+            feePayer: input.challenge.request.methodDetails?.feePayer === true,
+          });
+          const topUpResponse = await globalThis.fetch(input.targetUrl, {
+            method: 'POST',
+            headers: withAuthorizationHeader(
+              undefined,
+              serializeMppCredentialHeader({
+                challenge: input.challenge,
+                payload: topUp.payload,
+                source: input.source,
+              }),
+            ),
+          });
+          if (!topUpResponse.ok) {
+            const topUpErrorBody = await topUpResponse.text();
+            throw new Error(
+              `tempo/session topUp failed with status ${topUpResponse.status}${topUpErrorBody ? `: ${topUpErrorBody}` : ''}`,
+            );
+          }
+          activeDepositWei = targetDepositWei;
+          emitJsonEvent('mppStreamTopUp', {
+            channelId: activeChannelId,
+            additionalDepositWei,
+            depositWei: activeDepositWei,
+          });
+        }
+
+        if (requiredCumulativeWei > activeCumulativeAmountWei) {
+          const voucherPayload = await buildTempoSessionVoucherPayload({
+            auth: input.auth,
+            config: input.config,
+            chainId: input.chainId,
+            escrowContract: input.escrowContract,
+            token: input.token,
+            recipient: input.recipient,
+            channelId: activeChannelId,
+            amountWei: requiredCumulativeWei - activeCumulativeAmountWei,
+            cumulativeAmountWei: requiredCumulativeWei,
+            action: 'voucher',
+          });
+          const voucherResponse = await globalThis.fetch(input.targetUrl, {
+            method: 'POST',
+            headers: withAuthorizationHeader(
+              undefined,
+              serializeMppCredentialHeader({
+                challenge: input.challenge,
+                payload: voucherPayload,
+                source: input.source,
+              }),
+            ),
+          });
+          if (!voucherResponse.ok) {
+            const voucherErrorBody = await voucherResponse.text();
+            throw new Error(
+              `tempo/session voucher failed with status ${voucherResponse.status}${voucherErrorBody ? `: ${voucherErrorBody}` : ''}`,
+            );
+          }
+          activeCumulativeAmountWei = requiredCumulativeWei;
+          emitJsonEvent('mppStreamVoucher', {
+            channelId: activeChannelId,
+            amountWei: requiredCumulativeWei - acceptedCumulativeWei,
+            cumulativeAmountWei: activeCumulativeAmountWei,
+          });
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  let closeReceipt: MppReceipt | null = null;
+  const shouldCloseSession = !input.sessionStatePath || input.closeSession;
+  if (shouldCloseSession) {
+    const closePayload = await buildTempoSessionClosePayload({
+      auth: input.auth,
+      config: input.config,
+      chainId: input.chainId,
+      escrowContract: input.escrowContract,
+      token: input.token,
+      recipient: input.recipient,
+      channelId: activeChannelId,
+      cumulativeAmountWei: spentWei > 0n ? spentWei : activeCumulativeAmountWei,
+    });
+    const closeResponse = await globalThis.fetch(input.targetUrl, {
+      method: 'POST',
+      headers: withAuthorizationHeader(
+        undefined,
+        serializeMppCredentialHeader({
+          challenge: input.challenge,
+          payload: closePayload,
+          source: input.source,
+        }),
+      ),
+    });
+    if (!closeResponse.ok) {
+      const closeErrorBody = await closeResponse.text();
+      throw new Error(
+        `tempo/session close failed with status ${closeResponse.status}${closeErrorBody ? `: ${closeErrorBody}` : ''}`,
+      );
+    }
+    closeReceipt = parseMppReceiptFromHeaders(closeResponse.headers);
+    deleteTempoSessionStateFile(input.sessionStatePath);
+  } else if (input.sessionStatePath) {
+    writeTempoSessionStateFile(
+      input.sessionStatePath,
+      createTempoSessionState({
+        chainId: input.chainId,
+        rpcUrl: input.rpcUrl,
+        escrowContract: input.escrowContract,
+        token: input.token,
+        recipient: input.recipient,
+        walletAddress: input.walletAddress,
+        channelId: activeChannelId,
+        depositWei: activeDepositWei,
+        cumulativeAmountWei: activeCumulativeAmountWei,
+      }),
+    );
+  }
+
+  const summaryLines = buildMppPaymentSummaryLines({
+    channelId: activeChannelId,
+    receipt: latestReceipt,
+    closeReceipt,
+  });
+  if (input.asJson) {
+    emitJsonEvent('mppStreamEnd', {
+      channelId: activeChannelId,
+      receipt: latestReceipt,
+      closeReceipt,
+    });
+  } else {
+    for (const line of summaryLines) {
+      console.error(line);
+    }
+  }
+}
+
+function createAgentPayX402Signer(input: {
+  auth: AgentCommandAuthOptions;
+  config: WlfiConfig;
+}): ClientEvmSigner {
+  const walletAddress = resolveWalletAddress(input.config);
+
+  return {
+    address: walletAddress,
+    async signTypedData(message) {
+      if (message.primaryType !== 'TransferWithAuthorization') {
+        throw new Error(`Unsupported x402 typed-data primary type: ${message.primaryType}`);
+      }
+      if (!isPlainObject(message.domain) || !isPlainObject(message.message)) {
+        throw new Error('x402 typed-data payload must include object domain and message fields');
+      }
+
+      const domainName = requiredString(
+        typeof message.domain.name === 'string' ? message.domain.name : undefined,
+        'x402 domain.name',
+      );
+      const domainVersion =
+        typeof message.domain.version === 'string' ? message.domain.version : undefined;
+      const chainId = parsePositiveIntegerString(
+        normalizeUnsignedIntegerValue(message.domain.chainId, 'x402 domain.chainId', {
+          allowZero: false,
+        }),
+        'x402 domain.chainId',
+      );
+      const token = assertAddress(
+        requiredString(
+          typeof message.domain.verifyingContract === 'string'
+            ? message.domain.verifyingContract
+            : undefined,
+          'x402 domain.verifyingContract',
+        ),
+        'x402 domain.verifyingContract',
+      );
+      const from = assertAddress(
+        requiredString(
+          typeof message.message.from === 'string' ? message.message.from : undefined,
+          'x402 message.from',
+        ),
+        'x402 message.from',
+      );
+      if (from.toLowerCase() !== walletAddress.toLowerCase()) {
+        throw new Error(
+          `x402 payment requires signature from configured wallet ${walletAddress}, received ${from}`,
+        );
+      }
+
+      const to = assertAddress(
+        requiredString(
+          typeof message.message.to === 'string' ? message.message.to : undefined,
+          'x402 message.to',
+        ),
+        'x402 message.to',
+      );
+      const amountWei = parseBigIntString(
+        normalizeUnsignedIntegerValue(message.message.value, 'x402 message.value', {
+          allowZero: false,
+        }),
+        'x402 message.value',
+      );
+      const validAfter = normalizeUnsignedIntegerValue(
+        message.message.validAfter,
+        'x402 message.validAfter',
+      );
+      const validBefore = normalizeUnsignedIntegerValue(
+        message.message.validBefore,
+        'x402 message.validBefore',
+        { allowZero: false },
+      );
+      const nonceHex = assertHex(
+        requiredString(
+          typeof message.message.nonce === 'string' ? message.message.nonce : undefined,
+          'x402 message.nonce',
+        ),
+        'x402 message.nonce',
+      );
+
+      return await signAgentEip3009TransferWithAuthorization({
+        auth: input.auth,
+        config: input.config,
+        chainId,
+        token,
+        tokenName: domainName,
+        tokenVersion: domainVersion,
+        from,
+        to,
+        amountWei,
+        validAfter,
+        validBefore,
+        nonceHex,
+      });
+    },
+  };
+}
+
+function selectPreferredX402Requirement(_x402Version: number, accepts: PaymentRequirements[]) {
+  const selected = accepts.find((candidate) => {
+    if (candidate.scheme !== 'exact') {
+      return false;
+    }
+    if (!isPlainObject(candidate.extra)) {
+      return true;
+    }
+    const assetTransferMethod = candidate.extra.assetTransferMethod;
+    return assetTransferMethod === undefined || assetTransferMethod === 'eip3009';
+  });
+
+  if (!selected) {
+    throw new Error('agentpay x402 currently supports only exact/eip3009 payment requirements');
+  }
+
+  return selected;
 }
 
 function formatWalletBackupExportOutput(input: {
@@ -598,15 +2359,14 @@ const ONCHAIN_RECEIPT_POLL_INTERVAL_MS = 2_000;
 const MANUAL_APPROVAL_POLL_INTERVAL_MS = 2_000;
 const BITREFILL_CHALLENGE_EXIT_CODE = 4;
 const BITREFILL_WAIT_TIMEOUT_EXIT_CODE = 5;
-const MANUAL_APPROVAL_WAIT_TIMEOUT_MS =
-  (() => {
-    const raw = process.env.AGENTPAY_TEST_MANUAL_APPROVAL_TIMEOUT_MS;
-    if (!raw) {
-      return 5 * 60_000;
-    }
-    const parsed = Number(raw);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : 5 * 60_000;
-  })();
+const MANUAL_APPROVAL_WAIT_TIMEOUT_MS = (() => {
+  const raw = process.env.AGENTPAY_TEST_MANUAL_APPROVAL_TIMEOUT_MS;
+  if (!raw) {
+    return 5 * 60_000;
+  }
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 5 * 60_000;
+})();
 
 async function reportOnchainReceiptStatus(input: {
   rpcUrl: string;
@@ -1427,10 +3187,7 @@ async function runAdminResumeManualApprovalCli(argv: string[]): Promise<void> {
       const valueWei = parseBigIntString(tx.value_wei, 'valueWei');
       const dataHex = assertHex(tx.data_hex, 'dataHex');
       const gasLimit = BigInt(tx.gas_limit);
-      const maxFeePerGasWei = parsePositiveBigIntString(
-        tx.max_fee_per_gas_wei,
-        'maxFeePerGasWei',
-      );
+      const maxFeePerGasWei = parsePositiveBigIntString(tx.max_fee_per_gas_wei, 'maxFeePerGasWei');
       const maxPriorityFeePerGasWei = parseBigIntString(
         tx.max_priority_fee_per_gas_wei,
         'maxPriorityFeePerGasWei',
@@ -1543,6 +3300,8 @@ async function runAdminResumeManualApprovalCli(argv: string[]): Promise<void> {
 }
 
 async function main() {
+  installGlobalFetchProxyDispatcherFromEnv();
+
   if (process.argv.length === 3 && (process.argv[2] === '--version' || process.argv[2] === '-V')) {
     console.log(CLI_VERSION);
     return;
@@ -1869,7 +3628,8 @@ async function main() {
     .description('Show the configured wallet public key and associated policy summary')
     .option('--json', 'Print JSON output', false)
     .action(async (options) => {
-      const profile = await resolveWalletProfileWithBalances(readConfig(), {
+      const config = readConfig();
+      const profile = await resolveWalletProfileWithBalances(config, {
         getNativeBalance,
         getTokenBalance,
       });
@@ -1962,9 +3722,7 @@ async function main() {
         throw new Error(blockedPassthroughMessage);
       }
       if (forwarded[0] === 'bootstrap') {
-        throw new Error(
-          '`agentpay admin bootstrap` has been removed; use `agentpay admin setup`',
-        );
+        throw new Error('`agentpay admin bootstrap` has been removed; use `agentpay admin setup`');
       }
       if (await runLocalAdminCommand(forwarded)) {
         return;
@@ -1975,9 +3733,7 @@ async function main() {
         forwarded[0] === 'help' ||
         forwarded.includes('--help') ||
         forwarded.includes('-h');
-      const normalizedForwarded = wantsHelp
-        ? forwarded
-        : normalizeAdminPassthroughArgs(forwarded);
+      const normalizedForwarded = wantsHelp ? forwarded : normalizeAdminPassthroughArgs(forwarded);
       if (wantsHelp) {
         const rendered = await runRustBinary(
           'agentpay-admin',
@@ -2041,7 +3797,10 @@ async function main() {
     const network = resolveCliNetworkProfile(options.network, config).chainId;
     const token = assertAddress(options.token, 'token');
     const recipient = assertAddress(options.to, 'to');
-    const asset = resolveConfiguredErc20Asset(config, network, token);
+    const rpcUrl = resolveCliRpcUrl(options.rpcUrl, options.network, config);
+    const asset = await resolveErc20AssetWithRpcFallback(
+      config, network, token, rpcUrl, getTokenMetadata,
+    );
     const amountWei = options.amount
       ? parseConfiguredAmount(options.amount, asset.decimals, 'amount')
       : parseBigIntString(options.amountWei, 'amountWei');
@@ -2049,7 +3808,7 @@ async function main() {
       if (options.broadcast) {
         const plan = await resolveAssetBroadcastPlan(
           {
-            rpcUrl: resolveCliRpcUrl(options.rpcUrl, options.network, config),
+            rpcUrl,
             chainId: network,
             from: options.from ? assertAddress(options.from, 'from') : resolveWalletAddress(config),
             to: token,
@@ -2333,7 +4092,10 @@ async function main() {
     const network = resolveCliNetworkProfile(options.network, config).chainId;
     const token = assertAddress(options.token, 'token');
     const spender = assertAddress(options.spender, 'spender');
-    const asset = resolveConfiguredErc20Asset(config, network, token);
+    const rpcUrl = resolveCliRpcUrl(options.rpcUrl, options.network, config);
+    const asset = await resolveErc20AssetWithRpcFallback(
+      config, network, token, rpcUrl, getTokenMetadata,
+    );
     const amountWei = options.amount
       ? parseConfiguredAmount(options.amount, asset.decimals, 'amount')
       : parseBigIntString(options.amountWei, 'amountWei');
@@ -2341,7 +4103,7 @@ async function main() {
       if (options.broadcast) {
         const plan = await resolveAssetBroadcastPlan(
           {
-            rpcUrl: resolveCliRpcUrl(options.rpcUrl, options.network, config),
+            rpcUrl,
             chainId: network,
             from: options.from ? assertAddress(options.from, 'from') : resolveWalletAddress(config),
             to: token,
@@ -2588,6 +4350,555 @@ async function main() {
       challengeRequired: BITREFILL_CHALLENGE_EXIT_CODE,
       waitTimeout: BITREFILL_WAIT_TIMEOUT_EXIT_CODE,
     },
+  });
+
+  addAgentCommandAuthOptions(
+    program
+      .command('x402')
+      .description('Fetch an x402-protected URL using EIP-3009 signing')
+      .argument('<url>', 'Absolute x402-protected URL')
+      .option('--method <method>', 'HTTP method to use for the unpaid request and paid retry')
+      .option(
+        '--header <header>',
+        'HTTP header to include with the request; repeat for multiple headers',
+        collectRepeatedOptionValue,
+        [],
+      )
+      .option('--data <text>', 'Raw HTTP request body to send')
+      .option('--json-body <json>', 'JSON HTTP request body to send'),
+  ).action(async (url, options) => {
+    const config = readConfig();
+    const requestInit = buildHttpRequestInit({
+      method: options.method,
+      header: options.header as string[] | undefined,
+      data: options.data,
+      jsonBody: options.jsonBody,
+    });
+    const signer = createAgentPayX402Signer({ auth: options, config });
+    const x402 = new x402Client(selectPreferredX402Requirement).register(
+      'eip155:*',
+      new ExactEvmScheme(signer),
+    );
+    for (const network of X402_EVM_V1_NETWORKS) {
+      x402.registerV1(network, new ExactEvmSchemeV1(signer));
+    }
+    const paidFetch = wrapFetchWithPayment(globalThis.fetch, x402);
+
+    const response = await paidFetch(requiredString(url, 'url'), requestInit);
+    const paymentResponseHeader =
+      response.headers.get('PAYMENT-RESPONSE') ?? response.headers.get('X-PAYMENT-RESPONSE');
+    let paymentResponse: unknown = null;
+    if (paymentResponseHeader) {
+      try {
+        paymentResponse = decodePaymentResponseHeader(paymentResponseHeader);
+      } catch {
+        paymentResponse = paymentResponseHeader;
+      }
+    }
+
+    await printHttpCommandResponse({
+      protocol: 'x402',
+      response,
+      asJson: options.json,
+      payment: paymentResponse,
+    });
+  });
+
+  addAgentCommandAuthOptions(
+    program
+      .command('mpp')
+      .description('Fetch an MPP-protected URL using Tempo charge/session payment flows')
+      .argument('<url>', 'Absolute MPP-protected URL')
+      .option('--amount <amount>', 'Expected payment amount in token units; omit to accept the server challenge amount')
+      .option(
+        '--deposit <amount>',
+        'Tempo session deposit amount in token units; defaults to the challenge amount',
+      )
+      .option(
+        '--session-state-file <path>',
+        'Persist and reuse a tempo/session channel in this private JSON file',
+      )
+      .option(
+        '--close-session',
+        'Close a persisted tempo/session channel after the paid response',
+        false,
+      )
+      .option('--method <method>', 'HTTP method to use for the unpaid request and paid retry')
+      .option(
+        '--header <header>',
+        'HTTP header to include with the request; repeat for multiple headers',
+        collectRepeatedOptionValue,
+        [],
+      )
+      .option('--data <text>', 'Raw HTTP request body to send')
+      .option('--json-body <json>', 'JSON HTTP request body to send')
+      .option('--rpc-url <url>', 'RPC URL override used only for payment broadcast'),
+  ).action(async (url, options) => {
+    const config = readConfig();
+    const targetUrl = requiredString(url, 'url');
+    const sessionStatePath = resolveOptionalSessionStatePath(options.sessionStateFile);
+    const requestInit = buildHttpRequestInit({
+      method: options.method,
+      header: options.header as string[] | undefined,
+      data: options.data,
+      jsonBody: options.jsonBody,
+    });
+    const initialResponse = await globalThis.fetch(targetUrl, requestInit);
+    if (initialResponse.status !== 402) {
+      const initialReceipt = parseMppReceiptFromHeaders(initialResponse.headers);
+      await printHttpCommandResponse({
+        protocol: 'mpp',
+        response: initialResponse,
+        asJson: options.json,
+        payment: initialReceipt ? { receipt: initialReceipt } : undefined,
+        summaryLines: buildMppPaymentSummaryLines({ receipt: initialReceipt }),
+      });
+      return;
+    }
+
+    const challenge = parseMppChallengeFromHeaders(initialResponse.headers);
+    if (challenge.intent !== 'charge' && challenge.intent !== 'session') {
+      throw new Error(
+        `agentpay mpp supports charge and session intents (received ${challenge.method}/${challenge.intent})`,
+      );
+    }
+    if (challenge.intent === 'session' && challenge.method !== 'tempo') {
+      throw new Error(
+        `agentpay mpp session requires the tempo method (received ${challenge.method}/session)`,
+      );
+    }
+
+    const chainId = resolveMppChainId(challenge);
+    const decimals =
+      challenge.request.decimals !== undefined && Number.isSafeInteger(challenge.request.decimals)
+        ? challenge.request.decimals
+        : 6;
+    const challengeAmountWei = parseBigIntString(challenge.request.amount, 'challenge.amount');
+    if (options.amount) {
+      const expectedAmountWei = parseConfiguredAmount(options.amount, decimals, 'amount');
+      if (expectedAmountWei !== challengeAmountWei) {
+        throw new Error(
+          `challenge amount ${challenge.request.amount} does not match requested amount ${expectedAmountWei.toString()}`,
+        );
+      }
+    }
+
+    const walletAddress = resolveWalletAddress(config);
+    const token = assertAddress(challenge.request.currency, 'challenge.currency');
+    const recipient = assertAddress(challenge.request.recipient, 'challenge.recipient');
+    const rpcUrl = resolveRpcUrlForChainId(config, chainId, options.rpcUrl);
+
+    if (challenge.intent === 'session') {
+      const escrowContract = assertAddress(
+        requiredString(
+          resolveMppEscrowContract(challenge) ?? undefined,
+          'challenge.methodDetails.escrowContract',
+        ),
+        'challenge.methodDetails.escrowContract',
+      );
+      const suggestedDepositWei =
+        typeof challenge.request.suggestedDeposit === 'string' && challenge.request.suggestedDeposit
+          ? parseBigIntString(challenge.request.suggestedDeposit, 'challenge.suggestedDeposit')
+          : undefined;
+      const depositWei = options.deposit
+        ? parseConfiguredAmount(options.deposit, decimals, 'deposit')
+        : (suggestedDepositWei ?? challengeAmountWei);
+      if (depositWei < challengeAmountWei) {
+        throw new Error(
+          `session deposit ${depositWei.toString()} must cover the requested amount ${challengeAmountWei.toString()}`,
+        );
+      }
+
+      const source = `did:pkh:eip155:${chainId}:${walletAddress}`;
+      const persistedSession = readTempoSessionStateFile(sessionStatePath);
+      let activeChannelId: Hex;
+      let activeDepositWei: bigint;
+      let activeCumulativeAmountWei: bigint;
+      let paidResponse: Response;
+
+      if (persistedSession) {
+        if (persistedSession.kind !== 'tempo_session' || persistedSession.version !== 1) {
+          throw new Error('tempo session state file has an unsupported format');
+        }
+        if (persistedSession.chainId !== chainId) {
+          throw new Error(
+            `tempo session state chain ${persistedSession.chainId} does not match challenge chain ${chainId}`,
+          );
+        }
+        if (persistedSession.walletAddress.toLowerCase() !== walletAddress.toLowerCase()) {
+          throw new Error(
+            `tempo session state wallet ${persistedSession.walletAddress} does not match configured wallet ${walletAddress}`,
+          );
+        }
+        if (persistedSession.token.toLowerCase() !== token.toLowerCase()) {
+          throw new Error(
+            `tempo session state token ${persistedSession.token} does not match challenge currency ${token}`,
+          );
+        }
+        if (persistedSession.recipient.toLowerCase() !== recipient.toLowerCase()) {
+          throw new Error(
+            `tempo session state recipient ${persistedSession.recipient} does not match challenge recipient ${recipient}`,
+          );
+        }
+        if (persistedSession.escrowContract.toLowerCase() !== escrowContract.toLowerCase()) {
+          throw new Error(
+            `tempo session state escrow ${persistedSession.escrowContract} does not match challenge escrow ${escrowContract}`,
+          );
+        }
+        if (
+          typeof challenge.request.methodDetails?.channelId === 'string' &&
+          challenge.request.methodDetails.channelId.trim() &&
+          assertHex(
+            challenge.request.methodDetails.channelId,
+            'challenge.methodDetails.channelId',
+          ).toLowerCase() !== persistedSession.channelId.toLowerCase()
+        ) {
+          throw new Error(
+            `tempo session state channel ${persistedSession.channelId} does not match challenge channel ${challenge.request.methodDetails.channelId}`,
+          );
+        }
+
+        activeChannelId = persistedSession.channelId;
+        activeDepositWei = parseBigIntString(
+          persistedSession.depositWei,
+          'tempo session state.depositWei',
+        );
+        const persistedCumulativeAmountWei = parseBigIntString(
+          persistedSession.cumulativeAmountWei,
+          'tempo session state.cumulativeAmountWei',
+        );
+        let nextCumulativeAmountWei = persistedCumulativeAmountWei + challengeAmountWei;
+        if (nextCumulativeAmountWei > activeDepositWei) {
+          const targetDepositWei =
+            depositWei > nextCumulativeAmountWei ? depositWei : nextCumulativeAmountWei;
+          const additionalDepositWei = targetDepositWei - activeDepositWei;
+          const topUp = await buildTempoSessionTopUpPayload({
+            auth: options,
+            config,
+            rpcUrl,
+            chainId,
+            token,
+            recipient,
+            escrowContract,
+            walletAddress,
+            decimals,
+            channelId: activeChannelId,
+            requestAmountWei: challengeAmountWei,
+            additionalDepositWei,
+            targetDepositWei,
+            requiredCumulativeAmountWei: nextCumulativeAmountWei,
+            feePayer: challenge.request.methodDetails?.feePayer === true,
+          });
+          const topUpResponse = await globalThis.fetch(targetUrl, {
+            method: 'POST',
+            headers: withAuthorizationHeader(
+              undefined,
+              serializeMppCredentialHeader({
+                challenge,
+                payload: topUp.payload,
+                source,
+              }),
+            ),
+          });
+          if (!topUpResponse.ok) {
+            const topUpErrorBody = await topUpResponse.text();
+            throw new Error(
+              `tempo/session topUp failed with status ${topUpResponse.status}${topUpErrorBody ? `: ${topUpErrorBody}` : ''}`,
+            );
+          }
+          activeDepositWei = targetDepositWei;
+          if (sessionStatePath) {
+            writeTempoSessionStateFile(
+              sessionStatePath,
+              createTempoSessionState({
+                chainId,
+                rpcUrl,
+                escrowContract,
+                token,
+                recipient,
+                walletAddress,
+                channelId: activeChannelId,
+                depositWei: activeDepositWei,
+                cumulativeAmountWei: persistedCumulativeAmountWei,
+              }),
+            );
+          }
+          nextCumulativeAmountWei = persistedCumulativeAmountWei + challengeAmountWei;
+        }
+
+        const voucherPayload = await buildTempoSessionVoucherPayload({
+          auth: options,
+          config,
+          chainId,
+          escrowContract,
+          token,
+          recipient,
+          channelId: activeChannelId,
+          amountWei: challengeAmountWei,
+          cumulativeAmountWei: nextCumulativeAmountWei,
+          action: 'voucher',
+        });
+        paidResponse = await globalThis.fetch(targetUrl, {
+          ...requestInit,
+          headers: withAuthorizationHeader(
+            requestInit.headers,
+            serializeMppCredentialHeader({
+              challenge,
+              payload: voucherPayload,
+              source,
+            }),
+          ),
+        });
+        activeCumulativeAmountWei = nextCumulativeAmountWei;
+      } else {
+        const open = await buildTempoSessionOpenPayload({
+          auth: options,
+          config,
+          rpcUrl,
+          chainId,
+          token,
+          recipient,
+          escrowContract,
+          walletAddress,
+          decimals,
+          amountWei: challengeAmountWei,
+          depositWei,
+          feePayer: challenge.request.methodDetails?.feePayer === true,
+        });
+        activeChannelId = open.channelId;
+        activeDepositWei = depositWei;
+        activeCumulativeAmountWei = challengeAmountWei;
+        paidResponse = await globalThis.fetch(targetUrl, {
+          ...requestInit,
+          headers: withAuthorizationHeader(
+            requestInit.headers,
+            serializeMppCredentialHeader({
+              challenge,
+              payload: open.payload,
+              source,
+            }),
+          ),
+        });
+      }
+
+      const paymentReceipt = parseMppReceiptFromHeaders(paidResponse.headers);
+      if (!paidResponse.ok && !paymentReceipt) {
+        const paidErrorBody = await paidResponse.text();
+        throw new Error(
+          `tempo/session request failed with status ${paidResponse.status}${paidErrorBody ? `: ${paidErrorBody}` : ''}`,
+        );
+      }
+      const isEventStream = paidResponse.headers
+        .get('content-type')
+        ?.toLowerCase()
+        .includes('text/event-stream');
+      if (paymentReceipt?.channelId) {
+        activeChannelId = assertHex(paymentReceipt.channelId, 'payment.receipt.channelId');
+      }
+      activeCumulativeAmountWei = resolveTempoSessionCumulativeAmountWei(
+        paymentReceipt,
+        activeCumulativeAmountWei,
+      );
+
+      if (isEventStream) {
+        await handleTempoSessionStreamResponse({
+          response: paidResponse,
+          asJson: options.json,
+          challenge,
+          auth: options,
+          config,
+          targetUrl,
+          chainId,
+          rpcUrl,
+          token,
+          recipient,
+          escrowContract,
+          walletAddress,
+          decimals,
+          sessionStatePath,
+          closeSession: Boolean(options.closeSession),
+          defaultDepositWei: depositWei,
+          activeChannelId,
+          activeDepositWei,
+          activeCumulativeAmountWei,
+          source,
+        });
+        return;
+      }
+
+      let closeReceipt: MppReceipt | null = null;
+      const shouldCloseSession = !sessionStatePath || Boolean(options.closeSession);
+      if (shouldCloseSession) {
+        const closePayload = await buildTempoSessionClosePayload({
+          auth: options,
+          config,
+          chainId,
+          escrowContract,
+          token,
+          recipient,
+          channelId: activeChannelId,
+          cumulativeAmountWei: activeCumulativeAmountWei,
+        });
+        const closeResponse = await globalThis.fetch(targetUrl, {
+          method: 'POST',
+          headers: withAuthorizationHeader(
+            undefined,
+            serializeMppCredentialHeader({
+              challenge,
+              payload: closePayload,
+              source,
+            }),
+          ),
+        });
+        let closeErrorBody = '';
+        if (!closeResponse.ok) {
+          closeErrorBody = await closeResponse.text();
+          throw new Error(
+            `tempo/session close failed with status ${closeResponse.status}${closeErrorBody ? `: ${closeErrorBody}` : ''}`,
+          );
+        }
+        closeReceipt = parseMppReceiptFromHeaders(closeResponse.headers);
+        deleteTempoSessionStateFile(sessionStatePath);
+      } else {
+        writeTempoSessionStateFile(
+          sessionStatePath,
+          createTempoSessionState({
+            chainId,
+            rpcUrl,
+            escrowContract,
+            token,
+            recipient,
+            walletAddress,
+            channelId: activeChannelId,
+            depositWei: activeDepositWei,
+            cumulativeAmountWei: activeCumulativeAmountWei,
+          }),
+        );
+      }
+
+      await printHttpCommandResponse({
+        protocol: 'mpp',
+        response: paidResponse,
+        asJson: options.json,
+        payment: {
+          challengeId: challenge.id,
+          method: challenge.method,
+          intent: challenge.intent,
+          channelId: activeChannelId,
+          depositWei: activeDepositWei.toString(),
+          receipt: paymentReceipt,
+          closeReceipt,
+        },
+        summaryLines: buildMppPaymentSummaryLines({
+          channelId: activeChannelId,
+          receipt: paymentReceipt,
+          closeReceipt,
+        }),
+      });
+      return;
+    }
+
+    let chargeTo: Address;
+    let chargeData: Hex;
+    if (isTempoChain(chainId)) {
+      const memo = challenge.request.methodDetails?.memo
+        ? assertHex(challenge.request.methodDetails.memo, 'challenge.methodDetails.memo')
+        : encodeMppAttributionMemo({ serverId: challenge.realm });
+      const call = TempoActions.token.transfer.call({
+        token,
+        to: recipient,
+        amount: challengeAmountWei,
+        ...(memo ? { memo } : {}),
+      });
+      chargeTo = assertAddress(call.to, 'mpp transfer target');
+      chargeData = assertHex(call.data, 'mpp transfer calldata');
+    } else {
+      chargeTo = token;
+      chargeData = encodeErc20TransferData(recipient, challengeAmountWei);
+    }
+
+    const plan = await resolveAssetBroadcastPlan(
+      {
+        rpcUrl,
+        chainId,
+        from: walletAddress,
+        to: chargeTo,
+        valueWei: 0n,
+        dataHex: chargeData,
+        txType: '0x02',
+      },
+      {
+        getChainInfo,
+        assertRpcChainIdMatches,
+        getNonce,
+        estimateGas,
+        estimateFees,
+      },
+    );
+    const signed = await runAgentCommandJson<RustBroadcastOutput>({
+      commandArgs: buildBroadcastCommandArgs(plan),
+      auth: options,
+      config,
+      asJson: options.json,
+      waitForManualApproval: true,
+    });
+    if (!signed) {
+      return;
+    }
+
+    const completed = await completeAssetBroadcast(plan, signed, {
+      assertSignedBroadcastTransactionMatchesRequest,
+      broadcastRawTransaction,
+    });
+    const networkTxHash = completed.networkTxHash;
+
+    const receiptResult = await waitForOnchainReceipt(
+      {
+        rpcUrl,
+        txHash: networkTxHash,
+        timeoutMs: ONCHAIN_RECEIPT_TIMEOUT_MS,
+        intervalMs: ONCHAIN_RECEIPT_POLL_INTERVAL_MS,
+      },
+      {
+        getTransactionReceiptByHash,
+      },
+    );
+    if (!receiptResult.receipt) {
+      throw new Error(
+        `Timed out after ${ONCHAIN_RECEIPT_TIMEOUT_MS / 1000}s waiting for Tempo payment receipt ${networkTxHash}`,
+      );
+    }
+
+    const authorization = serializeMppCredentialHeader({
+      challenge,
+      payload: {
+        type: 'hash',
+        hash: networkTxHash,
+      },
+      source: `did:pkh:eip155:${chainId}:${walletAddress}`,
+    });
+    const paidResponse = await globalThis.fetch(targetUrl, {
+      ...requestInit,
+      headers: withAuthorizationHeader(requestInit.headers, authorization),
+    });
+    const paymentReceipt = parseMppReceiptFromHeaders(paidResponse.headers);
+
+    await printHttpCommandResponse({
+      protocol: 'mpp',
+      response: paidResponse,
+      asJson: options.json,
+      payment: {
+        challengeId: challenge.id,
+        method: challenge.method,
+        intent: challenge.intent,
+        txHash: networkTxHash,
+        receipt: paymentReceipt,
+      },
+      summaryLines: buildMppPaymentSummaryLines({
+        txHash: networkTxHash,
+        receipt: paymentReceipt,
+      }),
+    });
   });
 
   const rpc = program.command('rpc').description('RPC methods implemented in TypeScript');
@@ -2940,7 +5251,11 @@ async function main() {
   await program.parseAsync(process.argv);
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+void main()
+  .catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await closeGlobalFetchProxyDispatcherFromEnv();
+  });

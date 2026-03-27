@@ -4,17 +4,10 @@
     "baseUrl": ".",
     "outDir": "dist",
     "paths": {
-      "@/*": [
-        "./src/*"
-      ]
+      "@/*": ["./src/*"]
     },
     "rootDir": "src",
-    "types": [
-      "node",
-      "vitest/globals"
-    ]
+    "types": ["node"]
   },
-  "include": [
-    "src/**/*.ts"
-  ]
+  "include": ["src/**/*.ts"]
 }

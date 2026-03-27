@@ -388,7 +388,91 @@ agentpay approve \
   --json
 ```
 
+x402 exact/EIP-3009 request:
+
+```bash
+agentpay x402 https://api.example.com/paid --json
+```
+
+MPP one-shot payment (auto-accept server amount):
+
+```bash
+agentpay mpp \
+  https://parallelmpp.dev/api/search \
+  --method POST \
+  --header 'Content-Type: application/json' \
+  --json-body '{"query":"latest AI news","numResults":5}' \
+  --json
+```
+
+MPP with explicit amount verification:
+
+```bash
+agentpay mpp \
+  https://parallelmpp.dev/api/search \
+  --amount 0.005 \
+  --method POST \
+  --header 'Content-Type: application/json' \
+  --json-body '{"query":"latest AI news","numResults":5}' \
+  --json
+```
+
+MPP one-shot session request (Tempo only):
+
+```bash
+# Replace with a current session-capable endpoint discovered from
+# https://mpp.dev/services/llms.txt
+agentpay mpp \
+  https://api.example.com/mpp-session \
+  --method POST \
+  --header 'Content-Type: application/json' \
+  --json-body '{"prompt":"hello"}' \
+  --json
+```
+
+Persist and reuse the session across commands:
+
+```bash
+agentpay mpp \
+  https://api.example.com/mpp-session \
+  --session-state-file ~/.agentpay/tempo-session.json \
+  --method POST \
+  --header 'Content-Type: application/json' \
+  --json-body '{"prompt":"hello"}' \
+  --json
+```
+
+Reuse the saved session and close it after this request:
+
+```bash
+agentpay mpp \
+  https://api.example.com/mpp-session \
+  --session-state-file ~/.agentpay/tempo-session.json \
+  --close-session \
+  --method POST \
+  --header 'Content-Type: application/json' \
+  --json-body '{"prompt":"follow up"}' \
+  --json
+```
+
+Optionally override the initial session deposit:
+
+```bash
+agentpay mpp \
+  https://api.example.com/mpp-session \
+  --deposit 2 \
+  --session-state-file ~/.agentpay/tempo-session.json \
+  --method POST \
+  --header 'Content-Type: application/json' \
+  --json-body '{"prompt":"hello"}' \
+  --json
+```
+
 If the user wants the signed transaction actually sent to the network in the same step, add `--broadcast` for `transfer`, `transfer-native`, `approve`, or `bitrefill buy`, or use `agentpay tx broadcast`.
+
+For `mpp`, `--amount` is optional. When omitted, the CLI pays the server's challenge amount automatically. When provided, the CLI verifies the challenge amount matches before paying. The charge flow determines the payment chain from the server challenge and supports any EVM-compatible network; on Tempo chains it uses TIP-20 transfers with attribution memo, on other chains it uses standard ERC-20 transfers. Session mode (`--deposit`, `--session-state-file`, `--close-session`) is Tempo-only and uses on-chain escrow channels. Use `--session-state-file` to persist and reuse a session channel across multiple CLI invocations, and add `--close-session` when you want the paid request to close and delete that saved session afterward. Without a session state file, the CLI keeps session in one-shot open/request/close mode. In text mode, session event streams handle `payment-need-voucher` automatically, including top-up plus voucher replenishment when the stream requests more cumulative spend. The command also supports `--method`, repeatable `--header`, `--data`, and `--json-body`, and `--json` output includes a decoded `Payment-Receipt` under `payment.receipt` when present plus `payment.closeReceipt` for session closes. `--json` is still intended for non-streaming responses. For `x402`, the amount comes from the server challenge and the CLI supports exact/EIP-3009 requirements.
+
+For live MPP service discovery, use `https://mpp.dev/services/llms.txt` and pick a currently listed endpoint.
 
 For Bitrefill quote and preview output, `amount` is the raw onchain base-unit integer, not a human-decimal amount. Example: ETH base units are wei, and `amount: 1000000` with `decimals: 6` means `1 USDC`.
 

@@ -1,8 +1,8 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import test from 'node:test';
 
 const modulePath = new URL('../packages/config/src/index.ts', import.meta.url);
 
@@ -10,7 +10,7 @@ function withMockedEuid(euid, fn) {
   const descriptor = Object.getOwnPropertyDescriptor(process, 'geteuid');
   Object.defineProperty(process, 'geteuid', {
     configurable: true,
-    value: () => euid
+    value: () => euid,
   });
 
   try {
@@ -34,7 +34,10 @@ test('writeConfig creates private home and config permissions', async () => {
   process.env.AGENTPAY_HOME = agentpayHome;
 
   const config = await import(modulePath.href + `?case=${Date.now()}-1`);
-  const written = config.writeConfig({ rpcUrl: 'https://rpc.example', agentAuthToken: 'secret-token' });
+  const written = config.writeConfig({
+    rpcUrl: 'https://rpc.example',
+    agentAuthToken: 'secret-token',
+  });
 
   assert.equal(written.rpcUrl, 'https://rpc.example');
   assert.equal(modeBits(agentpayHome) & 0o077, 0);
@@ -57,7 +60,7 @@ test('readConfig tightens permissive config file modes on unix', async () => {
   config.ensureAgentPayHome();
   fs.writeFileSync(config.resolveConfigPath(), JSON.stringify({ rpcUrl: 'https://rpc.example' }), {
     encoding: 'utf8',
-    mode: 0o644
+    mode: 0o644,
   });
   fs.chmodSync(config.resolveConfigPath(), 0o644);
 
@@ -113,7 +116,9 @@ test('config trust ignores SUDO_UID unless the process is running as root', asyn
   process.env.SUDO_UID = '12345';
 
   try {
-    const allowed = withMockedEuid(501, () => Array.from(config.allowedOwnerUids()).sort((a, b) => a - b));
+    const allowed = withMockedEuid(501, () =>
+      Array.from(config.allowedOwnerUids()).sort((a, b) => a - b),
+    );
     assert.deepEqual(allowed, [501]);
   } finally {
     if (originalSudoUid === undefined) {
@@ -130,7 +135,9 @@ test('config trust includes SUDO_UID when the process is running as root', async
   process.env.SUDO_UID = '12345';
 
   try {
-    const allowed = withMockedEuid(0, () => Array.from(config.allowedOwnerUids()).sort((a, b) => a - b));
+    const allowed = withMockedEuid(0, () =>
+      Array.from(config.allowedOwnerUids()).sort((a, b) => a - b),
+    );
     assert.deepEqual(allowed, [0, 12345]);
   } finally {
     if (originalSudoUid === undefined) {
@@ -154,11 +161,11 @@ test('assertSafeRpcUrl rejects remote http and embedded credentials', async () =
 
   assert.throws(
     () => config.assertSafeRpcUrl('http://rpc.example'),
-    /must use https unless it targets localhost or a loopback address/
+    /must use https unless it targets localhost or a loopback address/,
   );
   assert.throws(
     () => config.assertSafeRpcUrl('https://user:secret@rpc.example'),
-    /must not include embedded credentials/
+    /must not include embedded credentials/,
   );
 });
 
@@ -171,7 +178,7 @@ test('writeConfig rejects insecure remote rpcUrl values', async () => {
 
   assert.throws(
     () => config.writeConfig({ rpcUrl: 'http://rpc.example' }),
-    /must use https unless it targets localhost or a loopback address/
+    /must use https unless it targets localhost or a loopback address/,
   );
 
   delete process.env.AGENTPAY_HOME;
@@ -191,7 +198,7 @@ test('writeConfig normalizes sensitive path values to absolute paths', async () 
     const written = config.writeConfig({
       daemonSocket: './daemon/run/daemon.sock',
       stateFile: './daemon/state/daemon-state.enc',
-      rustBinDir: './rust/bin'
+      rustBinDir: './rust/bin',
     });
 
     assert.equal(written.daemonSocket, path.resolve('daemon/run/daemon.sock'));
@@ -222,7 +229,7 @@ test('writeConfig rejects daemon sockets under insecure directories on unix', as
 
     assert.throws(
       () => config.writeConfig({ daemonSocket: path.join(shared, 'daemon.sock') }),
-      /daemonSocket directory .* must not be writable by group\/other/
+      /daemonSocket directory .* must not be writable by group\/other/,
     );
   } finally {
     delete process.env.AGENTPAY_HOME;
@@ -246,7 +253,7 @@ test('writeConfig rejects symlinked rustBinDir values', async () => {
 
     assert.throws(
       () => config.writeConfig({ rustBinDir: linkedBinDir }),
-      /rustBinDir .* must not be a symlink/
+      /rustBinDir .* must not be a symlink/,
     );
   } finally {
     delete process.env.AGENTPAY_HOME;
@@ -267,11 +274,13 @@ test('writeConfig rejects rustBinDir values that traverse symlinked ancestor dir
   fs.symlinkSync(realRoot, linkedRoot);
 
   try {
-    const config = await import(modulePath.href + `?case=${Date.now()}-reject-rust-bin-ancestor-symlink`);
+    const config = await import(
+      modulePath.href + `?case=${Date.now()}-reject-rust-bin-ancestor-symlink`
+    );
 
     assert.throws(
       () => config.writeConfig({ rustBinDir: linkedBinDir }),
-      /must not traverse symlinked ancestor directories/
+      /must not traverse symlinked ancestor directories/,
     );
   } finally {
     delete process.env.AGENTPAY_HOME;
@@ -290,12 +299,12 @@ test('readConfig rejects oversized config files', async () => {
     config.resolveConfigPath(),
     JSON.stringify({
       rpcUrl: 'https://rpc.example',
-      padding: 'a'.repeat(256 * 1024)
+      padding: 'a'.repeat(256 * 1024),
     }),
     {
       encoding: 'utf8',
-      mode: 0o600
-    }
+      mode: 0o600,
+    },
   );
   fs.chmodSync(config.resolveConfigPath(), 0o600);
 
@@ -304,7 +313,6 @@ test('readConfig rejects oversized config files', async () => {
   delete process.env.AGENTPAY_HOME;
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
-
 
 test('writeConfig accepts inaccessible root-private stateFile paths when the parent directory is trusted', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-config-test-'));
@@ -326,7 +334,7 @@ test('writeConfig accepts inaccessible root-private stateFile paths when the par
     };
 
     const written = config.writeConfig({
-      stateFile: inaccessiblePath
+      stateFile: inaccessiblePath,
     });
 
     assert.equal(written.stateFile, inaccessiblePath);
@@ -342,24 +350,113 @@ test('builtin tokens expose default chain coverage', async () => {
 
   const builtin = config.listBuiltinTokens();
   const keys = builtin.map((entry) => entry.key);
-  assert.deepEqual(keys, ['bnb', 'eth', 'usd1']);
+  assert.deepEqual(keys, ['bnb', 'eth', 'pathusd', 'usd', 'usd1', 'usdc.e']);
 
   const bnb = builtin.find((entry) => entry.key === 'bnb');
   assert.ok(bnb);
-  assert.ok(bnb.chains.some((chain) => chain.key === 'bsc' && chain.isNative && chain.decimals === 18));
+  assert.ok(
+    bnb.chains.some((chain) => chain.key === 'bsc' && chain.isNative && chain.decimals === 18),
+  );
 
   const eth = builtin.find((entry) => entry.key === 'eth');
   assert.ok(eth);
-  assert.ok(eth.chains.some((chain) => chain.key === 'ethereum' && chain.isNative && chain.decimals === 18));
+  assert.ok(
+    eth.chains.some((chain) => chain.key === 'ethereum' && chain.isNative && chain.decimals === 18),
+  );
+
+  const usd = builtin.find((entry) => entry.key === 'usd');
+  assert.ok(usd);
+  assert.ok(
+    usd.chains.some((chain) => chain.key === 'tempo' && chain.isNative && chain.decimals === 6),
+  );
+  assert.equal(
+    usd.chains.some((chain) => chain.key === 'tempo-moderato'),
+    false,
+  );
 
   const usd1 = builtin.find((entry) => entry.key === 'usd1');
   assert.ok(usd1);
-  assert.ok(usd1.chains.some((chain) => chain.key === 'eth' && chain.address === '0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d'));
-  assert.ok(usd1.chains.some((chain) => chain.key === 'bsc' && chain.address === '0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d'));
-  assert.equal(builtin.find((entry) => entry.key === 'usdc'), undefined);
+  assert.ok(
+    usd1.chains.some(
+      (chain) =>
+        chain.key === 'eth' && chain.address === '0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d',
+    ),
+  );
+  assert.ok(
+    usd1.chains.some(
+      (chain) =>
+        chain.key === 'bsc' && chain.address === '0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d',
+    ),
+  );
+
+  const pathUsd = builtin.find((entry) => entry.key === 'pathusd');
+  assert.ok(pathUsd);
+  assert.equal(pathUsd.symbol, 'PATH/USD');
+  assert.ok(
+    pathUsd.chains.some(
+      (chain) =>
+        chain.key === 'tempo' &&
+        chain.address === '0x20c0000000000000000000000000000000000000' &&
+        chain.decimals === 6,
+    ),
+  );
+  assert.ok(
+    pathUsd.chains.some(
+      (chain) =>
+        chain.key === 'tempo-testnet' &&
+        chain.address === '0x20c0000000000000000000000000000000000000' &&
+        chain.decimals === 6,
+    ),
+  );
+
+  const usdce = builtin.find((entry) => entry.key === 'usdc.e');
+  assert.ok(usdce);
+  assert.equal(usdce.symbol, 'USDC.e');
+  assert.ok(
+    usdce.chains.some(
+      (chain) =>
+        chain.key === 'tempo' &&
+        chain.address === '0x20c000000000000000000000b9537d11c60e8b50' &&
+        chain.decimals === 6,
+    ),
+  );
+  assert.ok(
+    usdce.chains.some(
+      (chain) =>
+        chain.key === 'tempo-testnet' &&
+        chain.address === '0x20c0000000000000000000009e8d7eb59b783726' &&
+        chain.decimals === 6,
+    ),
+  );
+  assert.equal(
+    builtin.find((entry) => entry.key === 'usdc'),
+    undefined,
+  );
 });
 
-test('default config seeds eth, bsc, unrestricted native assets, and unrestricted usd1', async () => {
+test('builtin chains expose tempo mainnet and testnet defaults', async () => {
+  const config = await import(modulePath.href + `?case=${Date.now()}-builtin-chains`);
+
+  const builtin = config.listBuiltinChains();
+  assert.ok(
+    builtin.some(
+      (chain) =>
+        chain.name === 'tempo' &&
+        chain.chainId === 4217 &&
+        chain.rpcUrl === 'https://rpc.presto.tempo.xyz',
+    ),
+  );
+  assert.ok(
+    builtin.some(
+      (chain) =>
+        chain.name === 'tempo-testnet' &&
+        chain.chainId === 42431 &&
+        chain.rpcUrl === 'https://rpc.moderato.tempo.xyz',
+    ),
+  );
+});
+
+test('default config seeds eth, bsc, tempo, unrestricted builtin payment assets', async () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-config-test-'));
   const agentpayHome = path.join(tempRoot, 'home');
   process.env.AGENTPAY_HOME = agentpayHome;
@@ -372,6 +469,10 @@ test('default config seeds eth, bsc, unrestricted native assets, and unrestricte
     assert.equal(parsed.chains?.eth?.rpcUrl, 'https://eth.llamarpc.com');
     assert.equal(parsed.chains?.bsc?.chainId, 56);
     assert.equal(parsed.chains?.bsc?.rpcUrl, 'https://bsc.drpc.org');
+    assert.equal(parsed.chains?.tempo?.chainId, 4217);
+    assert.equal(parsed.chains?.tempo?.rpcUrl, 'https://rpc.presto.tempo.xyz');
+    assert.equal(parsed.chains?.['tempo-testnet']?.chainId, 42431);
+    assert.equal(parsed.chains?.['tempo-testnet']?.rpcUrl, 'https://rpc.moderato.tempo.xyz');
 
     assert.equal(parsed.tokens?.bnb?.symbol, 'BNB');
     assert.equal(parsed.tokens?.bnb?.defaultPolicy, undefined);
@@ -385,13 +486,57 @@ test('default config seeds eth, bsc, unrestricted native assets, and unrestricte
     assert.equal(parsed.tokens?.eth?.chains?.eth?.decimals, 18);
     assert.equal(parsed.tokens?.eth?.chains?.eth?.address, undefined);
 
+    assert.equal(parsed.tokens?.usd?.symbol, 'USD');
+    assert.equal(parsed.tokens?.usd?.defaultPolicy, undefined);
+    assert.equal(parsed.tokens?.usd?.chains?.tempo?.isNative, true);
+    assert.equal(parsed.tokens?.usd?.chains?.tempo?.decimals, 6);
+    assert.equal(parsed.tokens?.usd?.chains?.tempo?.address, undefined);
+
     assert.equal(parsed.tokens?.usd1?.symbol, 'USD1');
     assert.equal(parsed.tokens?.usd1?.defaultPolicy, undefined);
-    assert.equal(parsed.tokens?.usd1?.chains?.eth?.address, '0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d');
-    assert.equal(parsed.tokens?.usd1?.chains?.bsc?.address, '0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d');
+    assert.equal(
+      parsed.tokens?.usd1?.chains?.eth?.address,
+      '0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d',
+    );
+    assert.equal(
+      parsed.tokens?.usd1?.chains?.bsc?.address,
+      '0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d',
+    );
     assert.equal(parsed.tokens?.usd1?.chains?.eth?.defaultPolicy, undefined);
     assert.equal(parsed.tokens?.usd1?.chains?.bsc?.defaultPolicy, undefined);
-    assert.deepEqual(Object.keys(parsed.tokens ?? {}).sort(), ['bnb', 'eth', 'usd1']);
+
+    assert.equal(parsed.tokens?.pathusd?.symbol, 'PATH/USD');
+    assert.equal(parsed.tokens?.pathusd?.defaultPolicy, undefined);
+    assert.equal(
+      parsed.tokens?.pathusd?.chains?.tempo?.address,
+      '0x20c0000000000000000000000000000000000000',
+    );
+    assert.equal(parsed.tokens?.pathusd?.chains?.tempo?.decimals, 6);
+    assert.equal(
+      parsed.tokens?.pathusd?.chains?.['tempo-testnet']?.address,
+      '0x20c0000000000000000000000000000000000000',
+    );
+    assert.equal(parsed.tokens?.pathusd?.chains?.['tempo-testnet']?.decimals, 6);
+    assert.equal(parsed.tokens?.['usdc.e']?.symbol, 'USDC.e');
+    assert.equal(
+      parsed.tokens?.['usdc.e']?.chains?.tempo?.address,
+      '0x20c000000000000000000000b9537d11c60e8b50',
+    );
+    assert.equal(parsed.tokens?.['usdc.e']?.chains?.tempo?.decimals, 6);
+    assert.equal(
+      parsed.tokens?.['usdc.e']?.chains?.['tempo-testnet']?.address,
+      '0x20c0000000000000000000009e8d7eb59b783726',
+    );
+    assert.equal(parsed.tokens?.['usdc.e']?.chains?.['tempo-testnet']?.decimals, 6);
+
+    assert.deepEqual(Object.keys(parsed.tokens ?? {}).sort(), [
+      'bnb',
+      'eth',
+      'pathusd',
+      'usd',
+      'usd1',
+      'usdc.e',
+    ]);
   } finally {
     delete process.env.AGENTPAY_HOME;
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -407,14 +552,18 @@ test('readConfig reseeds defaults for legacy empty chains and tokens', async () 
     fs.mkdirSync(agentpayHome, { recursive: true, mode: 0o700 });
     fs.writeFileSync(
       path.join(agentpayHome, 'config.json'),
-      `${JSON.stringify({
-        chainId: 56,
-        chainName: 'bsc',
-        rpcUrl: 'https://rpc.bsc.example',
-        chains: {},
-        tokens: {},
-      }, null, 2)}\n`,
-      { encoding: 'utf8', mode: 0o600 }
+      `${JSON.stringify(
+        {
+          chainId: 56,
+          chainName: 'bsc',
+          rpcUrl: 'https://rpc.bsc.example',
+          chains: {},
+          tokens: {},
+        },
+        null,
+        2,
+      )}\n`,
+      { encoding: 'utf8', mode: 0o600 },
     );
 
     const config = await import(modulePath.href + `?case=${Date.now()}-legacy-empty-seeds`);
@@ -425,10 +574,104 @@ test('readConfig reseeds defaults for legacy empty chains and tokens', async () 
     assert.equal(parsed.rpcUrl, 'https://rpc.bsc.example');
     assert.equal(parsed.chains?.eth?.rpcUrl, 'https://eth.llamarpc.com');
     assert.equal(parsed.chains?.bsc?.rpcUrl, 'https://bsc.drpc.org');
+    assert.equal(parsed.chains?.tempo?.rpcUrl, 'https://rpc.presto.tempo.xyz');
+    assert.equal(parsed.chains?.['tempo-testnet']?.rpcUrl, 'https://rpc.moderato.tempo.xyz');
     assert.equal(parsed.tokens?.bnb?.chains?.bsc?.isNative, true);
     assert.equal(parsed.tokens?.eth?.chains?.eth?.isNative, true);
+    assert.equal(parsed.tokens?.usd?.chains?.tempo?.isNative, true);
+    assert.equal(
+      parsed.tokens?.pathusd?.chains?.tempo?.address,
+      '0x20c0000000000000000000000000000000000000',
+    );
+    assert.equal(
+      parsed.tokens?.pathusd?.chains?.['tempo-testnet']?.address,
+      '0x20c0000000000000000000000000000000000000',
+    );
     assert.equal(parsed.tokens?.usd1?.defaultPolicy, undefined);
-    assert.deepEqual(Object.keys(parsed.tokens ?? {}).sort(), ['bnb', 'eth', 'usd1']);
+    assert.equal(
+      parsed.tokens?.['usdc.e']?.chains?.tempo?.address,
+      '0x20c000000000000000000000b9537d11c60e8b50',
+    );
+    assert.equal(
+      parsed.tokens?.['usdc.e']?.chains?.['tempo-testnet']?.address,
+      '0x20c0000000000000000000009e8d7eb59b783726',
+    );
+    assert.deepEqual(Object.keys(parsed.tokens ?? {}).sort(), [
+      'bnb',
+      'eth',
+      'pathusd',
+      'usd',
+      'usd1',
+      'usdc.e',
+    ]);
+  } finally {
+    delete process.env.AGENTPAY_HOME;
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('readConfig merges new default tempo assets into existing non-empty configs', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-config-test-'));
+  const agentpayHome = path.join(tempRoot, 'home');
+  process.env.AGENTPAY_HOME = agentpayHome;
+
+  try {
+    fs.mkdirSync(agentpayHome, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(
+      path.join(agentpayHome, 'config.json'),
+      `${JSON.stringify(
+        {
+          chains: {
+            eth: {
+              chainId: 1,
+              name: 'ETH',
+              rpcUrl: 'https://eth.llamarpc.com',
+            },
+            bsc: {
+              chainId: 56,
+              name: 'BSC',
+              rpcUrl: 'https://bsc.drpc.org',
+            },
+          },
+          tokens: {
+            bnb: {
+              name: 'BNB',
+              symbol: 'BNB',
+              chains: {
+                bsc: {
+                  chainId: 56,
+                  isNative: true,
+                  decimals: 18,
+                },
+              },
+            },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      { encoding: 'utf8', mode: 0o600 },
+    );
+
+    const config = await import(modulePath.href + `?case=${Date.now()}-merge-new-defaults`);
+    const parsed = config.readConfig();
+
+    assert.equal(parsed.chains?.tempo?.rpcUrl, 'https://rpc.presto.tempo.xyz');
+    assert.equal(parsed.chains?.['tempo-testnet']?.rpcUrl, 'https://rpc.moderato.tempo.xyz');
+    assert.equal(parsed.tokens?.usd?.chains?.tempo?.isNative, true);
+    assert.equal(parsed.tokens?.usd?.chains?.tempo?.decimals, 6);
+    assert.equal(
+      parsed.tokens?.pathusd?.chains?.tempo?.address,
+      '0x20c0000000000000000000000000000000000000',
+    );
+    assert.equal(
+      parsed.tokens?.['usdc.e']?.chains?.tempo?.address,
+      '0x20c000000000000000000000b9537d11c60e8b50',
+    );
+    assert.equal(
+      parsed.tokens?.['usdc.e']?.chains?.['tempo-testnet']?.address,
+      '0x20c0000000000000000000009e8d7eb59b783726',
+    );
   } finally {
     delete process.env.AGENTPAY_HOME;
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -444,58 +687,62 @@ test('readConfig accepts Rust-style null optional policy fields', async () => {
     fs.mkdirSync(agentpayHome, { recursive: true, mode: 0o700 });
     fs.writeFileSync(
       path.join(agentpayHome, 'config.json'),
-      `${JSON.stringify({
-        chains: {
-          bsc: {
-            chainId: 56,
-            name: 'BSC',
-            rpcUrl: 'https://bsc.drpc.org',
-          },
-        },
-        tokens: {
-          bnb: {
-            name: 'BNB',
-            symbol: 'BNB',
-            defaultPolicy: {
-              perTxAmount: null,
-              dailyAmount: null,
-              weeklyAmount: null,
-              perTxAmountDecimal: '0.01',
-              dailyAmountDecimal: '0.2',
-              weeklyAmountDecimal: '1.4',
-              maxGasPerChainWei: null,
-              dailyMaxTxCount: null,
-              perTxMaxFeePerGasGwei: null,
-              perTxMaxFeePerGasWei: null,
-              perTxMaxPriorityFeePerGasWei: null,
-              perTxMaxCalldataBytes: null,
+      `${JSON.stringify(
+        {
+          chains: {
+            bsc: {
+              chainId: 56,
+              name: 'BSC',
+              rpcUrl: 'https://bsc.drpc.org',
             },
-            chains: {
-              bsc: {
-                chainId: 56,
-                isNative: true,
-                address: null,
-                decimals: 18,
-                defaultPolicy: {
-                  perTxAmount: null,
-                  dailyAmount: null,
-                  weeklyAmount: null,
-                  perTxAmountDecimal: '0.01',
-                  dailyAmountDecimal: '0.2',
-                  weeklyAmountDecimal: '1.4',
-                  maxGasPerChainWei: null,
-                  dailyMaxTxCount: null,
-                  perTxMaxFeePerGasGwei: null,
-                  perTxMaxFeePerGasWei: null,
-                  perTxMaxPriorityFeePerGasWei: null,
-                  perTxMaxCalldataBytes: null,
+          },
+          tokens: {
+            bnb: {
+              name: 'BNB',
+              symbol: 'BNB',
+              defaultPolicy: {
+                perTxAmount: null,
+                dailyAmount: null,
+                weeklyAmount: null,
+                perTxAmountDecimal: '0.01',
+                dailyAmountDecimal: '0.2',
+                weeklyAmountDecimal: '1.4',
+                maxGasPerChainWei: null,
+                dailyMaxTxCount: null,
+                perTxMaxFeePerGasGwei: null,
+                perTxMaxFeePerGasWei: null,
+                perTxMaxPriorityFeePerGasWei: null,
+                perTxMaxCalldataBytes: null,
+              },
+              chains: {
+                bsc: {
+                  chainId: 56,
+                  isNative: true,
+                  address: null,
+                  decimals: 18,
+                  defaultPolicy: {
+                    perTxAmount: null,
+                    dailyAmount: null,
+                    weeklyAmount: null,
+                    perTxAmountDecimal: '0.01',
+                    dailyAmountDecimal: '0.2',
+                    weeklyAmountDecimal: '1.4',
+                    maxGasPerChainWei: null,
+                    dailyMaxTxCount: null,
+                    perTxMaxFeePerGasGwei: null,
+                    perTxMaxFeePerGasWei: null,
+                    perTxMaxPriorityFeePerGasWei: null,
+                    perTxMaxCalldataBytes: null,
+                  },
                 },
               },
             },
           },
         },
-      }, null, 2)}\n`,
-      { encoding: 'utf8', mode: 0o600 }
+        null,
+        2,
+      )}\n`,
+      { encoding: 'utf8', mode: 0o600 },
     );
 
     const config = await import(modulePath.href + `?case=${Date.now()}-rust-null-optionals`);
@@ -520,19 +767,23 @@ test('readConfig normalizes blank rpcUrl fields instead of bricking the CLI', as
     fs.mkdirSync(agentpayHome, { recursive: true, mode: 0o700 });
     fs.writeFileSync(
       path.join(agentpayHome, 'config.json'),
-      `${JSON.stringify({
-        chainId: 56,
-        chainName: 'sol',
-        rpcUrl: '   ',
-        chains: {
-          sol: {
-            chainId: 101,
-            name: 'sol',
-            rpcUrl: '   ',
+      `${JSON.stringify(
+        {
+          chainId: 56,
+          chainName: 'sol',
+          rpcUrl: '   ',
+          chains: {
+            sol: {
+              chainId: 101,
+              name: 'sol',
+              rpcUrl: '   ',
+            },
           },
         },
-      }, null, 2)}\n`,
-      { encoding: 'utf8', mode: 0o600 }
+        null,
+        2,
+      )}\n`,
+      { encoding: 'utf8', mode: 0o600 },
     );
 
     const config = await import(modulePath.href + `?case=${Date.now()}-blank-rpc-url`);
@@ -555,17 +806,21 @@ test('readConfig keeps malformed optional rpcUrl fields readable for repair work
     fs.mkdirSync(agentpayHome, { recursive: true, mode: 0o700 });
     fs.writeFileSync(
       path.join(agentpayHome, 'config.json'),
-      `${JSON.stringify({
-        rpcUrl: 'not-a-url',
-        chains: {
-          sol: {
-            chainId: 101,
-            name: 'sol',
-            rpcUrl: 'not-a-url',
+      `${JSON.stringify(
+        {
+          rpcUrl: 'not-a-url',
+          chains: {
+            sol: {
+              chainId: 101,
+              name: 'sol',
+              rpcUrl: 'not-a-url',
+            },
           },
         },
-      }, null, 2)}\n`,
-      { encoding: 'utf8', mode: 0o600 }
+        null,
+        2,
+      )}\n`,
+      { encoding: 'utf8', mode: 0o600 },
     );
 
     const config = await import(modulePath.href + `?case=${Date.now()}-invalid-optional-rpc-url`);
@@ -594,7 +849,7 @@ test('saveChainProfile still validates newly provided rpcUrl values', async () =
           name: 'sol',
           rpcUrl: 'not-a-url',
         }),
-      /chain profile 'sol' rpcUrl must be a valid http\(s\) URL/
+      /chain profile 'sol' rpcUrl must be a valid http\(s\) URL/,
     );
   } finally {
     delete process.env.AGENTPAY_HOME;
@@ -610,10 +865,7 @@ test('removeChainProfile rejects unknown configured networks', async () => {
   try {
     const config = await import(modulePath.href + `?case=${Date.now()}-remove-missing-chain`);
 
-    assert.throws(
-      () => config.removeChainProfile('missing'),
-      /network 'missing' does not exist/
-    );
+    assert.throws(() => config.removeChainProfile('missing'), /network 'missing' does not exist/);
   } finally {
     delete process.env.AGENTPAY_HOME;
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -649,10 +901,14 @@ test('readConfig treats wallet null as absent', async () => {
     fs.mkdirSync(agentpayHome, { recursive: true, mode: 0o700 });
     fs.writeFileSync(
       path.join(agentpayHome, 'config.json'),
-      `${JSON.stringify({
-        wallet: null,
-      }, null, 2)}\n`,
-      { encoding: 'utf8', mode: 0o600 }
+      `${JSON.stringify(
+        {
+          wallet: null,
+        },
+        null,
+        2,
+      )}\n`,
+      { encoding: 'utf8', mode: 0o600 },
     );
 
     const config = await import(modulePath.href + `?case=${Date.now()}-wallet-null`);
@@ -695,6 +951,33 @@ test('resolveTokenProfile finds configured and builtin tokens', async () => {
     const builtin = config.resolveTokenProfile('ETH', { tokens: {} });
     assert.equal(builtin?.source, 'builtin');
     assert.equal(builtin?.key, 'eth');
+
+    const builtinUsdce = config.resolveTokenProfile('USDC.E', { tokens: {} });
+    assert.equal(builtinUsdce?.source, 'builtin');
+    assert.equal(builtinUsdce?.key, 'usdc.e');
+  } finally {
+    delete process.env.AGENTPAY_HOME;
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('resolveChainProfile finds builtin chains by numeric chainId', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-config-test-'));
+  const agentpayHome = path.join(tempRoot, 'home');
+  process.env.AGENTPAY_HOME = agentpayHome;
+
+  try {
+    const config = await import(modulePath.href + `?case=${Date.now()}-resolve-chain-profile`);
+
+    const tempo = config.resolveChainProfile('4217', { chains: {} });
+    assert.equal(tempo?.source, 'builtin');
+    assert.equal(tempo?.key, 'tempo');
+    assert.equal(tempo?.rpcUrl, 'https://rpc.presto.tempo.xyz');
+
+    const moderato = config.resolveChainProfile('42431', { chains: {} });
+    assert.equal(moderato?.source, 'builtin');
+    assert.equal(moderato?.key, 'tempo-testnet');
+    assert.equal(moderato?.rpcUrl, 'https://rpc.moderato.tempo.xyz');
   } finally {
     delete process.env.AGENTPAY_HOME;
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -752,25 +1035,28 @@ test('writeConfig rejects invalid native token addresses', async () => {
   process.env.AGENTPAY_HOME = agentpayHome;
 
   try {
-    const config = await import(modulePath.href + `?case=${Date.now()}-invalid-native-token-address`);
+    const config = await import(
+      modulePath.href + `?case=${Date.now()}-invalid-native-token-address`
+    );
 
     assert.throws(
-      () => config.writeConfig({
-        tokens: {
-          eth: {
-            symbol: 'ETH',
-            chains: {
-              ethereum: {
-                chainId: 1,
-                isNative: true,
-                address: '0x0000000000000000000000000000000000000001',
-                decimals: 18,
+      () =>
+        config.writeConfig({
+          tokens: {
+            eth: {
+              symbol: 'ETH',
+              chains: {
+                ethereum: {
+                  chainId: 1,
+                  isNative: true,
+                  address: '0x0000000000000000000000000000000000000001',
+                  decimals: 18,
+                },
               },
             },
           },
-        },
-      }),
-      /must not set address when isNative=true/
+        }),
+      /must not set address when isNative=true/,
     );
   } finally {
     delete process.env.AGENTPAY_HOME;

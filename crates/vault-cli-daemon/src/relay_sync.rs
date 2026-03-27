@@ -888,6 +888,9 @@ fn action_name(action: &AgentAction) -> &'static str {
             "eip3009_transfer_with_authorization"
         }
         AgentAction::Eip3009ReceiveWithAuthorization { .. } => "eip3009_receive_with_authorization",
+        AgentAction::TempoSessionOpenTransaction { .. } => "tempo_session_open_transaction",
+        AgentAction::TempoSessionTopUpTransaction { .. } => "tempo_session_top_up_transaction",
+        AgentAction::TempoSessionVoucher { .. } => "tempo_session_voucher",
         AgentAction::BroadcastTx { .. } => "broadcast_tx",
     }
 }

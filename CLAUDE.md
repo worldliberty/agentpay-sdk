@@ -48,9 +48,9 @@ pnpm --filter @worldlibertyfinancial/agent-relay deploy:production
 
 ## Architecture
 
-This is a monorepo for a macOS local signing daemon with policy enforcement. The system has two language layers: Rust handles cryptography, policy evaluation, and daemon operations; TypeScript handles CLI orchestration, configuration, and web interfaces.
+This is a monorepo for a macOS signing CLI built around a self-custodial local daemon. The system has two language layers: Rust handles cryptography, policy evaluation, and daemon operations; TypeScript handles CLI orchestration, configuration, and web interfaces.
 
-### How the layers interact
+### How the layers interact (daemon mode)
 
 The TypeScript CLI (`src/cli.ts`) is the user-facing entry point (`agentpay`). It spawns Rust binaries (`vault-cli-admin`, `vault-cli-agent`, `vault-cli-daemon`) as child processes for security-critical operations. The Rust daemon runs persistently and communicates via Unix domain sockets (or macOS XPC). The relay server bridges external requests to the daemon, and the web UI provides a manual approval console.
 

@@ -2,9 +2,8 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os, { constants as osConstants } from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const repoRoot = new URL('..', import.meta.url).pathname;
 const extension = process.platform === 'win32' ? '.exe' : '';
 const MIN_RUST_VERSION = {
   major: 1,
@@ -19,6 +18,41 @@ const rustBins = [
 ];
 const RERUN_INSTRUCTIONS =
   'After installing prerequisites, rerun the source install steps from this repo checkout: `npm run build && npm run install:cli-launcher && npm run install:rust-binaries`.';
+
+function fileUrlToPathForPlatform(fileUrl, platform = process.platform) {
+  if (platform === process.platform) {
+    return fileURLToPath(fileUrl);
+  }
+
+  const parsed = new URL(fileUrl);
+  if (parsed.protocol !== 'file:') {
+    throw new TypeError(`[agentpay] Expected a file URL, received ${parsed.protocol}`);
+  }
+
+  if (platform === 'win32') {
+    const pathname = decodeURIComponent(parsed.pathname).replace(/\//g, '\\');
+    if (parsed.hostname) {
+      return `\\\\${parsed.hostname}${pathname}`;
+    }
+    if (/^\\[a-zA-Z]:/.test(pathname)) {
+      return pathname.slice(1);
+    }
+    return pathname;
+  }
+
+  return decodeURIComponent(parsed.pathname);
+}
+
+export function resolveRepoRootFromMetaUrl(
+  metaUrl = import.meta.url,
+  platform = process.platform,
+) {
+  const scriptPath = fileUrlToPathForPlatform(metaUrl, platform);
+  const pathImpl = platform === 'win32' ? path.win32 : path.posix;
+  return pathImpl.resolve(pathImpl.dirname(scriptPath), '..');
+}
+
+const repoRoot = resolveRepoRootFromMetaUrl(import.meta.url);
 
 function decodeOutput(value) {
   if (!value) {

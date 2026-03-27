@@ -6,7 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { installLocalCliLauncher } from '../scripts/install-cli-launcher.mjs';
-import { installCliLauncher } from '../scripts/install-rust-binaries.mjs';
+import { installCliLauncher, resolveRepoRootFromMetaUrl } from '../scripts/install-rust-binaries.mjs';
 
 const modulePath = new URL('../scripts/install-rust-binaries.mjs', import.meta.url);
 
@@ -248,6 +248,16 @@ test('installCliLauncher can skip missing CLI entrypoints during pre-build insta
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('resolveRepoRootFromMetaUrl preserves Windows drive-letter paths without a leading slash', () => {
+  assert.equal(
+    resolveRepoRootFromMetaUrl(
+      'file:///C:/Users/test/wlfi-agent-sdk/scripts/install-rust-binaries.mjs',
+      'win32',
+    ),
+    'C:\\Users\\test\\wlfi-agent-sdk',
+  );
 });
 
 test('installLocalCliLauncher installs agentpay under AGENTPAY_HOME/bin', () => {

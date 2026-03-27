@@ -82,7 +82,7 @@ test('resolveAssetBroadcastPlan fills nonce gas and fees from RPC deps', async (
   assert.equal(calls.length, 5);
 });
 
-test('resolveAssetBroadcastPlan honors explicit fee inputs and rejects missing max-fee estimates', async () => {
+test('resolveAssetBroadcastPlan honors explicit fee inputs and rejects missing fee estimates', async () => {
   const assetBroadcast = await import(`${modulePath.href}?case=${Date.now()}-plan-fee-edges`);
 
   const explicitPlan = await assetBroadcast.resolveAssetBroadcastPlan(
@@ -171,32 +171,55 @@ test('resolveAssetBroadcastPlan honors explicit fee inputs and rejects missing m
     /Could not determine maxFeePerGas/,
   );
 
-  await assert.rejects(
-    assetBroadcast.resolveAssetBroadcastPlan(
-      {
-        rpcUrl: 'https://rpc.example',
-        chainId: 1,
-        from: '0x3333333333333333333333333333333333333333',
-        to: '0x4444444444444444444444444444444444444444',
-        valueWei: 0n,
-        dataHex: '0xabcdef',
-        maxFeePerGasWei: 9n,
-        txType: '0x02',
-      },
-      {
-        getChainInfo: async () => ({ chainId: 1 }),
-        assertRpcChainIdMatches: () => {},
-        getNonce: async () => 1,
-        estimateGas: async () => 21000n,
-        estimateFees: async () => ({
-          gasPrice: 0n,
-          maxFeePerGas: 9n,
-          maxPriorityFeePerGas: null,
-        }),
-      },
-    ),
-    /Could not determine maxPriorityFeePerGas/,
+  const zeroPriorityFallbackPlan = await assetBroadcast.resolveAssetBroadcastPlan(
+    {
+      rpcUrl: 'https://rpc.example',
+      chainId: 1,
+      from: '0x3333333333333333333333333333333333333333',
+      to: '0x4444444444444444444444444444444444444444',
+      valueWei: 0n,
+      dataHex: '0xabcdef',
+      maxFeePerGasWei: 9n,
+      txType: '0x02',
+    },
+    {
+      getChainInfo: async () => ({ chainId: 1 }),
+      assertRpcChainIdMatches: () => {},
+      getNonce: async () => 1,
+      estimateGas: async () => 21000n,
+      estimateFees: async () => ({
+        gasPrice: 0n,
+        maxFeePerGas: 9n,
+        maxPriorityFeePerGas: null,
+      }),
+    },
   );
+  assert.equal(zeroPriorityFallbackPlan.maxPriorityFeePerGasWei, 0n);
+
+  const explicitZeroPriorityPlan = await assetBroadcast.resolveAssetBroadcastPlan(
+    {
+      rpcUrl: 'https://rpc.example',
+      chainId: 1,
+      from: '0x3333333333333333333333333333333333333333',
+      to: '0x4444444444444444444444444444444444444444',
+      valueWei: 0n,
+      dataHex: '0xabcdef',
+      maxFeePerGasWei: 9n,
+      txType: '0x02',
+    },
+    {
+      getChainInfo: async () => ({ chainId: 1 }),
+      assertRpcChainIdMatches: () => {},
+      getNonce: async () => 1,
+      estimateGas: async () => 21000n,
+      estimateFees: async () => ({
+        gasPrice: 7n,
+        maxFeePerGas: 9n,
+        maxPriorityFeePerGas: 0n,
+      }),
+    },
+  );
+  assert.equal(explicitZeroPriorityPlan.maxPriorityFeePerGasWei, 0n);
 });
 
 test('completeAssetBroadcast verifies then broadcasts signed raw tx', async () => {

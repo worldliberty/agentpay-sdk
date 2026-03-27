@@ -1,8 +1,8 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import test from 'node:test';
 import { privateKeyToAccount } from 'viem/accounts';
 
 const walletProfileModulePath = new URL('../src/lib/wallet-profile.ts', import.meta.url);
@@ -94,7 +94,9 @@ function bootstrapPayload(overrides = {}) {
 }
 
 test('walletProfileFromBootstrapSummary derives address and keeps policy metadata', async () => {
-  const walletProfile = await import(walletProfileModulePath.href + `?case=${Date.now()}-from-summary`);
+  const walletProfile = await import(
+    walletProfileModulePath.href + `?case=${Date.now()}-from-summary`
+  );
   const account = privateKeyToAccount(`0x${'11'.repeat(32)}`);
 
   const profile = walletProfile.walletProfileFromBootstrapSummary(
@@ -211,7 +213,9 @@ test('resolveWalletProfile backfills vault key id from a matching bootstrap arti
   process.env.AGENTPAY_HOME = tempRoot;
 
   try {
-    const walletProfile = await import(walletProfileModulePath.href + `?case=${Date.now()}-backfill`);
+    const walletProfile = await import(
+      walletProfileModulePath.href + `?case=${Date.now()}-backfill`
+    );
     const account = privateKeyToAccount(`0x${'44'.repeat(32)}`);
     writePrivateJsonFile(
       path.join(tempRoot, 'bootstrap-100-200.json'),
@@ -281,7 +285,9 @@ test('resolveWalletProfile falls back to the latest bootstrap artifact', async (
   process.env.AGENTPAY_HOME = tempRoot;
 
   try {
-    const walletProfile = await import(walletProfileModulePath.href + `?case=${Date.now()}-fallback`);
+    const walletProfile = await import(
+      walletProfileModulePath.href + `?case=${Date.now()}-fallback`
+    );
     const bootstrapPath = path.join(tempRoot, 'bootstrap-100-200.json');
     writePrivateJsonFile(
       bootstrapPath,
@@ -309,7 +315,9 @@ test('resolveWalletProfile ignores expired bootstrap artifacts when a newer vali
   process.env.AGENTPAY_HOME = tempRoot;
 
   try {
-    const walletProfile = await import(walletProfileModulePath.href + `?case=${Date.now()}-expired-fallback`);
+    const walletProfile = await import(
+      walletProfileModulePath.href + `?case=${Date.now()}-expired-fallback`
+    );
     writePrivateJsonFile(
       path.join(tempRoot, 'bootstrap-200-300.json'),
       bootstrapPayload({
@@ -328,7 +336,10 @@ test('resolveWalletProfile ignores expired bootstrap artifacts when a newer vali
 
     const profile = walletProfile.resolveWalletProfile({});
 
-    assert.equal(profile.vaultPublicKey, '032222222222222222222222222222222222222222222222222222222222222222');
+    assert.equal(
+      profile.vaultPublicKey,
+      '032222222222222222222222222222222222222222222222222222222222222222',
+    );
   } finally {
     delete process.env.AGENTPAY_HOME;
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -340,7 +351,9 @@ test('resolveWalletProfile rejects expired bootstrap artifacts when they are the
   process.env.AGENTPAY_HOME = tempRoot;
 
   try {
-    const walletProfile = await import(walletProfileModulePath.href + `?case=${Date.now()}-expired-only`);
+    const walletProfile = await import(
+      walletProfileModulePath.href + `?case=${Date.now()}-expired-only`
+    );
     writePrivateJsonFile(
       path.join(tempRoot, 'bootstrap-100-200.json'),
       bootstrapPayload({
@@ -600,6 +613,90 @@ test('resolveWalletProfileWithBalances does not duplicate configured native toke
   );
 });
 
+test('resolveWalletProfileWithBalances suppresses native balances on tempo chains', async () => {
+  const walletProfile = await import(
+    walletProfileModulePath.href + `?case=${Date.now()}-balances-tempo-native-suppressed`
+  );
+  const account = privateKeyToAccount(`0x${'35'.repeat(32)}`);
+  const nativeCalls = [];
+  const erc20Calls = [];
+
+  const profile = await walletProfile.resolveWalletProfileWithBalances(
+    {
+      wallet: {
+        vaultPublicKey: account.publicKey,
+        policyAttachment: 'policy_set',
+      },
+      chains: {
+        tempo: {
+          chainId: 4217,
+          name: 'Tempo Mainnet',
+          rpcUrl: 'https://rpc.tempo.xyz',
+        },
+      },
+      tokens: {
+        usd: {
+          name: 'USD',
+          symbol: 'USD',
+          chains: {
+            tempo: {
+              chainId: 4217,
+              isNative: true,
+              decimals: 6,
+            },
+          },
+        },
+        'usdc.e': {
+          name: 'Bridged USDC (Stargate)',
+          symbol: 'USDC.e',
+          chains: {
+            tempo: {
+              chainId: 4217,
+              isNative: false,
+              address: '0x20c000000000000000000000b9537d11c60e8b50',
+              decimals: 6,
+            },
+          },
+        },
+      },
+    },
+    {
+      getNativeBalance: async (rpcUrl, address) => {
+        nativeCalls.push({ rpcUrl, address });
+        return {
+          raw: 42424242424242424242n,
+          formatted: '42424242.424242',
+        };
+      },
+      getTokenBalance: async (rpcUrl, token, owner, decimals) => {
+        erc20Calls.push({ rpcUrl, token, owner, decimals });
+        return {
+          raw: 73468n,
+          decimals: decimals ?? 6,
+          name: 'Bridged USDC (Stargate)',
+          symbol: 'USDC.e',
+          formatted: '0.073468',
+        };
+      },
+    },
+  );
+
+  assert.deepEqual(nativeCalls, []);
+  assert.deepEqual(erc20Calls, [
+    {
+      rpcUrl: 'https://rpc.tempo.xyz',
+      token: '0x20c000000000000000000000b9537d11c60e8b50',
+      owner: account.address,
+      decimals: 6,
+    },
+  ]);
+  assert.deepEqual(
+    profile.balances.map((entry) => [entry.tokenKey, entry.chainKey, entry.kind, entry.symbol]),
+    [['usdc.e', 'tempo', 'erc20', 'USDC.e']],
+  );
+  assert.equal(profile.balances[0].balance?.formatted, '0.073468');
+});
+
 test('resolveWalletProfileWithBalances skips missing token maps and empty chain maps', async () => {
   const walletProfile = await import(
     walletProfileModulePath.href + `?case=${Date.now()}-balances-empty-token-maps`
@@ -835,7 +932,9 @@ test('resolveWalletProfile can backfill from bootstrap artifacts by wallet publi
   process.env.AGENTPAY_HOME = tempRoot;
 
   try {
-    const walletProfile = await import(walletProfileModulePath.href + `?case=${Date.now()}-match-fallbacks`);
+    const walletProfile = await import(
+      walletProfileModulePath.href + `?case=${Date.now()}-match-fallbacks`
+    );
     const account = privateKeyToAccount(`0x${'55'.repeat(32)}`);
     writePrivateJsonFile(
       path.join(tempRoot, 'bootstrap-100-200.json'),
@@ -872,7 +971,9 @@ test('resolveWalletProfile can backfill from bootstrap artifacts by wallet publi
 });
 
 test('resolveWalletAddress fails closed when a configured wallet address is invalid', async () => {
-  const walletProfile = await import(walletProfileModulePath.href + `?case=${Date.now()}-invalid-address-value`);
+  const walletProfile = await import(
+    walletProfileModulePath.href + `?case=${Date.now()}-invalid-address-value`
+  );
 
   assert.throws(
     () =>
@@ -888,7 +989,9 @@ test('resolveWalletAddress fails closed when a configured wallet address is inva
 });
 
 test('resolveWalletProfileWithBalances surfaces native/erc20 fetch failures and invalid token addresses', async () => {
-  const walletProfile = await import(walletProfileModulePath.href + `?case=${Date.now()}-balance-errors`);
+  const walletProfile = await import(
+    walletProfileModulePath.href + `?case=${Date.now()}-balance-errors`
+  );
   const account = privateKeyToAccount(`0x${'66'.repeat(32)}`);
 
   const profile = await walletProfile.resolveWalletProfileWithBalances(
