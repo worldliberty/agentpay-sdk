@@ -1,8 +1,11 @@
 import type { WlfiConfig } from '../../packages/config/src/index.js';
 import { assertTrustedAdminDaemonSocketPath } from './fs-trust.js';
-import { isMacOsPlatform } from './platform-support.js';
+import { resolveManagedDaemonPlatformSpec } from './managed-daemon-platform.js';
+import { isMacOsPlatform, supportsManagedDaemonPlatform } from './platform-support.js';
 
-export const DEFAULT_MANAGED_ADMIN_DAEMON_SOCKET = '/Library/AgentPay/run/daemon.sock';
+export const DEFAULT_MANAGED_ADMIN_DAEMON_SOCKET = resolveManagedDaemonPlatformSpec(
+  process.platform === 'linux' ? 'linux' : 'darwin',
+).daemonSocket;
 
 export type AdminDaemonSocketSource =
   | 'explicit'
@@ -30,6 +33,7 @@ export function resolveAdminDaemonSocketSelection(
   explicitValue: string | undefined,
   config: WlfiConfig,
   env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): ResolvedAdminDaemonSocketSelection {
   if (explicitValue !== undefined) {
     const explicitSocket = presentString(explicitValue);
@@ -50,7 +54,9 @@ export function resolveAdminDaemonSocketSelection(
   }
 
   return {
-    value: DEFAULT_MANAGED_ADMIN_DAEMON_SOCKET,
+    value: resolveManagedDaemonPlatformSpec(
+      supportsManagedDaemonPlatform(platform) ? platform : 'darwin',
+    ).daemonSocket,
     source: 'default',
   };
 }
@@ -62,26 +68,28 @@ export function wrapAdminDaemonSocketTrustError(
   platform: NodeJS.Platform = process.platform,
 ): Error {
   const lines = [message];
-  const macOsManagedSocket = `\`${DEFAULT_MANAGED_ADMIN_DAEMON_SOCKET}\``;
-  const linuxSocketHint =
+  const managedSocket = supportsManagedDaemonPlatform(platform)
+    ? `\`${resolveManagedDaemonPlatformSpec(platform).daemonSocket}\``
+    : '`<managed daemon socket>`';
+  const nonManagedSocketHint =
     'Recovery: point the command at your existing daemon socket with `--daemon-socket`, `AGENTPAY_DAEMON_SOCKET`, or `agentpay config set daemonSocket <path>`.';
 
   if (source === 'explicit') {
     lines.push(
       isMacOsPlatform(platform)
-        ? `Recovery: rerun without \`--daemon-socket\`, or point it at the managed root-owned socket ${macOsManagedSocket}.`
-        : linuxSocketHint,
+        ? `Recovery: rerun without \`--daemon-socket\`, or point it at the managed root-owned socket ${managedSocket}.`
+        : `Recovery: rerun without \`--daemon-socket\`, or point it at the managed root-owned socket ${managedSocket}.`,
     );
   } else if (source === 'env-daemon-socket') {
     lines.push(
-      isMacOsPlatform(platform)
-        ? `Recovery: unset \`AGENTPAY_DAEMON_SOCKET\` or point it at the managed root-owned socket ${macOsManagedSocket}.`
+      supportsManagedDaemonPlatform(platform)
+        ? `Recovery: unset \`AGENTPAY_DAEMON_SOCKET\` or point it at the managed root-owned socket ${managedSocket}.`
         : 'Recovery: unset `AGENTPAY_DAEMON_SOCKET` if it is stale, or replace it with the actual daemon socket path.',
     );
   } else if (source === 'config-daemon-socket') {
     lines.push(
-      isMacOsPlatform(platform)
-        ? `Recovery: if this override was not intentional, run \`agentpay config unset daemonSocket\` to fall back to ${macOsManagedSocket}.`
+      supportsManagedDaemonPlatform(platform)
+        ? `Recovery: if this override was not intentional, run \`agentpay config unset daemonSocket\` to fall back to ${managedSocket}.`
         : 'Recovery: if this override was not intentional, run `agentpay config unset daemonSocket`; otherwise replace it with the actual daemon socket path.',
     );
   } else if (presentString(env.AGENTPAY_HOME)) {
@@ -91,14 +99,12 @@ export function wrapAdminDaemonSocketTrustError(
   }
 
   lines.push('Then verify with `agentpay status --strict`.');
-  if (isMacOsPlatform(platform)) {
+  if (supportsManagedDaemonPlatform(platform)) {
     lines.push(
       'If the managed daemon/socket is missing, run `agentpay admin setup --reuse-existing-wallet` or `agentpay admin setup`.',
     );
   } else {
-    lines.push(
-      'The managed `agentpay admin setup` daemon flow is currently macOS-only. On Linux, use an existing source-managed daemon socket explicitly.',
-    );
+    lines.push(nonManagedSocketHint);
   }
   return new Error(lines.join('\n'));
 }
@@ -110,13 +116,13 @@ export function resolveValidatedAdminDaemonSocket(
 ): string {
   const env = deps.env ?? process.env;
   const platform = deps.platform ?? process.platform;
-  const selection = resolveAdminDaemonSocketSelection(explicitValue, config, env);
+  const selection = resolveAdminDaemonSocketSelection(explicitValue, config, env, platform);
   const trustAdminDaemonSocketPath =
     deps.assertTrustedAdminDaemonSocketPath ?? assertTrustedAdminDaemonSocketPath;
 
-  if (!isMacOsPlatform(platform) && selection.source === 'default') {
+  if (!supportsManagedDaemonPlatform(platform) && selection.source === 'default') {
     throw new Error(
-      'No managed default daemon socket is available on this platform. Pass `--daemon-socket`, set `AGENTPAY_DAEMON_SOCKET`, or configure `daemonSocket` to the existing source-managed daemon socket path. The managed `agentpay admin setup` flow is currently macOS-only.',
+      'No managed default daemon socket is available on this platform. Pass `--daemon-socket`, set `AGENTPAY_DAEMON_SOCKET`, or configure `daemonSocket` to the existing source-managed daemon socket path.',
     );
   }
 

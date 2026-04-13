@@ -6,11 +6,14 @@ import {
   type WlfiConfig
 } from '../../packages/config/src/index.js';
 import {
-  AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE,
   assertValidAgentKeyId,
-  readAgentAuthTokenFromKeychain,
-  storeAgentAuthTokenInKeychain
 } from './keychain.js';
+import {
+  describeAgentAuthStorage,
+  readStoredAgentAuthToken,
+  resolveAgentAuthStorageService,
+  storeStoredAgentAuthToken,
+} from './agent-auth-storage.js';
 
 export interface MigrateLegacyAgentAuthInput {
   agentKeyId?: string;
@@ -78,15 +81,18 @@ export function migrateLegacyAgentAuthToken(
   deps: MigrateLegacyAgentAuthDeps = {}
 ): MigrateLegacyAgentAuthResult {
   const platform = deps.platform ?? process.platform;
-  if (platform !== 'darwin') {
-    throw new Error('legacy agent auth migration requires macOS Keychain');
+  if (platform !== 'darwin' && platform !== 'linux') {
+    throw new Error('legacy agent auth migration requires local credential storage on macOS or Linux');
   }
 
   const loadConfig = deps.readConfig ?? readConfig;
   const persistConfig = deps.writeConfig ?? writeConfig;
   const clearConfigKey = deps.deleteConfigKey ?? deleteConfigKey;
-  const readAgentAuthToken = deps.readAgentAuthToken ?? readAgentAuthTokenFromKeychain;
-  const storeAgentAuthToken = deps.storeAgentAuthToken ?? storeAgentAuthTokenInKeychain;
+  const readAgentAuthToken =
+    deps.readAgentAuthToken ?? ((agentKeyId: string) => readStoredAgentAuthToken(agentKeyId, platform));
+  const storeAgentAuthToken =
+    deps.storeAgentAuthToken ??
+    ((agentKeyId: string, token: string) => storeStoredAgentAuthToken(agentKeyId, token, platform));
 
   const explicitAgentKeyId = input.agentKeyId ? assertValidAgentKeyId(input.agentKeyId) : undefined;
   const config = loadConfig();
@@ -122,7 +128,7 @@ export function migrateLegacyAgentAuthToken(
   } else {
     if (!input.overwriteKeychain) {
       throw new Error(
-        'macOS Keychain already contains a different agent auth token for this agentKeyId; rerun with --overwrite-keychain after verifying the correct credential'
+        `${describeAgentAuthStorage(platform)} already contains a different agent auth token for this agentKeyId; rerun with --overwrite-keychain after verifying the correct credential`
       );
     }
 
@@ -143,7 +149,8 @@ export function migrateLegacyAgentAuthToken(
     agentKeyId,
     source: 'config',
     keychain: {
-      service: AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE,
+      service:
+        resolveAgentAuthStorageService(platform, agentKeyId) ?? 'agentpay-agent-auth-token',
       stored,
       overwritten,
       alreadyPresent,

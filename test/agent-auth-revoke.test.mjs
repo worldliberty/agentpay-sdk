@@ -133,7 +133,7 @@ test('completeAgentKeyRevocation rejects unconfirmed Rust output', async () => {
   );
 });
 
-test('completeAgentKeyRevocation reports a null keychain service outside macOS', async () => {
+test('completeAgentKeyRevocation reports the local credential service on Linux', async () => {
   const revoke = await import(modulePath.href + `?case=${Date.now()}-linux-service-null`);
   let configState = {
     agentKeyId: TEST_AGENT_KEY_ID,
@@ -163,5 +163,5 @@ test('completeAgentKeyRevocation reports a null keychain service outside macOS',
   );
 
   assert.equal(result.keychain.removed, false);
-  assert.equal(result.keychain.service, null);
+  assert.equal(result.keychain.service, 'agentpay-agent-auth-token');
 });

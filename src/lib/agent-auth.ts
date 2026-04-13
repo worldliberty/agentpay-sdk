@@ -48,7 +48,7 @@ export async function resolveAgentAuthToken(
   if (cliToken) {
     if (!input.allowLegacySource) {
       throw new Error(
-        '--agent-auth-token is disabled by default for security; use macOS Keychain or --agent-auth-token-stdin, ' +
+        '--agent-auth-token is disabled by default for security; use local credential storage or --agent-auth-token-stdin, ' +
           migrationHint(input.agentKeyId) +
           ', or pass --allow-legacy-agent-auth-source',
       );
@@ -65,7 +65,7 @@ export async function resolveAgentAuthToken(
   if (configToken) {
     if (!input.allowLegacySource) {
       throw new Error(
-        'agentAuthToken from config.json is disabled by default for security; use macOS Keychain or --agent-auth-token-stdin, ' +
+        'agentAuthToken from config.json is disabled by default for security; use local credential storage or --agent-auth-token-stdin, ' +
           migrationHint(input.agentKeyId) +
           ', or pass --allow-legacy-agent-auth-source',
       );
@@ -77,7 +77,7 @@ export async function resolveAgentAuthToken(
   if (envToken) {
     if (!input.allowLegacySource) {
       throw new Error(
-        'AGENTPAY_AGENT_AUTH_TOKEN is disabled by default for security; use macOS Keychain or --agent-auth-token-stdin, ' +
+        'AGENTPAY_AGENT_AUTH_TOKEN is disabled by default for security; use local credential storage or --agent-auth-token-stdin, ' +
           migrationHint(input.agentKeyId) +
           ', or pass --allow-legacy-agent-auth-source',
       );
@@ -85,5 +85,5 @@ export async function resolveAgentAuthToken(
     return { token: envToken, source: 'env' };
   }
 
-  throw new Error('agentAuthToken is required; use macOS Keychain or --agent-auth-token-stdin');
+  throw new Error('agentAuthToken is required; use local credential storage or --agent-auth-token-stdin');
 }

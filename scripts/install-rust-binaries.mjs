@@ -12,6 +12,17 @@ const MIN_RUST_VERSION = {
 };
 const commonRustBins = ['agentpay-daemon', 'agentpay-admin', 'agentpay-agent'];
 const macOsRustBins = ['agentpay-system-keychain'];
+const linuxHelperScripts = [
+  'run-agentpay-daemon.sh',
+  'agentpay-daemon-password-helper.sh',
+  'install-system-daemon.sh',
+  'uninstall-system-daemon.sh',
+];
+const macOsHelperScripts = [
+  'run-agentpay-daemon.sh',
+  'install-user-daemon.sh',
+  'uninstall-user-daemon.sh',
+];
 const RERUN_INSTRUCTIONS =
   'After installing prerequisites, rerun the source install steps from this repo checkout: `npm run build && npm run install:cli-launcher && npm run install:rust-binaries`.';
 
@@ -141,24 +152,20 @@ export function resolveRustBinariesForPlatform(platform = process.platform) {
 }
 
 function resolveHelperScripts(binDir, platform = process.platform) {
-  if (platform !== 'darwin') {
-    return [];
+  if (platform === 'darwin') {
+    return macOsHelperScripts.map((scriptName) => ({
+      source: path.join(repoRoot, 'scripts', 'launchd', scriptName),
+      destination: path.join(binDir, scriptName),
+    }));
+  }
+  if (platform === 'linux') {
+    return linuxHelperScripts.map((scriptName) => ({
+      source: path.join(repoRoot, 'scripts', 'systemd', scriptName),
+      destination: path.join(binDir, scriptName),
+    }));
   }
 
-  return [
-    {
-      source: path.join(repoRoot, 'scripts', 'launchd', 'run-agentpay-daemon.sh'),
-      destination: path.join(binDir, 'run-agentpay-daemon.sh'),
-    },
-    {
-      source: path.join(repoRoot, 'scripts', 'launchd', 'install-user-daemon.sh'),
-      destination: path.join(binDir, 'install-user-daemon.sh'),
-    },
-    {
-      source: path.join(repoRoot, 'scripts', 'launchd', 'uninstall-user-daemon.sh'),
-      destination: path.join(binDir, 'uninstall-user-daemon.sh'),
-    },
-  ];
+  return [];
 }
 
 function resolveCliEntrypoint() {

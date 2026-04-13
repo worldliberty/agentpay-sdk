@@ -12,7 +12,7 @@ test('blockedRawAdminPassthroughMessage redirects rotate-agent-auth-token to the
 
   assert.match(
     passthrough.blockedRawAdminPassthroughMessage('rotate-agent-auth-token') ?? '',
-    /use `agentpay config agent-auth rotate` so the rotated token is stored in macOS Keychain/,
+    /use `agentpay config agent-auth rotate` so the rotated token is stored in the local credential store/,
   );
 });
 

@@ -96,6 +96,10 @@ runtime_requires_macos_entries() {
   [[ "$(uname -s)" == "Darwin" ]]
 }
 
+runtime_requires_linux_entries() {
+  [[ "$(uname -s)" == "Linux" ]]
+}
+
 prepare_dirs() {
   local abs=""
   mkdir -p "$(dirname "$WORK_DIR")"
@@ -169,6 +173,8 @@ verify_install() {
   [[ -d "$runtime_dir/app/node_modules" ]] || die "Missing packaged CLI runtime dependencies after install."
   if runtime_requires_macos_entries; then
     [[ -x "$runtime_dir/bin/agentpay-system-keychain" ]] || die "Missing agentpay-system-keychain runtime entry after install."
+  elif runtime_requires_linux_entries; then
+    [[ -x "$runtime_dir/bin/agentpay-daemon-password-helper.sh" ]] || die "Missing Linux daemon password helper runtime entry after install."
   fi
 
   run_and_capture "$verify_log" env \
@@ -176,6 +182,7 @@ verify_install() {
     PATH="$runtime_dir/bin:${PATH}" \
     AGENTPAY_HOME="$runtime_dir" \
     EXPECT_MACOS_RUNTIME="$(if runtime_requires_macos_entries; then printf '1'; else printf '0'; fi)" \
+    EXPECT_LINUX_RUNTIME="$(if runtime_requires_linux_entries; then printf '1'; else printf '0'; fi)" \
     bash -c '
       set -euo pipefail
       command -v agentpay
@@ -187,6 +194,8 @@ verify_install() {
       test -x "$AGENTPAY_HOME/bin/agentpay-agent"
       if [[ "${EXPECT_MACOS_RUNTIME:-0}" == "1" ]]; then
         test -x "$AGENTPAY_HOME/bin/agentpay-system-keychain"
+      elif [[ "${EXPECT_LINUX_RUNTIME:-0}" == "1" ]]; then
+        test -x "$AGENTPAY_HOME/bin/agentpay-daemon-password-helper.sh"
       fi
       test -f "$AGENTPAY_HOME/app/package.json"
       test -f "$AGENTPAY_HOME/app/dist/cli.cjs"

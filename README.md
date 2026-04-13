@@ -28,8 +28,8 @@ The script can:
 - install workspace adapters for `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md`, `.clinerules/agentpay-sdk.md`, and the Cursor rule pack
 - install the Cursor adapter when the current directory is already a Cursor workspace or `AGENTPAY_SETUP_CURSOR_WORKSPACE` is set
 - when no supported AI target is detected, offer the same integrations with all options enabled by default
-- on macOS, finish after installation and hand off wallet creation to a separate `agentpay admin setup` step by default
-- on Linux, stop after installing the precompiled runtime and skill pack; managed daemon setup and wallet bootstrap remain macOS-only
+- finish after installation and hand off wallet creation to a separate `agentpay admin setup` step by default
+- support managed wallet setup on macOS with `launchd` and on Linux with system `systemd`
 - do not configure browser-based relay or web approval services
 
 ### Skills only
@@ -55,7 +55,7 @@ That mode:
 - `--skills-only`: network access plus a writable home directory or Cursor workspace target
 
 The full one-click installer does not require local Cargo, pnpm, or a preinstalled Node runtime. It still installs Node `20+` locally when the machine does not already have a compatible Node available, because the `agentpay` launcher runs on Node.
-On Linux, the packaged installer currently stops after the precompiled runtime + skill setup. Managed daemon setup and wallet bootstrap are currently macOS-only.
+On macOS and Linux, the packaged installer can install the precompiled runtime first and then hand off wallet bootstrap to `agentpay admin setup`.
 
 ### Install from source
 
@@ -74,7 +74,7 @@ On Linux, add `export PATH="$HOME/.agentpay/bin:$PATH"` to your shell startup fi
 
 `npm run install:cli-launcher` installs the `agentpay` launcher into `~/.agentpay/bin`, and `npm run install:rust-binaries` installs the Rust runtime into the same directory.
 
-Managed wallet bootstrap commands such as `agentpay admin setup`, `agentpay admin tui`, `agentpay admin reset`, and `agentpay admin uninstall` currently require macOS because the managed daemon flow still depends on LaunchDaemon and macOS Keychain.
+Managed wallet bootstrap commands such as `agentpay admin setup`, `agentpay admin tui`, `agentpay admin reset`, and `agentpay admin uninstall` are supported on macOS and Linux. The managed daemon uses `launchd` on macOS and system `systemd` on Linux. Agent auth storage uses macOS Keychain on macOS and Linux Secret Service on Linux.
 
 ### Update an existing install
 
@@ -88,7 +88,7 @@ pnpm run install:cli-launcher
 pnpm run install:rust-binaries
 ```
 
-- If you only need to reconnect the current local vault after refreshing the runtime on macOS, use `agentpay admin setup --reuse-existing-wallet`
+- If you only need to reconnect the current local vault after refreshing the runtime, use `agentpay admin setup --reuse-existing-wallet`
 
 ### Reinstall Rust daemon
 
@@ -96,22 +96,22 @@ If you update Rust daemon code from a source checkout, rerun `npm run install:ru
 
 ## Usage
 
-AgentPay uses a self-custodial local daemon wallet. The managed wallet bootstrap flow below is currently macOS-only:
+AgentPay uses a self-custodial local daemon wallet. The managed wallet bootstrap flow below is supported on macOS and Linux:
 
 1. run `agentpay admin setup`
 2. let it install the daemon and set up a wallet
 3. use `agentpay transfer`, `agentpay transfer-native`, `agentpay approve`, `agentpay broadcast`, `agentpay x402`, or `agentpay mpp`
 4. use the local admin approval commands when a policy pauses a request for manual review
 
-User-facing examples below avoid shell env vars on purpose. Prefer prompts, config files, `agentpay admin tui` on macOS, and explicit command flags.
+User-facing examples below avoid shell env vars on purpose. Prefer prompts, config files, `agentpay admin tui`, and explicit command flags.
 
 ## Command model
 
 - `agentpay admin setup`
   - first-run setup
   - `--reuse-existing-wallet` reattaches the current local vault when you need to recover the daemon or refresh local credentials without creating a fresh wallet
-  - stores the vault password in macOS System Keychain
-  - installs the root LaunchDaemon
+  - stores the daemon unlock secret in macOS System Keychain on macOS or a root-owned password file on Linux
+  - installs the root-managed service through `launchd` on macOS or system `systemd` on Linux
   - creates a vault key + agent key
   - prints the Ethereum address
 - `agentpay admin tui`
@@ -129,7 +129,7 @@ User-facing examples below avoid shell env vars on purpose. Prefer prompts, conf
   - direct policy and manual-approval configuration commands
 - `agentpay transfer`, `agentpay transfer-native`, `agentpay approve`, `agentpay broadcast`, `agentpay x402`, `agentpay mpp`
   - submits signing requests through the daemon
-  - uses the configured agent key id plus the macOS Keychain token by default
+  - uses the configured agent key id plus the token from the local credential store by default
 - `agentpay status`
   - inspects local wallet security posture, daemon/socket trust, state-file trust, bootstrap artifacts, and agent token storage
   - use `--strict` when you want CI or automation to fail on warnings
@@ -137,12 +137,12 @@ User-facing examples below avoid shell env vars on purpose. Prefer prompts, conf
   - non-privileged local cleanup for plaintext bootstrap artifacts and legacy `agentAuthToken` config storage
   - uses `--overwrite-keychain` only when you have confirmed the plaintext config token is the credential you intend to keep
 - `agentpay daemon`
-  - not a user entrypoint; the managed daemon lifecycle is handled by `agentpay admin setup` on macOS
+  - not a user entrypoint; the managed daemon lifecycle is handled by `agentpay admin setup` on macOS or Linux
 
 ## Shared config vs live wallet state
 
 - `agentpay admin token set-chain ...` updates the local shared config in `~/.agentpay/config.json` and, when reusable wallet metadata is present, immediately tries to refresh the live daemon policy attachment for the existing wallet. It prompts locally for the vault password unless you provide `--vault-password-stdin`; use `--non-interactive` only together with `--vault-password-stdin`.
-- The other shared-config editors such as `agentpay admin chain ...`, `agentpay admin token remove ...`, and `agentpay admin token remove-chain ...` still change the saved draft only. Reapply those edits through `agentpay admin tui` or `agentpay admin setup --reuse-existing-wallet` on macOS, or through `agentpay-admin bootstrap --from-shared-config` when you are driving an existing daemon directly.
+- The other shared-config editors such as `agentpay admin chain ...`, `agentpay admin token remove ...`, and `agentpay admin token remove-chain ...` still change the saved draft only. Reapply those edits through `agentpay admin tui` or `agentpay admin setup --reuse-existing-wallet` on macOS or Linux, or through `agentpay-admin bootstrap --from-shared-config` when you are driving an existing daemon directly.
 - `agentpay config show --json` prints that saved shared config snapshot. Treat it as your source-of-truth draft, not as proof that the current daemon policy attachment already changed.
 - Common shared-config commands:
   - add or update a saved network: `agentpay admin chain add <key> --chain-id <id> --name <name> --rpc-url <url>`
@@ -152,8 +152,8 @@ User-facing examples below avoid shell env vars on purpose. Prefer prompts, conf
   - remove a configured token entirely: `agentpay admin token remove <tokenKey>`
 - Fresh AgentPay configs seed `eth`, `bsc`, and `tempo`, plus built-in `BNB`, `ETH`, `USD1`, Tempo native `USD`, and `pathUSD` profiles.
 - To inspect the concrete contents behind wallet `attachedPolicyIds`, first read the ids from `agentpay config show --json`, then query the daemon policies directly with `agentpay admin list-policies --policy-id <uuid>`.
-- For bulk shared-config edits, destination overrides, or manual approvals, use `agentpay admin tui` on macOS.
-- To reapply the entire saved draft to the live wallet, rerun `agentpay admin setup --reuse-existing-wallet` on macOS or use `agentpay-admin bootstrap --from-shared-config` when operating an existing daemon directly.
+- For bulk shared-config edits, destination overrides, or manual approvals, use `agentpay admin tui`.
+- To reapply the entire saved draft to the live wallet, rerun `agentpay admin setup --reuse-existing-wallet` on macOS or Linux, or use `agentpay-admin bootstrap --from-shared-config` when operating an existing daemon directly.
 - If `agentpay admin token set-chain ...` fails during the live apply step, the CLI restores the previous saved config and exits with the apply error.
 - `agentpay admin wallet-backup export --output ...` is the supported backup command and remains available under the `admin wallet-backup` subcommand tree.
 
@@ -176,7 +176,7 @@ The preview is read-only. It does not prompt for the vault password, does not to
 During a real `agentpay admin setup`, you may be prompted for two different secrets:
 
 - `Vault password`: the wallet password you choose for encrypted local state; local entry is confirmed twice to catch typos
-- `macOS admin password for sudo`: your macOS login/admin password, used only when setup needs elevated privileges to install or recover the root LaunchDaemon
+- `System admin password for sudo`: your local admin password, used only when setup needs elevated privileges to install or recover the root-managed daemon
 
 On a fresh wallet, interactive setup now skips the offline backup wizard by default so the first-run path stays short. If you want a backup during setup, pass `--backup-output <path>`. Otherwise export one afterward with `agentpay admin wallet-backup export --output <path>`.
 
@@ -217,10 +217,25 @@ After that, the command:
 - installs or refreshes the root daemon
 - waits for the daemon to come up
 - configures the requested spending policies
-- imports the agent token into macOS Keychain
+- imports the agent token into the local credential store
 - prints the wallet address
 
-By default, setup keeps the freshly issued agent auth token in macOS Keychain and redacts it from CLI output. Only use `--print-agent-auth-token` when you intentionally need to export that secret.
+By default, setup keeps the freshly issued agent auth token in the local credential store and redacts it from CLI output. On macOS that store is macOS Keychain. On Linux it is Linux Secret Service. Only use `--print-agent-auth-token` when you intentionally need to export that secret.
+
+For a headless Linux container, run setup from an interactive shell inside the container after starting a temporary user D-Bus and Secret Service session:
+
+```bash
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-$HOME/.xdg-run}"
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+dbus-run-session -- bash -lc '
+  printf "%s\n" "container-login-pass" | gnome-keyring-daemon --login --components=secrets >/tmp/gk-login.out 2>/tmp/gk-login.err || true
+  eval "$(gnome-keyring-daemon --start --components=secrets)"
+  agentpay admin setup
+'
+```
+
+This assumes the container already has `systemd`, `sudo`, `dbus-user-session`, `gnome-keyring`, and `libsecret-tools` installed, and that you entered the container with a real TTY such as `docker exec -it <container> bash`.
 
 Example with explicit chain config:
 
@@ -271,7 +286,7 @@ Run:
 agentpay admin tui
 ```
 
-Like `admin setup`, the TUI stores the new agent auth token in macOS Keychain by default and does not print it unless you pass `--print-agent-auth-token`.
+Like `admin setup`, the TUI stores the new agent auth token in the local credential store by default and does not print it unless you pass `--print-agent-auth-token`.
 
 The TUI starts on the token list, lets you add new tokens or networks, fetches token name/symbol/decimals from the selected network RPC, and bootstraps every saved token across its selected networks.
 
@@ -363,7 +378,7 @@ agentpay admin reject-manual-approval-request \
 
 Top-level signing commands always go through the daemon.
 
-After `agentpay admin setup`, the normal path is to rely on the configured agent key id plus the token already stored in macOS Keychain. You only need `--agent-key-id` or `--agent-auth-token-stdin` when overriding that default.
+After `agentpay admin setup`, the normal path is to rely on the configured agent key id plus the token already stored in the local credential store. You only need `--agent-key-id` or `--agent-auth-token-stdin` when overriding that default.
 
 Native transfer:
 
@@ -484,18 +499,18 @@ For the auto-waiting broadcast flows above:
 
 ## Operational notes
 
-- The daemon state file lives at `/var/db/agentpay/daemon-state.enc` and is intended to be root-only.
-- The managed socket lives at `/Library/AgentPay/run/daemon.sock`.
+- The daemon state file lives at `/var/db/agentpay/daemon-state.enc` on macOS or `/var/lib/agentpay/daemon-state.enc` on Linux, and is intended to be root-only.
+- The managed socket lives at `/Library/AgentPay/run/daemon.sock` on macOS or `/run/agentpay/daemon.sock` on Linux.
 - If `setup` says the daemon password does not unlock the stored state, use the original vault password or reset the managed state before setting up a fresh wallet.
-- If the machine is lost or the local wallet is gone, restore from your encrypted offline backup on macOS with `agentpay admin setup --restore-wallet-from <backup.json>`.
-- Forgotten vault password recovery is still destructive if you do not have a valid offline backup: run `agentpay admin reset`, then `agentpay admin setup` on macOS to create a new wallet.
-- After changing daemon-side Rust code, run `npm run install:rust-binaries` and restart the managed daemon through `agentpay admin setup` on macOS.
+- If the machine is lost or the local wallet is gone, restore from your encrypted offline backup with `agentpay admin setup --restore-wallet-from <backup.json>`.
+- Forgotten vault password recovery is still destructive if you do not have a valid offline backup: run `agentpay admin reset`, then `agentpay admin setup` to create a new wallet.
+- After changing daemon-side Rust code, run `npm run install:rust-binaries` and restart the managed daemon through `agentpay admin setup`.
 
 ## Reset a forgotten password
 
 If you forgot the vault password and do not have a valid offline backup, there is no recovery path for the existing encrypted daemon state. Use reset only when you intentionally want to discard the old wallet and create a new wallet.
 
-If you do have a wallet backup, do not reset. On macOS use:
+If you do have a wallet backup, do not reset. Use:
 
 ```bash
 agentpay admin setup --restore-wallet-from <backup.json>
@@ -511,7 +526,7 @@ For automation or CI-style local flows:
 agentpay admin reset --yes
 ```
 
-By default, reset keeps non-secret config like chain settings, but removes the managed daemon state, the daemon password stored in System Keychain, the local agent token, and lingering bootstrap artifacts.
+By default, reset keeps non-secret config like chain settings, but removes the managed daemon state, the daemon unlock secret, the local agent token, and lingering bootstrap artifacts.
 
 If you want a totally clean local slate too:
 
@@ -525,13 +540,13 @@ After reset, run `agentpay admin setup` to create a new wallet.
 
 Use uninstall when you want a full local cleanup instead of preparing for another setup. It removes:
 
-- the managed LaunchDaemon
-- `/Library/AgentPay`
-- `/var/db/agentpay`
-- `/var/log/agentpay`
+- the managed service (`launchd` on macOS, system `systemd` on Linux)
+- `/Library/AgentPay` on macOS or `/opt/agentpay` on Linux
+- `/var/db/agentpay` on macOS or `/var/lib/agentpay` on Linux
+- `/var/log/agentpay` on macOS
 - `~/.agentpay`
-- the daemon password in System Keychain
-- the local agent auth token in Keychain
+- the daemon unlock secret
+- the local agent auth token in the local credential store
 
 `agentpay admin uninstall` removes the managed daemon and local AgentPay SDK files on that machine. If you are running from a repo checkout or another non-managed source path, the managed state is still removed but your current source checkout is left alone.
 

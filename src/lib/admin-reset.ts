@@ -17,26 +17,35 @@ import {
   type CleanupBootstrapArtifactsResult,
 } from './bootstrap-artifacts.js';
 import {
-  AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE,
   DAEMON_PASSWORD_KEYCHAIN_SERVICE,
-  deleteAgentAuthTokenFromKeychain,
 } from './keychain.js';
+import {
+  deleteStoredAgentAuthToken,
+  resolveAgentAuthStorageService,
+} from './agent-auth-storage.js';
 import {
   LAUNCHD_UNINSTALL_SCRIPT_NAME,
   resolveLaunchDaemonHelperScriptPath,
 } from './launchd-assets.js';
-import { assertMacOsOnlyFeature } from './platform-support.js';
+import {
+  resolveManagedDaemonPlatformSpec,
+} from './managed-daemon-platform.js';
+import { assertManagedDaemonPlatform } from './platform-support.js';
 import { promptHiddenTty } from './hidden-tty-prompt.js';
 import { createSudoSession } from './sudo.js';
+import { resolveSystemdHelperScriptPath, SYSTEMD_UNINSTALL_SCRIPT_NAME } from './systemd-assets.js';
 
-const DEFAULT_LAUNCH_DAEMON_LABEL = 'com.agentpay.daemon';
-const DEFAULT_MANAGED_DAEMON_SOCKET = '/Library/AgentPay/run/daemon.sock';
-const DEFAULT_MANAGED_STATE_FILE = '/var/db/agentpay/daemon-state.enc';
-const DEFAULT_LAUNCH_DAEMON_PLIST = `/Library/LaunchDaemons/${DEFAULT_LAUNCH_DAEMON_LABEL}.plist`;
-const DEFAULT_MANAGED_ROOT_DIR = '/Library/AgentPay';
-const DEFAULT_MANAGED_STATE_DIR = '/var/db/agentpay';
-const DEFAULT_MANAGED_LOG_DIR = '/var/log/agentpay';
-const DEFAULT_MANAGED_RELAY_DAEMON_TOKEN_FILE = `${DEFAULT_MANAGED_STATE_DIR}/relay-daemon-token`;
+const MANAGED_DAEMON_SPEC = resolveManagedDaemonPlatformSpec(
+  process.platform === 'linux' ? 'linux' : 'darwin',
+);
+const DEFAULT_LAUNCH_DAEMON_LABEL = MANAGED_DAEMON_SPEC.label;
+const DEFAULT_MANAGED_DAEMON_SOCKET = MANAGED_DAEMON_SPEC.daemonSocket;
+const DEFAULT_MANAGED_STATE_FILE = MANAGED_DAEMON_SPEC.stateFile;
+const DEFAULT_LAUNCH_DAEMON_PLIST = MANAGED_DAEMON_SPEC.serviceFile;
+const DEFAULT_MANAGED_ROOT_DIR = MANAGED_DAEMON_SPEC.rootDir;
+const DEFAULT_MANAGED_STATE_DIR = MANAGED_DAEMON_SPEC.stateDir;
+const DEFAULT_MANAGED_LOG_DIR = MANAGED_DAEMON_SPEC.logDir ?? '';
+const DEFAULT_MANAGED_RELAY_DAEMON_TOKEN_FILE = MANAGED_DAEMON_SPEC.relayDaemonTokenFile;
 const GLOBAL_NPM_CLI_PACKAGE_NAME = '@worldlibertyfinancial/agentpay-sdk';
 const LEGACY_GLOBAL_NPM_CLI_LABEL = 'legacy global npm AgentPay SDK CLI';
 const ONE_CLICK_INSTALL_MANIFEST_FILENAME = 'one-click-install-manifest.json';
@@ -69,6 +78,7 @@ export interface CleanupLocalAdminResetStateResult {
   keychain: {
     removed: boolean;
     service: string | null;
+    error: string | null;
   };
   config: {
     path: string;
@@ -106,6 +116,7 @@ export interface CleanupLocalAdminUninstallStateResult {
   keychain: {
     removed: boolean;
     service: string | null;
+    error: string | null;
   };
   config: {
     path: string;
@@ -211,8 +222,8 @@ async function promptVisible(query: string): Promise<string> {
 const sudoSession = createSudoSession({
   promptPassword: async () =>
     await promptHidden(
-      'macOS admin password for sudo (input hidden; required to uninstall the root daemon and delete its state): ',
-      'macOS admin password for sudo',
+      'System admin password for sudo (input hidden; required to uninstall the root-managed daemon and delete its state): ',
+      'System admin password for sudo',
     ),
 });
 
@@ -230,7 +241,7 @@ function assertNotInvokedViaSudo(commandName: string): void {
     return;
   }
   throw new Error(
-    `run \`agentpay ${commandName}\` as your normal macOS user, not with sudo; the CLI prompts for sudo internally and running it as root can target the wrong local AgentPay home`,
+    `run \`agentpay ${commandName}\` as your normal local user, not with sudo; the CLI prompts for sudo internally and running it as root can target the wrong local AgentPay home`,
   );
 }
 
@@ -373,6 +384,9 @@ function printResetSummary(result: {
   } else {
     lines.push(`config not found: ${result.local.config.path}`);
   }
+  if (result.local.keychain.error) {
+    lines.push(`local credential cleanup warning: ${result.local.keychain.error}`);
+  }
 
   if (result.local.bootstrapArtifacts.error) {
     lines.push(`bootstrap artifact cleanup warning: ${result.local.bootstrapArtifacts.error}`);
@@ -387,6 +401,9 @@ function printResetSummary(result: {
 }
 
 function resolveLaunchDaemonUninstallScriptPath(config?: WlfiConfig): string {
+  if (process.platform === 'linux') {
+    return resolveSystemdHelperScriptPath(SYSTEMD_UNINSTALL_SCRIPT_NAME, config);
+  }
   return resolveLaunchDaemonHelperScriptPath(LAUNCHD_UNINSTALL_SCRIPT_NAME, config);
 }
 
@@ -510,6 +527,7 @@ export function managedDaemonResetArtifactPaths(): string[] {
     DEFAULT_MANAGED_STATE_FILE,
     DEFAULT_MANAGED_DAEMON_SOCKET,
     DEFAULT_MANAGED_RELAY_DAEMON_TOKEN_FILE,
+    ...(MANAGED_DAEMON_SPEC.daemonPasswordFile ? [MANAGED_DAEMON_SPEC.daemonPasswordFile] : []),
   ];
 }
 
@@ -523,7 +541,9 @@ export function cleanupLocalAdminResetState(
   const resolveAgentPayHomeImpl = deps.resolveAgentPayHome ?? resolveAgentPayHome;
   const readConfigImpl = deps.readConfig ?? readConfig;
   const deleteConfigKeyImpl = deps.deleteConfigKey ?? deleteConfigKey;
-  const deleteAgentAuthTokenImpl = deps.deleteAgentAuthToken ?? deleteAgentAuthTokenFromKeychain;
+  const deleteAgentAuthTokenImpl =
+    deps.deleteAgentAuthToken ??
+    ((agentKeyId: string) => deleteStoredAgentAuthToken(agentKeyId, platform));
   const unlinkSyncImpl = deps.unlinkSync ?? fs.unlinkSync;
   const cleanupBootstrapArtifactsImpl =
     deps.cleanupBootstrapArtifacts ?? cleanupAutoGeneratedBootstrapArtifacts;
@@ -536,7 +556,15 @@ export function cleanupLocalAdminResetState(
   const clearedAgentKeyId = currentConfig?.agentKeyId !== undefined;
   const clearedLegacyAgentAuthToken = currentConfig?.agentAuthToken !== undefined;
   const clearedWalletMetadata = currentConfig?.wallet !== undefined;
-  const keychainRemoved = agentKeyId ? deleteAgentAuthTokenImpl(agentKeyId) : false;
+  let keychainRemoved = false;
+  let keychainError: string | null = null;
+  if (agentKeyId) {
+    try {
+      keychainRemoved = deleteAgentAuthTokenImpl(agentKeyId);
+    } catch (error) {
+      keychainError = renderError(error);
+    }
+  }
 
   let configDeleted = false;
   /* c8 ignore next -- configExists implies readConfigImpl() returned an object in this module; nullish fallback is defensive */
@@ -597,7 +625,8 @@ export function cleanupLocalAdminResetState(
     agentKeyId,
     keychain: {
       removed: keychainRemoved,
-      service: platform === 'darwin' ? AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE : null,
+      service: resolveAgentAuthStorageService(platform, agentKeyId ?? undefined),
+      error: keychainError,
     },
     config: {
       path: configPath,
@@ -823,7 +852,9 @@ export function cleanupLocalAdminUninstallState(
   const resolveConfigPathImpl = deps.resolveConfigPath ?? resolveConfigPath;
   const resolveAgentPayHomeImpl = deps.resolveAgentPayHome ?? resolveAgentPayHome;
   const readConfigImpl = deps.readConfig ?? readConfig;
-  const deleteAgentAuthTokenImpl = deps.deleteAgentAuthToken ?? deleteAgentAuthTokenFromKeychain;
+  const deleteAgentAuthTokenImpl =
+    deps.deleteAgentAuthToken ??
+    ((agentKeyId: string) => deleteStoredAgentAuthToken(agentKeyId, platform));
   const rmSyncImpl = deps.rmSync ?? fs.rmSync;
   const homedirImpl = deps.homedir ?? os.homedir;
   const readdirSyncImpl = deps.readdirSync ?? fs.readdirSync;
@@ -836,7 +867,15 @@ export function cleanupLocalAdminUninstallState(
   const agentpayHomeExists = existsSync(agentpayHome);
   const currentConfig = configExists ? readConfigImpl() : null;
   const agentKeyId = currentConfig?.agentKeyId ?? null;
-  const keychainRemoved = agentKeyId ? deleteAgentAuthTokenImpl(agentKeyId) : false;
+  let keychainRemoved = false;
+  let keychainError: string | null = null;
+  if (agentKeyId) {
+    try {
+      keychainRemoved = deleteAgentAuthTokenImpl(agentKeyId);
+    } catch (error) {
+      keychainError = renderError(error);
+    }
+  }
   const shellRcCandidates = new Set<string>();
   const knownSkillTargets = resolveKnownOneClickSkillTargets(homedirImpl());
   const skillTargetsRemoved: string[] = [];
@@ -930,7 +969,8 @@ export function cleanupLocalAdminUninstallState(
     agentKeyId,
     keychain: {
       removed: keychainRemoved,
-      service: platform === 'darwin' ? AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE : null,
+      service: resolveAgentAuthStorageService(platform, agentKeyId ?? undefined),
+      error: keychainError,
     },
     config: {
       path: configPath,
@@ -982,9 +1022,9 @@ async function confirmReset(options: AdminResetOptions): Promise<void> {
 }
 
 async function runAdminReset(options: AdminResetOptions): Promise<void> {
-  assertMacOsOnlyFeature(
+  assertManagedDaemonPlatform(
     '`agentpay admin reset`',
-    'The current reset flow uninstalls a root LaunchDaemon and deletes macOS-managed daemon state.',
+    'The current reset flow uninstalls the root-managed daemon and deletes managed daemon state.',
   );
 
   assertNotInvokedViaSudo('admin reset');
@@ -994,7 +1034,7 @@ async function runAdminReset(options: AdminResetOptions): Promise<void> {
 
   if (!options.json && typeof process.geteuid === 'function' && process.geteuid() !== 0) {
     process.stderr.write(
-      'macOS admin password required: reset uses sudo to uninstall the root LaunchDaemon and delete the root-managed daemon state.\n',
+      'System admin password required: reset uses sudo to uninstall the root-managed daemon and delete its state.\n',
     );
   }
   await sudoSession.prime();
@@ -1003,16 +1043,27 @@ async function runAdminReset(options: AdminResetOptions): Promise<void> {
   const uninstallProgress = createProgress('Uninstalling managed daemon', showProgress);
   let uninstallResult;
   try {
-    uninstallResult = await sudoSession.run([
-      resolveLaunchDaemonUninstallScriptPath(currentConfig),
-      '--label',
-      DEFAULT_LAUNCH_DAEMON_LABEL,
-      '--keychain-service',
-      DAEMON_PASSWORD_KEYCHAIN_SERVICE,
-      '--keychain-account',
-      keychainAccount,
-      '--delete-keychain-password',
-    ]);
+    uninstallResult = await sudoSession.run(
+      process.platform === 'linux'
+        ? [
+            resolveLaunchDaemonUninstallScriptPath(currentConfig),
+            '--label',
+            DEFAULT_LAUNCH_DAEMON_LABEL,
+            ...(MANAGED_DAEMON_SPEC.daemonPasswordFile
+              ? ['--delete-password-file', MANAGED_DAEMON_SPEC.daemonPasswordFile]
+              : []),
+          ]
+        : [
+            resolveLaunchDaemonUninstallScriptPath(currentConfig),
+            '--label',
+            DEFAULT_LAUNCH_DAEMON_LABEL,
+            '--keychain-service',
+            DAEMON_PASSWORD_KEYCHAIN_SERVICE,
+            '--keychain-account',
+            keychainAccount,
+            '--delete-keychain-password',
+          ],
+    );
     /* c8 ignore next 4 -- sudoSession.run reports command failures via exit codes; synchronous throws are defensive */
   } catch (error) {
     uninstallProgress.fail();
@@ -1052,21 +1103,28 @@ async function runAdminReset(options: AdminResetOptions): Promise<void> {
   stateProgress.succeed('Root-managed daemon state deleted');
 
   const localProgress = createProgress('Removing local wallet credentials', showProgress);
-  const local = cleanupLocalAdminResetState({ deleteConfig: options.deleteConfig });
-  localProgress.succeed('Local wallet credentials removed');
+  let local: CleanupLocalAdminResetStateResult;
+  try {
+    local = cleanupLocalAdminResetState({ deleteConfig: options.deleteConfig });
+    localProgress.succeed('Local wallet credentials removed');
+  } catch (error) {
+    localProgress.fail();
+    throw error;
+  }
 
   const result = {
     command: 'reset',
     daemon: {
       autostart: false,
       label: DEFAULT_LAUNCH_DAEMON_LABEL,
-      launchdDomain: 'system',
-      plist: DEFAULT_LAUNCH_DAEMON_PLIST,
+      serviceManager: MANAGED_DAEMON_SPEC.serviceManager,
+      serviceFile: DEFAULT_LAUNCH_DAEMON_PLIST,
       daemonSocket: DEFAULT_MANAGED_DAEMON_SOCKET,
       relayDaemonTokenFile: DEFAULT_MANAGED_RELAY_DAEMON_TOKEN_FILE,
       stateFile: DEFAULT_MANAGED_STATE_FILE,
-      systemKeychainPasswordService: DAEMON_PASSWORD_KEYCHAIN_SERVICE,
-      systemKeychainPasswordAccount: keychainAccount,
+      systemKeychainPasswordService: MANAGED_DAEMON_SPEC.daemonPasswordService,
+      systemKeychainPasswordAccount: process.platform === 'darwin' ? keychainAccount : null,
+      daemonPasswordFile: MANAGED_DAEMON_SPEC.daemonPasswordFile,
     },
     local,
     nextStep: 'Run `agentpay admin setup` to create a new wallet and re-install the managed daemon.',
@@ -1112,7 +1170,7 @@ function printUninstallSummary(result: {
     label: string;
     daemonRoot: string;
     stateDir: string;
-    logDir: string;
+    logDir: string | null;
   };
   local: CleanupLocalAdminUninstallStateResult;
   globalCli: GlobalCliUninstallResult;
@@ -1122,7 +1180,7 @@ function printUninstallSummary(result: {
     `managed daemon removed: ${result.daemon.label}`,
     `managed daemon files removed: ${result.daemon.daemonRoot}`,
     `managed state directory removed: ${result.daemon.stateDir}`,
-    `managed log directory removed: ${result.daemon.logDir}`,
+    ...(result.daemon.logDir ? [`managed log directory removed: ${result.daemon.logDir}`] : []),
     result.local.agentKeyId
       ? `old agent key cleared: ${result.local.agentKeyId}`
       : 'old agent key cleared: no configured agent key was found',
@@ -1135,6 +1193,9 @@ function printUninstallSummary(result: {
       ? `config removed: ${result.local.config.path}`
       : `config not found: ${result.local.config.path}`,
   ];
+  if (result.local.keychain.error) {
+    lines.push(`local credential cleanup warning: ${result.local.keychain.error}`);
+  }
 
   for (const rcPath of result.local.oneClickInstaller.shellRcFilesUpdated) {
     lines.push(`shell rc cleaned: ${rcPath}`);
@@ -1173,9 +1234,9 @@ function printUninstallSummary(result: {
 }
 
 async function runAdminUninstall(options: AdminUninstallOptions): Promise<void> {
-  assertMacOsOnlyFeature(
+  assertManagedDaemonPlatform(
     '`agentpay admin uninstall`',
-    'The current uninstall flow removes a root LaunchDaemon and macOS-managed daemon files.',
+    'The current uninstall flow removes the root-managed daemon and managed daemon files.',
   );
 
   assertNotInvokedViaSudo('admin uninstall');
@@ -1185,7 +1246,7 @@ async function runAdminUninstall(options: AdminUninstallOptions): Promise<void> 
 
   if (!options.json && typeof process.geteuid === 'function' && process.geteuid() !== 0) {
     process.stderr.write(
-      'macOS admin password required: uninstall uses sudo to remove the root LaunchDaemon and all managed root-owned files.\n',
+      'System admin password required: uninstall uses sudo to remove the root-managed daemon and all managed root-owned files.\n',
     );
   }
   await sudoSession.prime();
@@ -1194,16 +1255,27 @@ async function runAdminUninstall(options: AdminUninstallOptions): Promise<void> 
   const uninstallProgress = createProgress('Uninstalling managed daemon', showProgress);
   let uninstallResult;
   try {
-    uninstallResult = await sudoSession.run([
-      resolveLaunchDaemonUninstallScriptPath(currentConfig),
-      '--label',
-      DEFAULT_LAUNCH_DAEMON_LABEL,
-      '--keychain-service',
-      DAEMON_PASSWORD_KEYCHAIN_SERVICE,
-      '--keychain-account',
-      keychainAccount,
-      '--delete-keychain-password',
-    ]);
+    uninstallResult = await sudoSession.run(
+      process.platform === 'linux'
+        ? [
+            resolveLaunchDaemonUninstallScriptPath(currentConfig),
+            '--label',
+            DEFAULT_LAUNCH_DAEMON_LABEL,
+            ...(MANAGED_DAEMON_SPEC.daemonPasswordFile
+              ? ['--delete-password-file', MANAGED_DAEMON_SPEC.daemonPasswordFile]
+              : []),
+          ]
+        : [
+            resolveLaunchDaemonUninstallScriptPath(currentConfig),
+            '--label',
+            DEFAULT_LAUNCH_DAEMON_LABEL,
+            '--keychain-service',
+            DAEMON_PASSWORD_KEYCHAIN_SERVICE,
+            '--keychain-account',
+            keychainAccount,
+            '--delete-keychain-password',
+          ],
+    );
     /* c8 ignore next 4 -- sudoSession.run reports command failures via exit codes; synchronous throws are defensive */
   } catch (error) {
     uninstallProgress.fail();
@@ -1222,13 +1294,12 @@ async function runAdminUninstall(options: AdminUninstallOptions): Promise<void> 
   const rootProgress = createProgress('Removing managed root-owned files', showProgress);
   let deleteRootArtifactsResult;
   try {
-    deleteRootArtifactsResult = await sudoSession.run([
-      '/bin/rm',
-      '-rf',
+    const rootPaths = [
       DEFAULT_MANAGED_ROOT_DIR,
       DEFAULT_MANAGED_STATE_DIR,
-      DEFAULT_MANAGED_LOG_DIR,
-    ]);
+      ...(DEFAULT_MANAGED_LOG_DIR ? [DEFAULT_MANAGED_LOG_DIR] : []),
+    ];
+    deleteRootArtifactsResult = await sudoSession.run(['/bin/rm', '-rf', ...rootPaths]);
     /* c8 ignore next 4 -- sudoSession.run reports command failures via exit codes; synchronous throws are defensive */
   } catch (error) {
     rootProgress.fail();
@@ -1247,7 +1318,7 @@ async function runAdminUninstall(options: AdminUninstallOptions): Promise<void> 
       DEFAULT_LAUNCH_DAEMON_PLIST,
       DEFAULT_MANAGED_ROOT_DIR,
       DEFAULT_MANAGED_STATE_DIR,
-      DEFAULT_MANAGED_LOG_DIR,
+      ...(DEFAULT_MANAGED_LOG_DIR ? [DEFAULT_MANAGED_LOG_DIR] : []),
     ]);
     rootProgress.succeed('Managed root-owned files removed');
   } catch (error) {
@@ -1292,15 +1363,16 @@ async function runAdminUninstall(options: AdminUninstallOptions): Promise<void> 
     daemon: {
       autostart: false,
       label: DEFAULT_LAUNCH_DAEMON_LABEL,
-      launchdDomain: 'system',
-      plist: DEFAULT_LAUNCH_DAEMON_PLIST,
+      serviceManager: MANAGED_DAEMON_SPEC.serviceManager,
+      serviceFile: DEFAULT_LAUNCH_DAEMON_PLIST,
       daemonSocket: DEFAULT_MANAGED_DAEMON_SOCKET,
       stateFile: DEFAULT_MANAGED_STATE_FILE,
       daemonRoot: DEFAULT_MANAGED_ROOT_DIR,
       stateDir: DEFAULT_MANAGED_STATE_DIR,
-      logDir: DEFAULT_MANAGED_LOG_DIR,
-      systemKeychainPasswordService: DAEMON_PASSWORD_KEYCHAIN_SERVICE,
-      systemKeychainPasswordAccount: keychainAccount,
+      logDir: DEFAULT_MANAGED_LOG_DIR || null,
+      systemKeychainPasswordService: MANAGED_DAEMON_SPEC.daemonPasswordService,
+      systemKeychainPasswordAccount: process.platform === 'darwin' ? keychainAccount : null,
+      daemonPasswordFile: MANAGED_DAEMON_SPEC.daemonPasswordFile,
     },
     local,
     globalCli,

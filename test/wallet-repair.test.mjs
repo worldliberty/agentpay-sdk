@@ -101,6 +101,7 @@ test('repairWalletState migrates legacy config secrets and deletes lingering boo
   const result = walletRepair.repairWalletState(
     {},
     {
+      platform: 'darwin',
       readConfig: () => ({
         agentKeyId: TEST_AGENT_KEY_ID,
         agentAuthToken: 'legacy-token',
@@ -172,6 +173,7 @@ test('repairWalletState scrubs plaintext config storage when a matching Keychain
       redactBootstrap: true,
     },
     {
+      platform: 'darwin',
       readConfig: () => ({
         agentKeyId: TEST_AGENT_KEY_ID,
         agentAuthToken: 'legacy-token',
@@ -285,7 +287,7 @@ test('repairWalletState reports non-macOS legacy token limits without crashing',
   const result = walletRepair.repairWalletState(
     {},
     {
-      platform: 'linux',
+      platform: 'win32',
       readConfig: () => ({
         agentKeyId: TEST_AGENT_KEY_ID,
         agentAuthToken: 'legacy-token',
@@ -297,10 +299,10 @@ test('repairWalletState reports non-macOS legacy token limits without crashing',
           calls += 1;
           return calls === 1
             ? createStatus(['legacy plaintext config token detected'], {
-                platform: 'linux',
+                platform: 'win32',
               })
             : createStatus(['legacy plaintext config token detected'], {
-                platform: 'linux',
+                platform: 'win32',
               });
         };
       })(),
@@ -313,7 +315,7 @@ test('repairWalletState reports non-macOS legacy token limits without crashing',
   );
 
   assert.equal(result.legacyAgentAuth.action, 'skipped');
-  assert.match(result.legacyAgentAuth.reason ?? '', /macOS Keychain access/);
+  assert.match(result.legacyAgentAuth.reason ?? '', /local credential storage/);
   assert.deepEqual(result.fixedWarnings, []);
   assert.deepEqual(result.remainingWarnings, ['legacy plaintext config token detected']);
 });
@@ -368,6 +370,7 @@ test('repairWalletState covers overwrite migrations and default dependency fallb
       overwriteKeychain: true,
     },
     {
+      platform: 'darwin',
       readConfig: () => ({
         agentKeyId: TEST_AGENT_KEY_ID,
         agentAuthToken: 'legacy-token',

@@ -13,6 +13,7 @@ PUBLIC_RELEASE_TAG="${AGENTPAY_PUBLIC_RELEASE_TAG:-__AGENTPAY_PUBLIC_RELEASE_TAG
 LEGACY_RELAY_MODE="${AGENTPAY_SETUP_RELAY_MODE:-}"
 INSTALLER_MODE_DEFAULT="${AGENTPAY_SETUP_MODE:-full}"
 AUTO_CONTINUE_SECONDS="${AGENTPAY_SETUP_AUTO_CONTINUE_SECONDS:-8}"
+KEY_SEQUENCE_TIMEOUT_SECONDS="${AGENTPAY_SETUP_KEY_SEQUENCE_TIMEOUT_SECONDS:-0.05}"
 NODE_MIN_MAJOR=20
 RETRY_ATTEMPTS=3
 RETRY_DELAY_SECONDS=2
@@ -77,6 +78,12 @@ on_error() {
 }
 
 trap 'on_error $? $LINENO' ERR
+
+configure_bash_compatibility() {
+  if (( BASH_VERSINFO[0] < 4 )); then
+    KEY_SEQUENCE_TIMEOUT_SECONDS="${AGENTPAY_SETUP_KEY_SEQUENCE_TIMEOUT_SECONDS:-1}"
+  fi
+}
 
 usage() {
   cat <<'EOF_USAGE'
@@ -196,6 +203,9 @@ host_arch_label() {
   machine="$(uname -m)"
   case "$machine" in
     arm64|aarch64)
+      if [[ "$(host_kernel_name)" == "Linux" ]]; then
+        die "Linux ARM64 is not currently supported. The AgentPay SDK installer supports macOS (ARM64/x64) and Linux x64."
+      fi
       printf 'arm64\n'
       ;;
     x86_64)
@@ -211,8 +221,12 @@ runtime_bundle_requires_macos_helpers() {
   [[ "$(host_kernel_name)" == "Darwin" ]]
 }
 
+runtime_bundle_requires_linux_helpers() {
+  [[ "$(host_kernel_name)" == "Linux" ]]
+}
+
 host_supports_packaged_admin_setup() {
-  [[ "$(host_kernel_name)" == "Darwin" ]]
+  [[ "$(host_kernel_name)" == "Darwin" || "$(host_kernel_name)" == "Linux" ]]
 }
 
 init_prompt_io() {
@@ -226,7 +240,12 @@ init_prompt_io() {
   fi
 
   if [[ -r /dev/tty ]] && [[ -w /dev/tty ]]; then
-    exec {PROMPT_IN_FD}<>/dev/tty
+    if (( BASH_VERSINFO[0] >= 4 )); then
+      exec {PROMPT_IN_FD}<>/dev/tty
+    else
+      PROMPT_IN_FD=3
+      exec 3<>/dev/tty
+    fi
     PROMPT_OUT_FD="$PROMPT_IN_FD"
     PROMPT_IN="/dev/tty"
     PROMPT_OUT="/dev/tty"
@@ -656,6 +675,15 @@ runtime_bundle_looks_usable() {
             [[ -x "$bundle_dir/runtime/bin/uninstall-user-daemon.sh" ]]
         }
     } &&
+    {
+      ! runtime_bundle_requires_linux_helpers ||
+        {
+          [[ -x "$bundle_dir/runtime/bin/run-agentpay-daemon.sh" ]] &&
+            [[ -x "$bundle_dir/runtime/bin/agentpay-daemon-password-helper.sh" ]] &&
+            [[ -x "$bundle_dir/runtime/bin/install-system-daemon.sh" ]] &&
+            [[ -x "$bundle_dir/runtime/bin/uninstall-system-daemon.sh" ]]
+        }
+    } &&
     bundle_has_skill_pack "$bundle_dir"
 }
 
@@ -882,10 +910,18 @@ install_runtime_from_bundle() {
     "install-user-daemon.sh"
     "uninstall-user-daemon.sh"
   )
+  local linux_only_entries=(
+    "run-agentpay-daemon.sh"
+    "agentpay-daemon-password-helper.sh"
+    "install-system-daemon.sh"
+    "uninstall-system-daemon.sh"
+  )
   local entry=""
 
   if runtime_bundle_requires_macos_helpers; then
     managed_entries+=("${macos_only_entries[@]}")
+  elif runtime_bundle_requires_linux_helpers; then
+    managed_entries+=("${linux_only_entries[@]}")
   fi
 
   mkdir -p "$RUNTIME_DIR/bin"
@@ -894,6 +930,9 @@ install_runtime_from_bundle() {
   cp -R "$BUNDLE_ROOT/app"/. "$RUNTIME_DIR/app"/
 
   for entry in "${macos_only_entries[@]}"; do
+    rm -f "$RUNTIME_DIR/bin/$entry"
+  done
+  for entry in "${linux_only_entries[@]}"; do
     rm -f "$RUNTIME_DIR/bin/$entry"
   done
   for entry in "${managed_entries[@]}"; do
@@ -912,6 +951,8 @@ install_runtime_from_bundle() {
   [[ -x "$RUNTIME_DIR/bin/agentpay-agent" ]] || die "Required AgentPay SDK runtime entry is missing after install: $RUNTIME_DIR/bin/agentpay-agent"
   if runtime_bundle_requires_macos_helpers; then
     [[ -x "$RUNTIME_DIR/bin/agentpay-system-keychain" ]] || die "Required AgentPay SDK runtime entry is missing after install: $RUNTIME_DIR/bin/agentpay-system-keychain"
+  elif runtime_bundle_requires_linux_helpers; then
+    [[ -x "$RUNTIME_DIR/bin/agentpay-daemon-password-helper.sh" ]] || die "Required AgentPay SDK runtime entry is missing after install: $RUNTIME_DIR/bin/agentpay-daemon-password-helper.sh"
   fi
 }
 
@@ -1502,9 +1543,9 @@ read_skill_target_picker_key() {
   fi
 
   if [[ "$key" == $'\033' ]]; then
-    if IFS= read -r -u "$PROMPT_IN_FD" -s -n 1 -t 0.05 next; then
+    if IFS= read -r -u "$PROMPT_IN_FD" -s -n 1 -t "$KEY_SEQUENCE_TIMEOUT_SECONDS" next; then
       key+="$next"
-      if [[ "$next" == "[" ]] && IFS= read -r -u "$PROMPT_IN_FD" -s -n 1 -t 0.05 next; then
+      if [[ "$next" == "[" ]] && IFS= read -r -u "$PROMPT_IN_FD" -s -n 1 -t "$KEY_SEQUENCE_TIMEOUT_SECONDS" next; then
         key+="$next"
       fi
     fi
@@ -1848,16 +1889,12 @@ maybe_run_admin_setup() {
   run_setup="$(resolve_run_admin_setup_default)"
 
   if [[ "$run_setup" == "no" ]]; then
-    if host_supports_packaged_admin_setup; then
-      say "Skipping wallet setup during one-click install. Run agentpay admin setup when you are ready to create or attach a wallet."
-    else
-      say "Skipping wallet setup during one-click install. Linux bundle installs the packaged runtime and skills only; managed daemon setup and wallet bootstrap remain macOS-only."
-    fi
+    say "Skipping wallet setup during one-click install. Run agentpay admin setup when you are ready to create or attach a wallet."
     return
   fi
 
   if ! host_supports_packaged_admin_setup; then
-    die "AGENTPAY_SETUP_RUN_ADMIN_SETUP=yes is not supported on this platform yet. The packaged Linux installer installs the runtime and skills only; managed daemon setup and wallet bootstrap are currently macOS-only."
+    die "AGENTPAY_SETUP_RUN_ADMIN_SETUP=yes is not supported on this platform yet. Managed daemon setup currently supports macOS and Linux only."
   fi
 
   if (( HAS_LOCAL_TTY == 0 )); then
@@ -1887,8 +1924,8 @@ Run now in this shell:
 Current-shell shim:
   $CURRENT_SHELL_SHIM_PATH
 
-Linux packaged installs currently stop after the precompiled runtime + skill setup.
-For wallet creation or managed daemon setup, use macOS; that managed flow is not implemented for Linux yet.
+Managed wallet setup is supported on macOS and Linux.
+Run agentpay admin setup when you are ready to create or attach a wallet.
 EOF_SUMMARY
       return
     fi
@@ -1912,8 +1949,8 @@ Current-shell shim was skipped:
 Or run AgentPay directly right now without reloading the shell:
   "$RUNTIME_DIR/bin/agentpay" --help
 
-Linux packaged installs currently stop after the precompiled runtime + skill setup.
-For wallet creation or managed daemon setup, use macOS; that managed flow is not implemented for Linux yet.
+Managed wallet setup is supported on macOS and Linux.
+Run agentpay admin setup when you are ready to create or attach a wallet.
 EOF_SUMMARY
     return
   fi
@@ -1937,6 +1974,8 @@ Current-shell shim:
 
 Future shells are configured via:
   source "$SHELL_RC_PATH"
+
+Managed wallet setup is supported on macOS and Linux.
 
 When you are ready to create or attach a wallet:
   1. Run agentpay admin setup
@@ -1963,6 +2002,8 @@ Current-shell shim was skipped:
 
 Or run AgentPay directly right now without reloading the shell:
   "$RUNTIME_DIR/bin/agentpay" --help
+
+Managed wallet setup is supported on macOS and Linux.
 
 When you are ready to create or attach a wallet:
   1. Reload your shell with: source "$SHELL_RC_PATH"
@@ -2020,6 +2061,7 @@ cleanup_temp_bundle() {
 main() {
   parse_args "$@"
 
+  configure_bash_compatibility
   init_prompt_io
   validate_installer_modes
 

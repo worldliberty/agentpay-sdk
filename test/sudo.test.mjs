@@ -424,6 +424,44 @@ test('createSudoSession tolerates child stdin EPIPE when sudo exits before readi
   assert.equal(result.stderr, '');
 });
 
+test('createSudoSession tolerates late child stdin EPIPE after finish fires', async () => {
+  const sudo = await import(`${modulePath.href}?case=${Date.now()}-stdin-late-epipe`);
+
+  const session = sudo.createSudoSession({
+    promptPassword: async () => 'root-secret',
+    isRoot: () => false,
+    spawnCommand: () => {
+      const child = new EventEmitter();
+      child.stdout = new PassThrough();
+      child.stderr = new PassThrough();
+      child.stdin = new EventEmitter();
+      child.stdin.end = () => {
+        setImmediate(() => {
+          child.stdin.emit('finish');
+          child.emit('close', 0, null);
+          setImmediate(() => {
+            child.stdin.emit(
+              'error',
+              Object.assign(new Error('broken pipe'), {
+                code: 'EPIPE',
+              }),
+            );
+            child.stdin.emit('close');
+          });
+        });
+      };
+      return child;
+    },
+  });
+
+  await session.prime();
+  const result = await session.run(['/usr/bin/true']);
+
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, '');
+  assert.equal(result.stderr, '');
+});
+
 test('createSudoSession rejects child stdin errors other than EPIPE', async () => {
   const sudo = await import(`${modulePath.href}?case=${Date.now()}-stdin-error`);
 

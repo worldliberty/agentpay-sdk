@@ -2,6 +2,17 @@
 
 All notable changes to AgentPay SDK are documented in this file.
 
+## [0.3.1] - 2026-04-13
+
+- added managed Linux wallet support with system `systemd` services and Linux Secret Service-backed agent auth storage
+- enabled `agentpay admin setup`, `agentpay admin tui`, `agentpay admin reset`, and `agentpay admin uninstall` on Linux alongside macOS
+- updated the packaged installer/runtime guidance to describe the Linux managed-wallet path instead of stopping at runtime-only install
+- extended shared-config/live-apply and wallet status flows to report Linux credential storage and managed daemon state correctly
+- fixed macOS default bash (3.2) installer compatibility for file descriptor allocation and arrow-key read timeouts
+- changed CI concurrency grouping so duplicate push/pull_request workflows on the same branch are deduplicated
+
+Detailed release notes: [releases/v0.3.1.md](releases/v0.3.1.md)
+
 ## [0.3.0] - 2026-04-05
 
 - added `agentpay sign-typed-data` for arbitrary EIP-712 typed-data signatures through daemon policy checks

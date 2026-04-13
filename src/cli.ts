@@ -46,7 +46,6 @@ import {
   runAdminSetupCli,
   runAdminTuiCli,
 } from './lib/admin-setup.js';
-import { assertMacOsOnlyFeature } from './lib/platform-support.js';
 import { resolveAgentAuthToken } from './lib/agent-auth.js';
 import { clearAgentAuthToken } from './lib/agent-auth-clear.js';
 import { migrateLegacyAgentAuthToken } from './lib/agent-auth-migrate.js';
@@ -95,11 +94,12 @@ import {
 } from './lib/config-mutation.js';
 import { assertTrustedDaemonSocketPath } from './lib/fs-trust.js';
 import {
-  AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE,
-  hasAgentAuthTokenInKeychain,
-  readAgentAuthTokenFromKeychain,
-  storeAgentAuthTokenInKeychain,
-} from './lib/keychain.js';
+  describeAgentAuthStorage,
+  hasStoredAgentAuthToken as hasStoredAgentAuthTokenInLocalStore,
+  readStoredAgentAuthToken,
+  resolveAgentAuthStorageService,
+  storeStoredAgentAuthToken,
+} from './lib/agent-auth-storage.js';
 import {
   withDynamicLocalAdminMutationAccess,
   withLocalAdminMutationAccess,
@@ -495,7 +495,7 @@ function hasStoredAgentAuthToken(agentKeyId: string | undefined): boolean {
   }
 
   try {
-    return hasAgentAuthTokenInKeychain(agentKeyId);
+    return hasStoredAgentAuthTokenInLocalStore(agentKeyId);
   } catch {
     return false;
   }
@@ -2507,7 +2507,7 @@ function warnForAgentAuthTokenSource(source: string, agentKeyId: string) {
 
   if (source === 'env') {
     console.error(
-      'warning: AGENTPAY_AGENT_AUTH_TOKEN exposes secrets to child processes and shell sessions; prefer macOS Keychain or --agent-auth-token-stdin',
+      'warning: AGENTPAY_AGENT_AUTH_TOKEN exposes secrets to child processes and shell sessions; prefer local credential storage or --agent-auth-token-stdin',
     );
   }
 }
@@ -2520,7 +2520,7 @@ async function resolveAgentCommandContext(
     options.agentKeyId ?? config.agentKeyId ?? process.env.AGENTPAY_AGENT_KEY_ID,
     'agentKeyId',
   );
-  const keychainAgentAuthToken = readAgentAuthTokenFromKeychain(agentKeyId);
+  const keychainAgentAuthToken = readStoredAgentAuthToken(agentKeyId);
   const { token: agentAuthToken, source: agentAuthTokenSource } = await resolveAgentAuthToken({
     agentKeyId,
     cliToken: options.agentAuthToken,
@@ -3063,16 +3063,16 @@ function normalizeAdminPassthroughArgs(forwarded: string[]): string[] {
 function buildAdminDaemonCommand(): Command {
   return new Command()
     .name('daemon')
-    .description('Daemon launch is managed by agentpay admin setup on macOS')
+    .description('Daemon launch is managed by agentpay admin setup')
     .action(() => {
-      if (process.platform === 'darwin') {
+      if (process.platform === 'darwin' || process.platform === 'linux') {
         throw new Error(
           'Direct daemon execution is disabled. Use `agentpay admin setup` to install and manage the daemon.',
         );
       }
 
       throw new Error(
-        'Direct daemon execution is disabled. On Linux, use the source-managed daemon directly and pass its socket with `--daemon-socket` or `AGENTPAY_DAEMON_SOCKET`; the managed `agentpay admin setup` flow is macOS-only.',
+        'Direct daemon execution is disabled. Managed daemon setup is supported on macOS and Linux only.',
       );
     });
 }
@@ -3349,7 +3349,7 @@ async function main() {
           ...redactConfig(config),
           keychain: {
             agentAuthTokenStored: hasStoredAgentAuthToken(config.agentKeyId),
-            service: process.platform === 'darwin' ? AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE : null,
+            service: resolveAgentAuthStorageService(process.platform),
           },
         },
         options.json,
@@ -3388,7 +3388,7 @@ async function main() {
 
   const agentAuthCommand = configCommand
     .command('agent-auth')
-    .description('Manage the local agent auth token and macOS Keychain-backed storage');
+    .description('Manage the local agent auth token and local credential-backed storage');
 
   agentAuthCommand
     .command('set')
@@ -3398,11 +3398,6 @@ async function main() {
     .option('--json', 'Print JSON output', false)
     .action(
       withLocalAdminMutationAccess('agentpay config agent-auth set', async (options) => {
-        assertMacOsOnlyFeature(
-          '`agentpay config agent-auth set`',
-          'This command writes the credential into macOS Keychain; on Linux use stdin-based auth flags instead of local Keychain storage.',
-        );
-
         if (options.agentAuthToken && options.agentAuthTokenStdin) {
           throw new Error('--agent-auth-token conflicts with --agent-auth-token-stdin');
         }
@@ -3421,7 +3416,7 @@ async function main() {
           );
         }
 
-        storeAgentAuthTokenInKeychain(agentKeyId, agentAuthToken);
+        storeStoredAgentAuthToken(agentKeyId, agentAuthToken);
 
         let updated = writeConfig({ agentKeyId });
         if (updated.agentAuthToken !== undefined) {
@@ -3433,7 +3428,7 @@ async function main() {
             agentKeyId: updated.agentKeyId ?? agentKeyId,
             keychain: {
               stored: true,
-              service: AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE,
+              service: resolveAgentAuthStorageService(process.platform),
             },
             config: redactConfig(updated),
           },
@@ -3453,11 +3448,6 @@ async function main() {
       withLocalAdminMutationAccess(
         'agentpay config agent-auth import',
         (inputPath: string, options) => {
-          assertMacOsOnlyFeature(
-            '`agentpay config agent-auth import`',
-            'This command imports the credential into macOS Keychain; on Linux there is no equivalent local Keychain store.',
-          );
-
           if (options.keepSource && options.deleteSource) {
             throw new Error('--keep-source conflicts with --delete-source');
           }
@@ -3472,7 +3462,7 @@ async function main() {
             );
           }
 
-          storeAgentAuthTokenInKeychain(agentKeyId, imported.agentAuthToken);
+          storeStoredAgentAuthToken(agentKeyId, imported.agentAuthToken);
 
           let sourceCleanup: 'redacted' | 'deleted' | 'kept' = 'kept';
           if (options.deleteSource) {
@@ -3502,7 +3492,7 @@ async function main() {
               agentKeyId,
               keychain: {
                 stored: true,
-                service: AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE,
+                service: resolveAgentAuthStorageService(process.platform),
               },
               config: redactConfig(updated),
             },
@@ -3515,22 +3505,17 @@ async function main() {
   agentAuthCommand
     .command('migrate')
     .description(
-      'Move a legacy config.json agentAuthToken into macOS Keychain and scrub plaintext storage',
+      'Move a legacy config.json agentAuthToken into local credential storage and scrub plaintext storage',
     )
     .option('--agent-key-id <uuid>', 'Agent key id (defaults to configured agentKeyId)')
     .option(
       '--overwrite-keychain',
-      'Replace a different existing Keychain token for this agent',
+      'Replace a different existing stored credential for this agent',
       false,
     )
     .option('--json', 'Print JSON output', false)
     .action(
       withLocalAdminMutationAccess('agentpay config agent-auth migrate', (options) => {
-        assertMacOsOnlyFeature(
-          '`agentpay config agent-auth migrate`',
-          'This command migrates plaintext config credentials into macOS Keychain.',
-        );
-
         print(
           migrateLegacyAgentAuthToken({
             agentKeyId: options.agentKeyId,
@@ -3543,18 +3528,13 @@ async function main() {
 
   agentAuthCommand
     .command('rotate')
-    .description('Rotate the agent auth token via Rust admin flow, then store it in macOS Keychain')
+    .description('Rotate the agent auth token via Rust admin flow, then store it in local credential storage')
     .option('--agent-key-id <uuid>', 'Agent key id (defaults to configured agentKeyId)')
     .option('--vault-password-stdin', 'Read vault password from stdin', false)
     .option('--non-interactive', 'Disable password prompts', false)
     .option('--daemon-socket <path>', 'Daemon unix socket path')
     .option('--json', 'Print JSON output', false)
     .action(async (options) => {
-      assertMacOsOnlyFeature(
-        '`agentpay config agent-auth rotate`',
-        'This command stores the rotated credential into macOS Keychain after the Rust admin flow completes.',
-      );
-
       const config = readConfig();
       const agentKeyId = options.agentKeyId
         ? assertAgentKeyId(options.agentKeyId)
@@ -3635,8 +3615,8 @@ async function main() {
         {
           agentKeyId,
           keychain: {
-            supported: process.platform === 'darwin',
-            service: process.platform === 'darwin' ? AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE : null,
+            supported: resolveAgentAuthStorageService(process.platform) !== null,
+            service: resolveAgentAuthStorageService(process.platform),
             stored: hasStoredAgentAuthToken(agentKeyId ?? undefined),
           },
         },

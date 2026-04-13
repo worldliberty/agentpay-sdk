@@ -1815,7 +1815,7 @@ test('buildWalletSetupAdminArgs honors explicit fromSharedConfig overrides', asy
   assert.equal(forcedLegacyArgs.includes('--from-shared-config'), false);
 });
 
-test('completeWalletSetup enforces platform and integer-limit validation', async () => {
+test('completeWalletSetup enforces supported-platform and integer-limit validation', async () => {
   const walletSetup = await import(
     walletSetupModulePath.href + `?case=${Date.now()}-platform-and-limit-validation`
   );
@@ -1835,12 +1835,12 @@ test('completeWalletSetup enforces platform and integer-limit validation', async
           daemonSocket,
         },
         {
-          platform: 'linux',
+          platform: 'win32',
           storeAgentAuthToken: () => {},
           assertTrustedDaemonSocketPath: (targetPath) => targetPath,
         },
       ),
-    /wallet setup requires macOS/,
+    /wallet setup requires macOS or Linux local credential storage support/,
   );
   writePrivateJsonFile(bootstrapPath, bootstrapPayload());
 

@@ -5,7 +5,7 @@ import {
 import { resolveAdminSetupVaultPassword } from './admin-setup.js';
 import { deleteBootstrapAgentCredentialsFile } from './bootstrap-credentials.js';
 import { resolveValidatedAdminDaemonSocket } from './admin-daemon-socket.js';
-import { isMacOsPlatform } from './platform-support.js';
+import { supportsManagedDaemonPlatform } from './platform-support.js';
 import { runRustBinary } from './rust.js';
 import {
   buildWalletSetupAdminArgs,
@@ -64,7 +64,7 @@ export async function applySharedConfigToExistingWallet(
   }
 
   const platform = deps.platform ?? process.platform;
-  if (!isMacOsPlatform(platform)) {
+  if (!supportsManagedDaemonPlatform(platform)) {
     return { applied: false };
   }
 

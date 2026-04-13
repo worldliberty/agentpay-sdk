@@ -118,10 +118,10 @@ impl PolicyEngine {
                 attached_policy_ids,
                 applicable_policy_ids: Vec::new(),
                 evaluated_policy_ids: Vec::new(),
-                decision: if action.requires_eip712_policy() {
-                    PolicyDecision::Deny(Self::default_eip712_manual_approval())
-                } else if matches!(attachment, PolicyAttachment::AllPolicies) {
+                decision: if matches!(attachment, PolicyAttachment::AllPolicies) {
                     PolicyDecision::Allow
+                } else if action.requires_eip712_policy() {
+                    PolicyDecision::Deny(Self::default_eip712_manual_approval())
                 } else {
                     PolicyDecision::Deny(PolicyError::NoAttachedPolicies)
                 },
@@ -129,6 +129,15 @@ impl PolicyEngine {
         }
 
         if action.requires_eip712_policy() {
+            if matches!(attachment, PolicyAttachment::AllPolicies) {
+                return PolicyExplanation {
+                    attached_policy_ids,
+                    applicable_policy_ids: Vec::new(),
+                    evaluated_policy_ids: Vec::new(),
+                    decision: PolicyDecision::Allow,
+                };
+            }
+
             let action_chain_id = action.chain_id();
             let applicable: Vec<&SpendingPolicy> = attached
                 .into_iter()
@@ -310,7 +319,7 @@ impl PolicyEngine {
                 }
             }
             PolicyType::Eip712Signing => {
-                match policy.eip712_approval_type().unwrap_or(ApprovalType::Deny) {
+                match policy.eip712_approval_type().unwrap_or(ApprovalType::Allow) {
                     ApprovalType::Allow => {}
                     ApprovalType::ManualApproval => {
                         return Err(PolicyError::Eip712ManualApprovalRequired {

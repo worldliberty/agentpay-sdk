@@ -51,6 +51,23 @@ function runtimeEntriesForPlatform(platform) {
       'uninstall-user-daemon.sh',
       '#!/usr/bin/env bash\nset -euo pipefail\necho "fake uninstall-user-daemon $*"\n',
     );
+  } else if (platform === 'linux') {
+    entries.set(
+      'run-agentpay-daemon.sh',
+      '#!/usr/bin/env bash\nset -euo pipefail\necho "fake run-agentpay-daemon $*"\n',
+    );
+    entries.set(
+      'agentpay-daemon-password-helper.sh',
+      '#!/usr/bin/env bash\nset -euo pipefail\necho "fake agentpay-daemon-password-helper $*"\n',
+    );
+    entries.set(
+      'install-system-daemon.sh',
+      '#!/usr/bin/env bash\nset -euo pipefail\necho "fake install-system-daemon $*"\n',
+    );
+    entries.set(
+      'uninstall-system-daemon.sh',
+      '#!/usr/bin/env bash\nset -euo pipefail\necho "fake uninstall-system-daemon $*"\n',
+    );
   }
 
   return entries;
@@ -379,6 +396,7 @@ test('installer can complete a fresh bundle-based install and rerun without dupl
   assert.match(firstRun.stdout, /agentpay --help/u);
   assert.match(firstRun.stdout, /Current-shell shim:/u);
   assert.ok(fs.existsSync(path.join(installDir, 'bin', 'agentpay')));
+  assert.equal(fs.statSync(path.join(installDir, 'bin')).mode & 0o777, 0o700);
   assert.ok(fs.existsSync(path.join(installDir, 'app', 'dist', 'cli.cjs')));
   assert.ok(fs.existsSync(path.join(installDir, 'app', 'node_modules')));
   assert.ok(
@@ -632,12 +650,13 @@ test('installer accepts a Linux runtime bundle without macOS-only helper entries
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /AgentPay SDK install complete/u);
-  assert.match(result.stdout, /Linux packaged installs currently stop after the precompiled runtime \+ skill setup/u);
+  assert.match(result.stdout, /Managed wallet setup is supported on macOS and Linux/u);
   assert.ok(fs.existsSync(path.join(installDir, 'bin', 'agentpay')));
   assert.ok(fs.existsSync(path.join(installDir, 'bin', 'agentpay-daemon')));
   assert.ok(fs.existsSync(path.join(installDir, 'bin', 'agentpay-admin')));
   assert.ok(fs.existsSync(path.join(installDir, 'bin', 'agentpay-agent')));
   assert.equal(fs.existsSync(path.join(installDir, 'bin', 'agentpay-system-keychain')), false);
+  assert.equal(fs.existsSync(path.join(installDir, 'bin', 'agentpay-daemon-password-helper.sh')), true);
 });
 
 test('installer rejects a runtime bundle built for a different platform', async () => {
@@ -939,7 +958,7 @@ test('installer rejects admin setup in non-interactive mode with a clear message
   });
 
   assert.notEqual(result.status, 0);
-  if (process.platform === 'darwin') {
+  if (process.platform === 'darwin' || process.platform === 'linux') {
     assert.match(result.stderr, /requires a local TTY for secure password prompts/u);
   } else {
     assert.match(result.stderr, /is not supported on this platform yet/u);
@@ -957,6 +976,7 @@ test('installer fails clearly when Homebrew bootstrap would be required without 
   await fsp.mkdir(fakeBinDir, { recursive: true });
   await createFakeBundle(fixtureBundleDir);
   createBundleArchive(fixtureBundleDir, archivePath);
+  installFakeNode(fakeBinDir, { version: 'v18.19.0' });
 
   const result = runInstaller({
     homeDir,
@@ -991,6 +1011,7 @@ test('installer can bootstrap Node via Homebrew when node is missing', async () 
   await fsp.mkdir(fakeBrewPrefix, { recursive: true });
   await createFakeBundle(fixtureBundleDir);
   createBundleArchive(fixtureBundleDir, archivePath);
+  installFakeNode(fakeBinDir, { version: 'v18.19.0' });
   installFakeHomebrew(fakeBinDir, fakeBrewPrefix);
 
   const result = runInstaller({

@@ -20,15 +20,25 @@ import {
   assertTrustedRootPlannedDaemonSocketPath,
   assertTrustedRootPlannedPrivateFilePath,
 } from './fs-trust.js';
+import { resolveAgentAuthStorageMetadata } from './agent-auth-storage.js';
 import { DAEMON_PASSWORD_KEYCHAIN_SERVICE } from './keychain.js';
 import {
   LAUNCHD_INSTALL_SCRIPT_NAME,
   LAUNCHD_RUNNER_SCRIPT_NAME,
   resolveLaunchDaemonHelperScriptPath,
 } from './launchd-assets.js';
+import {
+  resolveManagedDaemonCredentialHelperPath,
+  resolveManagedDaemonPlatformSpec,
+} from './managed-daemon-platform.js';
 import { resolveCliNetworkProfile } from './network-selection.js';
 import { passthroughRustBinary, RustBinaryExitError, runRustBinary } from './rust.js';
 import { createSudoSession } from './sudo.js';
+import {
+  resolveSystemdHelperScriptPath,
+  SYSTEMD_INSTALL_SCRIPT_NAME,
+  SYSTEMD_RUNNER_SCRIPT_NAME,
+} from './systemd-assets.js';
 import { resolveWalletProfile } from './wallet-profile.js';
 import { exportEncryptedWalletBackup } from './wallet-backup-admin.js';
 import {
@@ -51,23 +61,24 @@ import {
   resolveWalletBackupPassword,
   writeTemporaryWalletImportKeyFile,
 } from './wallet-backup.js';
-import { assertMacOsOnlyFeature } from './platform-support.js';
+import { assertManagedDaemonPlatform } from './platform-support.js';
 
-const DEFAULT_LAUNCH_DAEMON_LABEL = 'com.agentpay.daemon';
+const MANAGED_DAEMON_SPEC = resolveManagedDaemonPlatformSpec(
+  process.platform === 'linux' ? 'linux' : 'darwin',
+);
+const DEFAULT_LAUNCH_DAEMON_LABEL = MANAGED_DAEMON_SPEC.label;
 const DEFAULT_SIGNER_BACKEND = 'software';
-const DEFAULT_MANAGED_BIN_DIR = '/Library/AgentPay/bin';
-const DEFAULT_MANAGED_DAEMON_SOCKET = '/Library/AgentPay/run/daemon.sock';
-const DEFAULT_MANAGED_STATE_FILE = '/var/db/agentpay/daemon-state.enc';
+const DEFAULT_MANAGED_BIN_DIR = MANAGED_DAEMON_SPEC.managedBinDir;
+const DEFAULT_MANAGED_DAEMON_SOCKET = MANAGED_DAEMON_SPEC.daemonSocket;
+const DEFAULT_MANAGED_STATE_FILE = MANAGED_DAEMON_SPEC.stateFile;
 const DEFAULT_MANAGED_KEYCHAIN_HELPER = path.join(
   DEFAULT_MANAGED_BIN_DIR,
-  `agentpay-system-keychain${process.platform === 'win32' ? '.exe' : ''}`,
+  MANAGED_DAEMON_SPEC.sourceCredentialHelperName,
 );
 const MAX_SECRET_STDIN_BYTES = 16 * 1024;
-const DEFAULT_LAUNCH_DAEMON_PLIST = `/Library/LaunchDaemons/${DEFAULT_LAUNCH_DAEMON_LABEL}.plist`;
+const DEFAULT_LAUNCH_DAEMON_PLIST = MANAGED_DAEMON_SPEC.serviceFile;
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const REDACTED_SECRET_PLACEHOLDER = '<redacted>';
-const KEYCHAIN_STORED_AGENT_AUTH_TOKEN = 'stored in macOS Keychain';
-
 interface ProgressHandle {
   succeed(message?: string): void;
   fail(message?: string): void;
@@ -177,8 +188,10 @@ interface ManagedDaemonInstallResult {
   runnerPath: string;
   daemonBin: string;
   stateFile: string;
-  keychainAccount: string;
-  keychainService: string;
+  serviceManager: 'launchd' | 'systemd';
+  keychainAccount?: string;
+  keychainService?: string;
+  passwordFile?: string;
 }
 
 interface ManagedLaunchDaemonAssetMatchDeps {
@@ -644,11 +657,11 @@ function formatAdminSetupExistingWallet(plan: AdminSetupPlan): string[] {
 export function formatAdminSetupPlanText(plan: AdminSetupPlan): string {
   const lines = [
     'Admin Setup Preview',
-    `LaunchDaemon Install: ${plan.daemon.installReady ? 'ready' : 'blocked'}`,
+    `Managed Service Install: ${plan.daemon.installReady ? 'ready' : 'blocked'}`,
     plan.daemon.installError ? `Install Error: ${plan.daemon.installError}` : null,
     `Managed Socket: ${plan.daemon.socket}`,
     `Managed State File: ${plan.daemon.stateFile}`,
-    `LaunchDaemon Label: ${plan.daemon.launchdLabel}`,
+    `Managed Service Label: ${plan.daemon.launchdLabel}`,
     '',
     ...formatAdminSetupExistingWallet(plan),
     `Overwrite Confirmation Required: ${plan.overwrite.required ? 'yes' : 'no'}`,
@@ -751,6 +764,11 @@ export function formatAdminCommandOutput(
   const walletBackup = asOptionalRecord(prepared.walletBackup);
   const vaultPublicKey = String(prepared.vaultPublicKey ?? '').trim();
   const agentAuthToken = String(prepared.agentAuthToken ?? '').trim();
+  const renderedAgentKeyId = String(prepared.agentKeyId ?? '').trim();
+  const storageMetadata = resolveAgentAuthStorageMetadata(
+    process.platform,
+    renderedAgentKeyId || undefined,
+  );
   const includeSecrets = options.includeSecrets ?? false;
 
   let addressLine: string | null = null;
@@ -765,6 +783,19 @@ export function formatAdminCommandOutput(
   const stateFile = String(daemon.stateFile ?? config.stateFile ?? '').trim();
   const chainName = String(config.chainName ?? prepared.networkScope ?? 'unconfigured').trim();
   const keychainService = String(keychain.service ?? '').trim();
+  const keychainLocationType =
+    keychain.locationType === 'file' || keychain.locationType === 'service'
+      ? keychain.locationType
+      : storageMetadata.locationType;
+  const keychainLocationLabel =
+    keychainLocationType === 'file' || keychainService.includes(path.sep)
+      ? 'credential file'
+      : 'credential service';
+  const keychainLabel = String(keychain.label ?? storageMetadata.label).trim();
+  const keychainNote = String(keychain.note ?? storageMetadata.note ?? '').trim();
+  const storedAgentAuthTokenSummary = keychainNote
+    ? `stored in ${keychainLabel} (${keychainNote})`
+    : `stored in ${keychainLabel}`;
   const title = prepared.command === 'tui' ? 'tui complete' : 'setup complete';
   const walletBackupStatus =
     walletBackup.status === 'not-created' ? 'skipped by default' : walletBackup.status;
@@ -785,11 +816,12 @@ export function formatAdminCommandOutput(
       ? agentAuthToken
         ? `agent auth token: ${agentAuthToken}`
         : null
-      : `agent auth token: ${KEYCHAIN_STORED_AGENT_AUTH_TOKEN}`,
-    keychainService ? `keychain service: ${keychainService}` : null,
+      : `agent auth token: ${storedAgentAuthTokenSummary}`,
+    keychainService ? `${keychainLocationLabel}: ${keychainService}` : null,
     typeof prepared.sourceCleanupWarning === 'string' && prepared.sourceCleanupWarning.trim()
       ? `source cleanup warning: ${prepared.sourceCleanupWarning}`
       : null,
+    keychainNote ? `note: ${keychainNote}` : null,
     typeof walletBackupStatus === 'string' ? `wallet backup: ${walletBackupStatus}` : null,
     walletBackup.status !== 'not-created' &&
     typeof walletBackup.outputPath === 'string' && walletBackup.outputPath.trim()
@@ -839,31 +871,37 @@ function resolveRustBinDir(config: WlfiConfig): string {
 
 function resolveSourceLaunchDaemonPaths(config: WlfiConfig): LaunchDaemonAssetPaths {
   const rustBinDir = resolveRustBinDir(config);
+  const isLinux = process.platform === 'linux';
   return {
-    runnerPath: path.join(rustBinDir, LAUNCHD_RUNNER_SCRIPT_NAME),
+    runnerPath: path.join(
+      rustBinDir,
+      isLinux ? SYSTEMD_RUNNER_SCRIPT_NAME : LAUNCHD_RUNNER_SCRIPT_NAME,
+    ),
     daemonBin: path.join(
       rustBinDir,
       `agentpay-daemon${process.platform === 'win32' ? '.exe' : ''}`,
     ),
-    keychainHelperBin: path.join(
-      rustBinDir,
-      `agentpay-system-keychain${process.platform === 'win32' ? '.exe' : ''}`,
-    ),
+    keychainHelperBin: path.join(rustBinDir, MANAGED_DAEMON_SPEC.sourceCredentialHelperName),
   };
 }
 
 export function resolveManagedLaunchDaemonPaths(): LaunchDaemonAssetPaths {
   return {
-    runnerPath: path.join(DEFAULT_MANAGED_BIN_DIR, 'run-agentpay-daemon.sh'),
+    runnerPath: path.join(DEFAULT_MANAGED_BIN_DIR, MANAGED_DAEMON_SPEC.sourceRunnerScriptName),
     daemonBin: path.join(
       DEFAULT_MANAGED_BIN_DIR,
       `agentpay-daemon${process.platform === 'win32' ? '.exe' : ''}`,
     ),
-    keychainHelperBin: DEFAULT_MANAGED_KEYCHAIN_HELPER,
+    keychainHelperBin: resolveManagedDaemonCredentialHelperPath(
+      process.platform === 'linux' ? 'linux' : 'darwin',
+    ),
   };
 }
 
 function resolveLaunchDaemonInstallScriptPath(config: WlfiConfig): string {
+  if (process.platform === 'linux') {
+    return resolveSystemdHelperScriptPath(SYSTEMD_INSTALL_SCRIPT_NAME, config);
+  }
   return resolveLaunchDaemonHelperScriptPath(LAUNCHD_INSTALL_SCRIPT_NAME, config);
 }
 
@@ -924,11 +962,11 @@ export function assertManagedDaemonInstallPreconditions(
   }
   if (!existsSync(sourcePaths.keychainHelperBin)) {
     throw new Error(
-      `daemon keychain helper is not installed at ${sourcePaths.keychainHelperBin}; reinstall the AgentPay SDK from source or rerun the one-click installer`,
+      `daemon credential helper is not installed at ${sourcePaths.keychainHelperBin}; reinstall the AgentPay SDK from source or rerun the one-click installer`,
     );
   }
   if (!existsSync(installScript)) {
-    throw new Error(`launchd install helper is not installed at ${installScript}`);
+    throw new Error(`managed daemon install helper is not installed at ${installScript}`);
   }
 
   trustExecutablePath(sourcePaths.runnerPath);
@@ -1047,9 +1085,9 @@ async function daemonAcceptsVaultPassword(
 const sudoSession = createSudoSession({
   promptPassword: async () =>
     await promptHidden(
-      'macOS admin password for sudo (input hidden; required to install or recover the root daemon): ',
-      'macOS admin password for sudo',
-      'macOS admin password for sudo is required; rerun on a local TTY',
+      'System admin password for sudo (input hidden; required to install or recover the root-managed daemon): ',
+      'System admin password for sudo',
+      'System admin password for sudo is required; rerun on a local TTY',
     ),
 });
 
@@ -1385,46 +1423,69 @@ async function installLaunchDaemon(
     daemonSocket,
     stateFile,
   );
-  const keychainAccount = os.userInfo().username;
   const relayDaemonToken = process.env.AGENTPAY_RELAY_DAEMON_TOKEN?.trim();
+  const installArgs =
+    process.platform === 'linux'
+      ? [
+          installPreconditions.installScript,
+          '--label',
+          DEFAULT_LAUNCH_DAEMON_LABEL,
+          '--runner',
+          installPreconditions.runnerPath,
+          '--daemon-bin',
+          installPreconditions.daemonBin,
+          '--password-helper',
+          installPreconditions.keychainHelperBin,
+          '--state-file',
+          stateFile,
+          '--daemon-socket',
+          daemonSocket,
+          '--password-file',
+          MANAGED_DAEMON_SPEC.daemonPasswordFile ?? '/var/lib/agentpay/daemon-password',
+          '--signer-backend',
+          DEFAULT_SIGNER_BACKEND,
+          '--allow-admin-euid',
+          String(process.getuid?.() ?? process.geteuid?.() ?? 0),
+          '--allow-agent-euid',
+          String(process.getuid?.() ?? process.geteuid?.() ?? 0),
+          '--vault-password-stdin',
+        ]
+      : [
+          installPreconditions.installScript,
+          '--label',
+          DEFAULT_LAUNCH_DAEMON_LABEL,
+          '--runner',
+          installPreconditions.runnerPath,
+          '--daemon-bin',
+          installPreconditions.daemonBin,
+          '--keychain-helper',
+          installPreconditions.keychainHelperBin,
+          '--state-file',
+          stateFile,
+          '--daemon-socket',
+          daemonSocket,
+          '--keychain-service',
+          DAEMON_PASSWORD_KEYCHAIN_SERVICE,
+          '--keychain-account',
+          os.userInfo().username,
+          '--signer-backend',
+          DEFAULT_SIGNER_BACKEND,
+          '--allow-admin-euid',
+          String(process.getuid?.() ?? process.geteuid?.() ?? 0),
+          '--allow-agent-euid',
+          String(process.getuid?.() ?? process.geteuid?.() ?? 0),
+          '--vault-password-stdin',
+        ];
 
-  const installResult = await sudoSession.run(
-    [
-      installPreconditions.installScript,
-      '--label',
-      DEFAULT_LAUNCH_DAEMON_LABEL,
-      '--runner',
-      installPreconditions.runnerPath,
-      '--daemon-bin',
-      installPreconditions.daemonBin,
-      '--keychain-helper',
-      installPreconditions.keychainHelperBin,
-      '--state-file',
-      stateFile,
-      '--daemon-socket',
-      daemonSocket,
-      '--keychain-service',
-      DAEMON_PASSWORD_KEYCHAIN_SERVICE,
-      '--keychain-account',
-      keychainAccount,
-      '--signer-backend',
-      DEFAULT_SIGNER_BACKEND,
-      '--allow-admin-euid',
-      String(process.getuid?.() ?? process.geteuid?.() ?? 0),
-      '--allow-agent-euid',
-      String(process.getuid?.() ?? process.geteuid?.() ?? 0),
-      '--vault-password-stdin',
-    ],
-    {
-      env: relayDaemonToken
-        ? {
-            AGENTPAY_RELAY_DAEMON_TOKEN: relayDaemonToken,
-          }
-        : undefined,
-      stdin: `${vaultPassword}\n`,
-      inheritOutput: true,
-    },
-  );
+  const installResult = await sudoSession.run(installArgs, {
+    env: relayDaemonToken
+      ? {
+          AGENTPAY_RELAY_DAEMON_TOKEN: relayDaemonToken,
+        }
+      : undefined,
+    stdin: `${vaultPassword}\n`,
+    inheritOutput: true,
+  });
   if (installResult.code !== 0) {
     throw new Error(
       installResult.stderr.trim() ||
@@ -1438,15 +1499,22 @@ async function installLaunchDaemon(
     runnerPath: installPreconditions.managedRunnerPath,
     daemonBin: installPreconditions.managedDaemonBin,
     stateFile,
-    keychainAccount,
-    keychainService: DAEMON_PASSWORD_KEYCHAIN_SERVICE,
+    serviceManager: MANAGED_DAEMON_SPEC.serviceManager,
+    ...(process.platform === 'linux'
+      ? {
+          passwordFile: MANAGED_DAEMON_SPEC.daemonPasswordFile ?? '/var/lib/agentpay/daemon-password',
+        }
+      : {
+          keychainAccount: os.userInfo().username,
+          keychainService: DAEMON_PASSWORD_KEYCHAIN_SERVICE,
+        }),
   };
 }
 
 async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
-  assertMacOsOnlyFeature(
+  assertManagedDaemonPlatform(
     '`agentpay admin setup`',
-    'The current setup flow installs a root LaunchDaemon and imports credentials into macOS Keychain.',
+    'The current setup flow installs a root-managed daemon and imports credentials into local credential storage.',
   );
 
   if (options.plan) {
@@ -1492,7 +1560,7 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
   let temporaryImportKeyFile: string | null = null;
 
   const existingDaemonProgress = createProgress('Checking existing daemon', showProgress);
-  const plistContents = fs.existsSync(DEFAULT_LAUNCH_DAEMON_PLIST)
+  const plistContents = process.platform === 'darwin' && fs.existsSync(DEFAULT_LAUNCH_DAEMON_PLIST)
     ? fs.readFileSync(DEFAULT_LAUNCH_DAEMON_PLIST, 'utf8')
     : null;
   const installedPaths = plistContents
@@ -1500,7 +1568,8 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
     : null;
 
   let daemon: ManagedDaemonInstallResult | null = null;
-  let installIsCurrent = isManagedDaemonInstallCurrent(config, daemonSocket, stateFile);
+  let installIsCurrent =
+    process.platform === 'darwin' && isManagedDaemonInstallCurrent(config, daemonSocket, stateFile);
   let existingDaemonRejectedPassword = false;
   let existingDaemonResponding = false;
 
@@ -1515,8 +1584,16 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
         runnerPath: installedPaths?.runnerPath ?? resolveManagedLaunchDaemonPaths().runnerPath,
         daemonBin: installedPaths?.daemonBin ?? resolveManagedLaunchDaemonPaths().daemonBin,
         stateFile,
-        keychainAccount: os.userInfo().username,
-        keychainService: DAEMON_PASSWORD_KEYCHAIN_SERVICE,
+        serviceManager: MANAGED_DAEMON_SPEC.serviceManager,
+        ...(process.platform === 'linux'
+          ? {
+              passwordFile:
+                MANAGED_DAEMON_SPEC.daemonPasswordFile ?? '/var/lib/agentpay/daemon-password',
+            }
+          : {
+              keychainAccount: os.userInfo().username,
+              keychainService: DAEMON_PASSWORD_KEYCHAIN_SERVICE,
+            }),
       };
       existingDaemonProgress.succeed('Existing daemon is ready and accepted the vault password');
     } else {
@@ -1540,8 +1617,16 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
         runnerPath: currentInstalledPaths.runnerPath,
         daemonBin: currentInstalledPaths.daemonBin,
         stateFile,
-        keychainAccount: os.userInfo().username,
-        keychainService: DAEMON_PASSWORD_KEYCHAIN_SERVICE,
+        serviceManager: MANAGED_DAEMON_SPEC.serviceManager,
+        ...(process.platform === 'linux'
+          ? {
+              passwordFile:
+                MANAGED_DAEMON_SPEC.daemonPasswordFile ?? '/var/lib/agentpay/daemon-password',
+            }
+          : {
+              keychainAccount: os.userInfo().username,
+              keychainService: DAEMON_PASSWORD_KEYCHAIN_SERVICE,
+            }),
       };
       const installProgress = createProgress('Checking existing daemon installation', showProgress);
       installProgress.succeed('Existing daemon install looks current');
@@ -1553,7 +1638,7 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
       }
       if (!options.json && typeof process.geteuid === 'function' && process.geteuid() !== 0) {
         process.stderr.write(
-          'macOS admin password required: setup uses sudo to install or recover the root LaunchDaemon and store the daemon password in System Keychain.\n',
+          'System admin password required: setup uses sudo to install or recover the root-managed daemon.\n',
         );
       }
       await sudoSession.prime();
@@ -1613,7 +1698,7 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
 
     if (!options.json && typeof process.geteuid === 'function' && process.geteuid() !== 0) {
       process.stderr.write(
-        'macOS admin password required: setup uses sudo to reinstall the root LaunchDaemon and rotate the managed daemon password.\n',
+        'System admin password required: setup uses sudo to reinstall the root-managed daemon and rotate the managed daemon password.\n',
       );
     }
     await sudoSession.prime();
@@ -1859,7 +1944,7 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
         daemon: {
           autostart: true,
           label: daemon.label,
-          launchdDomain: 'system',
+          serviceManager: daemon.serviceManager,
           daemonSocket,
           stateFile: daemon.stateFile,
           runnerPath: daemon.runnerPath,
@@ -1867,6 +1952,7 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
           signerBackend: DEFAULT_SIGNER_BACKEND,
           keychainService: daemon.keychainService,
           keychainAccount: daemon.keychainAccount,
+          passwordFile: daemon.passwordFile,
         },
         ...summary,
         ...(walletBackup ? { walletBackup } : {}),
@@ -1946,9 +2032,9 @@ export function buildAdminSetupBootstrapInvocation(input: {
 }
 
 async function runAdminTui(options: AdminTuiOptions): Promise<void> {
-  assertMacOsOnlyFeature(
+  assertManagedDaemonPlatform(
     '`agentpay admin tui`',
-    'The current TUI flow refreshes local wallet credentials through macOS Keychain-backed setup helpers.',
+    'The current TUI flow refreshes local wallet credentials through managed daemon setup helpers.',
   );
 
   const config = backfillPersistedWalletProfileForTui(readConfig());
@@ -2070,10 +2156,10 @@ export async function runAdminSetupCli(argv: string[]): Promise<void> {
       false,
     )
     .option('--bootstrap-output <path>', 'Write temporary bootstrap JSON to this private path')
-    .option('--delete-bootstrap-output', 'Delete the bootstrap JSON after Keychain import', false)
+    .option('--delete-bootstrap-output', 'Delete the bootstrap JSON after local credential import', false)
     .option(
       '--print-agent-auth-token',
-      'Print the freshly issued agent auth token after importing it into macOS Keychain',
+      'Print the freshly issued agent auth token after importing it into local credential storage',
       false,
     )
     .option('--json', 'Print JSON output', false)
@@ -2091,10 +2177,10 @@ export async function runAdminTuiCli(argv: string[]): Promise<void> {
     )
     .option('--daemon-socket <path>', 'Daemon unix socket path')
     .option('--bootstrap-output <path>', 'Write temporary bootstrap JSON to this private path')
-    .option('--delete-bootstrap-output', 'Delete the bootstrap JSON after Keychain import', false)
+    .option('--delete-bootstrap-output', 'Delete the bootstrap JSON after local credential import', false)
     .option(
       '--print-agent-auth-token',
-      'Print the freshly issued agent auth token after importing it into macOS Keychain',
+      'Print the freshly issued agent auth token after importing it into local credential storage',
       false,
     )
     .option('--json', 'Print JSON output', false)

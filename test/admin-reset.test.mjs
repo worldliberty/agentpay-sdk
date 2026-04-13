@@ -10,9 +10,44 @@ const walletProfileModulePath = new URL('../src/lib/wallet-profile.ts', import.m
 
 const TEST_AGENT_KEY_ID = '00000000-0000-0000-0000-000000000001';
 const PATH_SHIM_MARKER = '# agentpay-sdk one-click PATH shim';
+const HOST_MANAGED = process.platform === 'linux'
+  ? {
+      label: 'agentpay-daemon',
+      daemonSocket: '/run/agentpay/daemon.sock',
+      stateFile: '/var/lib/agentpay/daemon-state.enc',
+      relayDaemonTokenFile: '/var/lib/agentpay/relay-daemon-token',
+      daemonPasswordFile: '/var/lib/agentpay/daemon-password',
+      rootDir: '/opt/agentpay',
+      stateDir: '/var/lib/agentpay',
+      logDir: null,
+      uninstallScriptName: 'uninstall-system-daemon.sh',
+    }
+  : {
+      label: 'com.agentpay.daemon',
+      daemonSocket: '/Library/AgentPay/run/daemon.sock',
+      stateFile: '/var/db/agentpay/daemon-state.enc',
+      relayDaemonTokenFile: '/var/db/agentpay/relay-daemon-token',
+      daemonPasswordFile: null,
+      rootDir: '/Library/AgentPay',
+      stateDir: '/var/db/agentpay',
+      logDir: '/var/log/agentpay',
+      uninstallScriptName: 'uninstall-user-daemon.sh',
+    };
+const AGENT_AUTH_SERVICE = 'agentpay-agent-auth-token';
 
 function writeExecutable(targetPath, body) {
   fs.writeFileSync(targetPath, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+}
+
+function writeManagedUninstallScript(rustBinDir, body = 'exit 0') {
+  const paths = new Set([
+    path.join(rustBinDir, 'uninstall-user-daemon.sh'),
+    path.join(rustBinDir, 'uninstall-system-daemon.sh'),
+  ]);
+  for (const targetPath of paths) {
+    writeExecutable(targetPath, body);
+  }
+  return path.join(rustBinDir, HOST_MANAGED.uninstallScriptName);
 }
 
 async function withIsolatedHome(fn) {
@@ -185,7 +220,8 @@ test('cleanupLocalAdminResetState clears wallet credentials but preserves non-se
 
   assert.equal(result.agentKeyId, TEST_AGENT_KEY_ID);
   assert.equal(result.keychain.removed, true);
-  assert.equal(result.keychain.service, 'agentpay-agent-auth-token');
+  assert.equal(result.keychain.service, AGENT_AUTH_SERVICE);
+  assert.equal(result.keychain.error, null);
   assert.deepEqual(clearedKeys, ['agentKeyId', 'agentAuthToken', 'wallet']);
   assert.equal(deletedConfigPath, null);
   assert.equal(result.config.existed, true);
@@ -240,6 +276,7 @@ test('cleanupLocalAdminResetState can delete the whole config file', async () =>
 
   assert.equal(result.agentKeyId, TEST_AGENT_KEY_ID);
   assert.equal(result.keychain.removed, true);
+  assert.equal(result.keychain.error, null);
   assert.deepEqual(clearedKeys, []);
   assert.deepEqual(deletedPaths, ['/tmp/config.json']);
   assert.equal(result.config.deleted, true);
@@ -288,6 +325,7 @@ test('cleanupLocalAdminResetState falls back to wallet.agentKeyId when top-level
   assert.equal(result.agentKeyId, TEST_AGENT_KEY_ID);
   assert.equal(removedAgentKeyId, TEST_AGENT_KEY_ID);
   assert.equal(result.keychain.removed, true);
+  assert.equal(result.keychain.error, null);
   assert.equal(result.config.clearedAgentKeyId, false);
   assert.equal(result.config.clearedWalletMetadata, true);
   assert.equal(result.config.value.wallet, undefined);
@@ -318,7 +356,8 @@ test('cleanupLocalAdminUninstallState removes the entire AgentPay home and clear
 
   assert.equal(result.agentKeyId, TEST_AGENT_KEY_ID);
   assert.equal(result.keychain.removed, true);
-  assert.equal(result.keychain.service, 'agentpay-agent-auth-token');
+  assert.equal(result.keychain.service, AGENT_AUTH_SERVICE);
+  assert.equal(result.keychain.error, null);
   assert.equal(result.config.existed, true);
   assert.equal(result.config.deleted, true);
   assert.equal(result.agentpayHome.existed, true);
@@ -575,7 +614,8 @@ test('cleanupLocalAdminResetState tolerates missing config and non-macOS keychai
 
   assert.equal(result.agentKeyId, null);
   assert.equal(result.keychain.removed, false);
-  assert.equal(result.keychain.service, null);
+  assert.equal(result.keychain.service, AGENT_AUTH_SERVICE);
+  assert.equal(result.keychain.error, null);
   assert.equal(result.config.existed, false);
   assert.equal(result.config.deleted, false);
   assert.equal(result.config.value, null);
@@ -605,7 +645,7 @@ test('cleanupLocalAdminResetState captures bootstrap cleanup errors as warnings'
   assert.equal(result.bootstrapArtifacts.error, 'mock bootstrap cleanup failure');
 });
 
-test('cleanupLocalAdminUninstallState reports non-macOS service fallback', async () => {
+test('cleanupLocalAdminUninstallState reports Linux credential storage metadata', async () => {
   const reset = await import(modulePath.href + `?case=${Date.now()}-uninstall-linux-service-null`);
 
   const result = reset.cleanupLocalAdminUninstallState({
@@ -626,7 +666,8 @@ test('cleanupLocalAdminUninstallState reports non-macOS service fallback', async
 
   assert.equal(result.agentKeyId, null);
   assert.equal(result.keychain.removed, false);
-  assert.equal(result.keychain.service, null);
+  assert.equal(result.keychain.service, AGENT_AUTH_SERVICE);
+  assert.equal(result.keychain.error, null);
   assert.equal(result.config.existed, false);
   assert.equal(result.agentpayHome.existed, false);
 });
@@ -635,31 +676,92 @@ test('managedDaemonResetArtifactPaths includes the relay daemon token file', asy
   const reset = await import(modulePath.href + `?case=${Date.now()}-reset-artifacts`);
 
   assert.deepEqual(reset.managedDaemonResetArtifactPaths(), [
-    '/var/db/agentpay/daemon-state.enc',
-    '/Library/AgentPay/run/daemon.sock',
-    '/var/db/agentpay/relay-daemon-token',
+    HOST_MANAGED.stateFile,
+    HOST_MANAGED.daemonSocket,
+    HOST_MANAGED.relayDaemonTokenFile,
+    ...(HOST_MANAGED.daemonPasswordFile ? [HOST_MANAGED.daemonPasswordFile] : []),
   ]);
 });
 
-test('runAdminResetCli fails fast on Linux before entering the macOS-only managed reset flow', async () => {
+test('runAdminResetCli supports Linux and still requires a local tty for sudo when prompts are needed', async () => {
   await withMockPlatform('linux', async () => {
-    const reset = await import(`${modulePath.href}?case=${Date.now()}-linux-reset-guard`);
+    await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
+      writeManagedUninstallScript(rustBinDir);
+      writeExecutable(
+        path.join(toolDir, 'sudo'),
+        [
+          'if [ "$1" = "-n" ]; then',
+          '  exit 1',
+          'fi',
+          'exit 0',
+        ].join('\n'),
+      );
+      fs.writeFileSync(
+        path.join(agentpayHome, 'config.json'),
+        `${JSON.stringify({ rustBinDir, chains: {} }, null, 2)}\n`,
+        { mode: 0o600 },
+      );
 
-    await assert.rejects(
-      () => reset.runAdminResetCli(['--yes', '--non-interactive']),
-      /`agentpay admin reset` is currently supported only on macOS/u,
-    );
+      const originalHome = process.env.HOME;
+      const originalAgentPayHome = process.env.AGENTPAY_HOME;
+      const originalPath = process.env.PATH;
+      process.env.HOME = homeDir;
+      process.env.AGENTPAY_HOME = agentpayHome;
+      process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
+
+      try {
+        const reset = await import(`${modulePath.href}?case=${Date.now()}-linux-reset-supported`);
+        await assert.rejects(
+          () => reset.runAdminResetCli(['--yes']),
+          /System admin password for sudo is required; rerun on a local TTY/u,
+        );
+      } finally {
+        process.env.HOME = originalHome;
+        process.env.AGENTPAY_HOME = originalAgentPayHome;
+        process.env.PATH = originalPath;
+      }
+    });
   });
 });
 
-test('runAdminUninstallCli fails fast on Linux before entering the macOS-only managed uninstall flow', async () => {
+test('runAdminUninstallCli supports Linux and still requires a local tty for sudo when prompts are needed', async () => {
   await withMockPlatform('linux', async () => {
-    const reset = await import(`${modulePath.href}?case=${Date.now()}-linux-uninstall-guard`);
+    await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
+      writeManagedUninstallScript(rustBinDir);
+      writeExecutable(
+        path.join(toolDir, 'sudo'),
+        [
+          'if [ "$1" = "-n" ]; then',
+          '  exit 1',
+          'fi',
+          'exit 0',
+        ].join('\n'),
+      );
+      fs.writeFileSync(
+        path.join(agentpayHome, 'config.json'),
+        `${JSON.stringify({ rustBinDir, chains: {} }, null, 2)}\n`,
+        { mode: 0o600 },
+      );
 
-    await assert.rejects(
-      () => reset.runAdminUninstallCli(['--yes', '--non-interactive']),
-      /`agentpay admin uninstall` is currently supported only on macOS/u,
-    );
+      const originalHome = process.env.HOME;
+      const originalAgentPayHome = process.env.AGENTPAY_HOME;
+      const originalPath = process.env.PATH;
+      process.env.HOME = homeDir;
+      process.env.AGENTPAY_HOME = agentpayHome;
+      process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
+
+      try {
+        const reset = await import(`${modulePath.href}?case=${Date.now()}-linux-uninstall-supported`);
+        await assert.rejects(
+          () => reset.runAdminUninstallCli(['--yes']),
+          /System admin password for sudo is required; rerun on a local TTY/u,
+        );
+      } finally {
+        process.env.HOME = originalHome;
+        process.env.AGENTPAY_HOME = originalAgentPayHome;
+        process.env.PATH = originalPath;
+      }
+    });
   });
 });
 
@@ -699,7 +801,7 @@ test('runAdminResetCli enforces confirmation in non-interactive and prompt-abort
 
 test('runAdminResetCli requires a local tty before prompting for the hidden root password', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -728,7 +830,7 @@ test('runAdminResetCli requires a local tty before prompting for the hidden root
       const reset = await import(`${modulePath.href}?case=${Date.now()}-reset-hidden-password-no-tty`);
       await assert.rejects(
         () => reset.runAdminResetCli(['--yes']),
-        /macOS admin password for sudo is required; rerun on a local TTY/u,
+        /System admin password for sudo is required; rerun on a local TTY/u,
       );
     } finally {
       process.env.HOME = originalHome;
@@ -740,7 +842,7 @@ test('runAdminResetCli requires a local tty before prompting for the hidden root
 
 test('runAdminResetCli validates prompted hidden root passwords before sudo prime succeeds', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -774,7 +876,7 @@ test('runAdminResetCli validates prompted hidden root passwords before sudo prim
       await withMockedPrompt('   ', async () => {
         await assert.rejects(
           () => blankReset.runAdminResetCli(['--yes']),
-          /macOS admin password for sudo must not be empty or whitespace/u,
+          /System admin password for sudo must not be empty or whitespace/u,
         );
       });
 
@@ -784,7 +886,7 @@ test('runAdminResetCli validates prompted hidden root passwords before sudo prim
       await withMockedPrompt('x'.repeat(17_000), async () => {
         await assert.rejects(
           () => oversizedReset.runAdminResetCli(['--yes']),
-          /macOS admin password for sudo must not exceed 16384 bytes/u,
+          /System admin password for sudo must not exceed 16384 bytes/u,
         );
       });
     } finally {
@@ -797,7 +899,7 @@ test('runAdminResetCli validates prompted hidden root passwords before sudo prim
 
 test('runAdminResetCli does not echo the hidden sudo password to stdout', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -850,7 +952,7 @@ test('runAdminResetCli does not echo the hidden sudo password to stdout', async 
       assert.doesNotMatch(rendered, /root-password/u);
       assert.match(
         rendered,
-        /macOS admin password for sudo \(input hidden; required to uninstall the root daemon and delete its state\): /u,
+        /System admin password for sudo \(input hidden; required to uninstall the root-managed daemon and delete its state\): /u,
       );
       assert.match(rendered, /\n/u);
     } finally {
@@ -861,10 +963,10 @@ test('runAdminResetCli does not echo the hidden sudo password to stdout', async 
   });
 });
 
-test('runAdminResetCli executes the reset workflow with staged launchd helper scripts', async () => {
+test('runAdminResetCli executes the reset workflow with staged managed-daemon helper scripts', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
     const configPath = path.join(agentpayHome, 'config.json');
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -939,7 +1041,7 @@ test('runAdminResetCli executes the reset workflow with staged launchd helper sc
 test('runAdminResetCli removes persisted wallet metadata from a kept config file', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
     const configPath = path.join(agentpayHome, 'config.json');
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1014,7 +1116,7 @@ test('runAdminResetCli removes persisted wallet metadata from a kept config file
 
 test('runAdminResetCli non-json summary reports missing config and bootstrap cleanup warnings', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1070,7 +1172,7 @@ test('runAdminResetCli non-json summary reports missing config and bootstrap cle
 test('runAdminResetCli emits machine-readable output on successful json reset runs', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
     const configPath = path.join(agentpayHome, 'config.json');
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1124,14 +1226,14 @@ test('runAdminResetCli emits machine-readable output on successful json reset ru
 
     const output = stdoutChunks.join('');
     assert.match(output, /"command": "reset"/u);
-    assert.match(output, /"label": "com\.agentpay\.daemon"/u);
+    assert.match(output, new RegExp(`"label": "${HOST_MANAGED.label}"`, 'u'));
     assert.match(output, /"deleted": false/u);
   });
 });
 
 test('runAdminResetCli prefers stdout when managed state deletion fails without stderr', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1182,7 +1284,7 @@ test('runAdminResetCli prefers stdout when managed state deletion fails without 
 
 test('runAdminResetCli falls back to the default managed state deletion message when sudo returns no output', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1233,7 +1335,7 @@ test('runAdminResetCli falls back to the default managed state deletion message 
 test('runAdminResetCli can delete config and print spinner progress when stderr is a tty', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
     const configPath = path.join(agentpayHome, 'config.json');
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1311,7 +1413,7 @@ test('runAdminResetCli can delete config and print spinner progress when stderr 
 test('runAdminUninstallCli removes the local AgentPay home with --json output', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
     const configPath = path.join(agentpayHome, 'config.json');
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1376,7 +1478,7 @@ test('runAdminUninstallCli removes the local AgentPay home with --json output', 
 
 test('runAdminResetCli surfaces managed state deletion failures from sudo commands', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1425,9 +1527,9 @@ test('runAdminResetCli surfaces managed state deletion failures from sudo comman
   });
 });
 
-test('runAdminUninstallCli surfaces launchd uninstall failures from sudo commands', async () => {
+test('runAdminUninstallCli surfaces managed-daemon uninstall failures from sudo commands', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1478,7 +1580,7 @@ test('runAdminUninstallCli surfaces launchd uninstall failures from sudo command
 
 test('runAdminUninstallCli enforces explicit confirmation in non-interactive and prompt-abort flows', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1525,9 +1627,9 @@ test('runAdminUninstallCli enforces explicit confirmation in non-interactive and
   });
 });
 
-test('runAdminResetCli surfaces launchd uninstall failures before local cleanup', async () => {
+test('runAdminResetCli surfaces managed-daemon uninstall failures before local cleanup', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1578,7 +1680,7 @@ test('runAdminResetCli surfaces launchd uninstall failures before local cleanup'
 
 test('runAdminResetCli and runAdminUninstallCli exercise tty spinner fail paths on immediate sudo execution failures', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1663,7 +1765,7 @@ test('runAdminResetCli and runAdminUninstallCli exercise tty spinner fail paths 
 
 test('runAdminUninstallCli fails when root-managed file removal returns non-zero', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1714,7 +1816,7 @@ test('runAdminUninstallCli fails when root-managed file removal returns non-zero
 
 test('runAdminUninstallCli falls back to the default root artifact failure message when sudo returns no output', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1764,7 +1866,7 @@ test('runAdminUninstallCli falls back to the default root artifact failure messa
 
 test('runAdminUninstallCli fails when managed root-owned files still exist after uninstall cleanup', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1775,7 +1877,7 @@ test('runAdminUninstallCli fails when managed root-owned files still exist after
         '  exit 0',
         'fi',
         'if [ "$1" = "-n" ] && [ "$2" = "/bin/test" ]; then',
-        '  if [ "$4" = "/var/db/agentpay" ]; then',
+        `  if [ "$4" = "${HOST_MANAGED.stateDir}" ]; then`,
         '    exit 0',
         '  fi',
         '  exit 1',
@@ -1805,7 +1907,10 @@ test('runAdminUninstallCli fails when managed root-owned files still exist after
       await withMockedPrompt('root-password', async () => {
         await assert.rejects(
           () => reset.runAdminUninstallCli(['--yes', '--non-interactive']),
-          /admin uninstall left managed root-owned files behind: \/var\/db\/agentpay/u,
+          new RegExp(
+            `admin uninstall left managed root-owned files behind: ${HOST_MANAGED.stateDir.replaceAll('/', '\\/')}`,
+            'u',
+          ),
         );
       });
       assert.equal(fs.existsSync(configPath), true);
@@ -1819,7 +1924,7 @@ test('runAdminUninstallCli fails when managed root-owned files still exist after
 
 test('runAdminUninstallCli fails when the local AgentPay home still exists after cleanup', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1883,7 +1988,7 @@ test('runAdminUninstallCli fails when the local AgentPay home still exists after
 
 test('runAdminUninstallCli non-json summary reports configured agent keys and removed config paths', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
@@ -1947,7 +2052,7 @@ test('runAdminUninstallCli non-json summary reports configured agent keys and re
 
 test('runAdminUninstallCli non-json summary reports missing config and confirms prompt', async () => {
   await withIsolatedHome(async ({ homeDir, agentpayHome, rustBinDir, toolDir }) => {
-    const uninstallScriptPath = path.join(rustBinDir, 'uninstall-user-daemon.sh');
+    const uninstallScriptPath = writeManagedUninstallScript(rustBinDir);
     const sudoScriptPath = path.join(toolDir, 'sudo');
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(

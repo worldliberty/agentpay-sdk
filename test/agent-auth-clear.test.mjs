@@ -74,7 +74,7 @@ test('clearAgentAuthToken preserves other configured agentKeyIds but still scrub
   assert.equal(result.config.agentAuthToken, undefined);
 });
 
-test('clearAgentAuthToken reports a null keychain service outside macOS', async () => {
+test('clearAgentAuthToken reports the local credential service on Linux', async () => {
   const clear = await import(modulePath.href + `?case=${Date.now()}-linux-service-null`);
   let configState = {
     agentKeyId: TEST_AGENT_KEY_ID,
@@ -97,5 +97,5 @@ test('clearAgentAuthToken reports a null keychain service outside macOS', async 
   });
 
   assert.equal(result.keychain.removed, true);
-  assert.equal(result.keychain.service, null);
+  assert.equal(result.keychain.service, 'agentpay-agent-auth-token');
 });

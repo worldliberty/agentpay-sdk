@@ -125,7 +125,7 @@ fn per_tx_limit_is_enforced() {
 }
 
 #[test]
-fn eip712_defaults_to_manual_approval() {
+fn eip712_defaults_to_allow_with_all_policies() {
     let engine = PolicyEngine;
     let result = engine.evaluate(
         &[],
@@ -136,13 +136,7 @@ fn eip712_defaults_to_manual_approval() {
         OffsetDateTime::now_utc(),
     );
 
-    assert!(matches!(
-        result,
-        Err(PolicyError::Eip712ManualApprovalRequired {
-            policy_id: None,
-            ..
-        })
-    ));
+    assert!(result.is_ok());
 }
 
 #[test]

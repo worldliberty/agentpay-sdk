@@ -67,12 +67,17 @@ async function writeChildStdin(
   await new Promise<void>((resolve, reject) => {
     let settled = false;
 
+    const cleanup = () => {
+      stream.off('error', handleError);
+      stream.off('finish', handleFinish);
+      stream.off('close', cleanup);
+    };
+
     const finish = () => {
       if (settled) {
         return;
       }
       settled = true;
-      stream.off('error', handleError);
       resolve();
     };
 
@@ -85,12 +90,17 @@ async function writeChildStdin(
         return;
       }
       settled = true;
-      stream.off('error', handleError);
       reject(error);
     };
 
+    const handleFinish = () => {
+      finish();
+    };
+
     stream.on('error', handleError);
-    stream.end(stdin, finish);
+    stream.once('finish', handleFinish);
+    stream.once('close', cleanup);
+    stream.end(stdin);
   });
 }
 

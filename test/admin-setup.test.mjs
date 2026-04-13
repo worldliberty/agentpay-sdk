@@ -9,9 +9,51 @@ import test from 'node:test';
 
 const modulePath = new URL('../src/lib/admin-setup.ts', import.meta.url);
 const walletBackupModulePath = new URL('../src/lib/wallet-backup.ts', import.meta.url);
+const HOST_MANAGED = process.platform === 'linux'
+  ? {
+      label: 'agentpay-daemon',
+      daemonSocket: '/run/agentpay/daemon.sock',
+      stateFile: '/var/lib/agentpay/daemon-state.enc',
+      serviceFile: '/etc/systemd/system/agentpay-daemon.service',
+      managedBinDir: '/opt/agentpay/bin',
+      installScriptName: 'install-system-daemon.sh',
+      uninstallScriptName: 'uninstall-system-daemon.sh',
+      runnerScriptName: 'run-agentpay-daemon.sh',
+      credentialHelperName: 'agentpay-daemon-password-helper.sh',
+    }
+  : {
+      label: 'com.agentpay.daemon',
+      daemonSocket: '/Library/AgentPay/run/daemon.sock',
+      stateFile: '/var/db/agentpay/daemon-state.enc',
+      serviceFile: '/Library/LaunchDaemons/com.agentpay.daemon.plist',
+      managedBinDir: '/Library/AgentPay/bin',
+      installScriptName: 'install-user-daemon.sh',
+      uninstallScriptName: 'uninstall-user-daemon.sh',
+      runnerScriptName: 'run-agentpay-daemon.sh',
+      credentialHelperName: 'agentpay-system-keychain',
+    };
+const HOST_AGENT_AUTH_STORAGE = process.platform === 'linux'
+  ? 'Linux Secret Service'
+  : 'macOS Keychain';
 
 function loadModule(caseId) {
   return import(`${modulePath.href}?case=${caseId}`);
+}
+
+function writeManagedSetupHelpers(rustBinDir) {
+  const helpers = new Map([
+    [path.join(rustBinDir, 'run-agentpay-daemon.sh'), 'exit 0'],
+    [path.join(rustBinDir, 'install-user-daemon.sh'), 'exit 0'],
+    [path.join(rustBinDir, 'install-system-daemon.sh'), 'exit 0'],
+    [path.join(rustBinDir, 'uninstall-user-daemon.sh'), 'exit 0'],
+    [path.join(rustBinDir, 'uninstall-system-daemon.sh'), 'exit 0'],
+    [path.join(rustBinDir, 'agentpay-system-keychain'), 'exit 0'],
+    [path.join(rustBinDir, 'agentpay-daemon-password-helper.sh'), 'exit 0'],
+    [path.join(rustBinDir, 'agentpay-daemon'), 'exit 0'],
+  ]);
+  for (const [targetPath, body] of helpers) {
+    writeExecutable(targetPath, body);
+  }
 }
 
 async function withMockPlatform(platform, fn) {
@@ -165,10 +207,10 @@ test('assertManagedDaemonInstallPreconditions validates staged root-daemon input
   const rustBinDir = path.join(tempRoot, 'bin');
   const runnerPath = path.join(rustBinDir, 'run-agentpay-daemon.sh');
   const daemonBin = path.join(rustBinDir, 'agentpay-daemon');
-  const keychainHelperBin = path.join(rustBinDir, 'agentpay-system-keychain');
-  const installScript = path.join(tempRoot, 'install-user-daemon.sh');
-  const daemonSocket = '/Library/AgentPay/run/daemon.sock';
-  const stateFile = '/var/db/agentpay/daemon-state.enc';
+  const keychainHelperBin = path.join(rustBinDir, HOST_MANAGED.credentialHelperName);
+  const installScript = path.join(tempRoot, HOST_MANAGED.installScriptName);
+  const daemonSocket = HOST_MANAGED.daemonSocket;
+  const stateFile = HOST_MANAGED.stateFile;
 
   fs.mkdirSync(rustBinDir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(runnerPath, '#!/bin/sh\n', { mode: 0o755 });
@@ -220,25 +262,58 @@ test('assertManagedDaemonInstallPreconditions validates staged root-daemon input
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
-test('runAdminSetupCli fails fast on Linux before entering the macOS-only managed setup flow', async () => {
+test('runAdminSetupCli supports Linux managed setup planning', async () => {
   await withMockPlatform('linux', async () => {
-    const adminSetup = await loadModule(`${Date.now()}-linux-setup-guard`);
-
-    await assert.rejects(
-      () => adminSetup.runAdminSetupCli(['--plan']),
-      /`agentpay admin setup` is currently supported only on macOS/u,
-    );
+    await withMockedAdminSetupEnv(async () => {
+      const stdoutChunks = [];
+      const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+      process.stdout.write = ((chunk, ...args) => {
+        stdoutChunks.push(String(chunk));
+        return originalStdoutWrite(chunk, ...args);
+      });
+      try {
+        const adminSetup = await loadModule(`${Date.now()}-linux-setup-supported`);
+        await adminSetup.runAdminSetupCli(['--plan', '--json']);
+      } finally {
+        process.stdout.write = originalStdoutWrite;
+      }
+      assert.match(stdoutChunks.join(''), /"command": "setup"/u);
+      assert.match(stdoutChunks.join(''), /"mode": "plan"/u);
+    });
   });
 });
 
-test('runAdminTuiCli fails fast on Linux before entering the macOS-only TUI flow', async () => {
+test('runAdminTuiCli supports Linux managed TUI passthrough when the daemon socket is trusted', async () => {
   await withMockPlatform('linux', async () => {
-    const adminSetup = await loadModule(`${Date.now()}-linux-tui-guard`);
+    await withTrustedRootDaemonSocket(async (trustedSocket) => {
+      await withMockedAdminSetupEnv(async ({ agentpayHome }) => {
+        const configPath = path.join(agentpayHome, 'config.json');
+        const currentConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        fs.writeFileSync(
+          configPath,
+          `${JSON.stringify({ ...currentConfig, daemonSocket: trustedSocket }, null, 2)}\n`,
+          { mode: 0o600 },
+        );
 
-    await assert.rejects(
-      () => adminSetup.runAdminTuiCli(['--json']),
-      /`agentpay admin tui` is currently supported only on macOS/u,
-    );
+        process.env.AGENTPAY_MOCK_SKIP_TUI_OUTPUT = '1';
+        const stdoutChunks = [];
+        const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+        process.stdout.write = ((chunk, ...args) => {
+          stdoutChunks.push(String(chunk));
+          return originalStdoutWrite(chunk, ...args);
+        });
+        try {
+          const adminSetup = await loadModule(`${Date.now()}-linux-tui-supported`);
+          await withMockedPrompt('vault-password', async () => {
+            await adminSetup.runAdminTuiCli(['--json']);
+          });
+        } finally {
+          process.stdout.write = originalStdoutWrite;
+        }
+        assert.match(stdoutChunks.join(''), /"command": "tui"/u);
+        assert.match(stdoutChunks.join(''), /"canceled": true/u);
+      });
+    });
   });
 });
 
@@ -248,8 +323,8 @@ test('assertManagedDaemonInstallPreconditions prefers staged launchd helpers fro
   const rustBinDir = path.join(tempRoot, 'bin');
   const runnerPath = path.join(rustBinDir, 'run-agentpay-daemon.sh');
   const daemonBin = path.join(rustBinDir, 'agentpay-daemon');
-  const keychainHelperBin = path.join(rustBinDir, 'agentpay-system-keychain');
-  const installScript = path.join(rustBinDir, 'install-user-daemon.sh');
+  const keychainHelperBin = path.join(rustBinDir, HOST_MANAGED.credentialHelperName);
+  const installScript = path.join(rustBinDir, HOST_MANAGED.installScriptName);
 
   fs.mkdirSync(rustBinDir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(runnerPath, '#!/bin/sh\n', { mode: 0o755 });
@@ -262,8 +337,8 @@ test('assertManagedDaemonInstallPreconditions prefers staged launchd helpers fro
       rustBinDir,
       chains: {},
     },
-    '/Library/AgentPay/run/daemon.sock',
-    '/var/db/agentpay/daemon-state.enc',
+    HOST_MANAGED.daemonSocket,
+    HOST_MANAGED.stateFile,
     {
       assertTrustedExecutablePath: () => {},
       assertTrustedRootPlannedDaemonSocketPath: (targetPath) => path.resolve(targetPath),
@@ -282,8 +357,8 @@ test('assertManagedDaemonInstallPreconditions fails closed when root-managed pat
   const rustBinDir = path.join(tempRoot, 'bin');
   const runnerPath = path.join(rustBinDir, 'run-agentpay-daemon.sh');
   const daemonBin = path.join(rustBinDir, 'agentpay-daemon');
-  const keychainHelperBin = path.join(rustBinDir, 'agentpay-system-keychain');
-  const installScript = path.join(tempRoot, 'install-user-daemon.sh');
+  const keychainHelperBin = path.join(rustBinDir, HOST_MANAGED.credentialHelperName);
+  const installScript = path.join(tempRoot, HOST_MANAGED.installScriptName);
 
   fs.mkdirSync(rustBinDir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(runnerPath, '#!/bin/sh\n', { mode: 0o755 });
@@ -299,7 +374,7 @@ test('assertManagedDaemonInstallPreconditions fails closed when root-managed pat
           chains: {},
         },
         '/Users/example/agentpay/run/daemon.sock',
-        '/var/db/agentpay/daemon-state.enc',
+        HOST_MANAGED.stateFile,
         {
           assertTrustedExecutablePath: () => {},
           assertTrustedRootPlannedDaemonSocketPath: () => {
@@ -322,10 +397,10 @@ test('managedLaunchDaemonAssetsMatchSource compares staged root copies against c
   const managedBinDir = path.join(tempRoot, 'managed-bin');
   const sourceRunner = path.join(sourceBinDir, 'run-agentpay-daemon.sh');
   const sourceDaemon = path.join(sourceBinDir, 'agentpay-daemon');
-  const sourceKeychainHelper = path.join(sourceBinDir, 'agentpay-system-keychain');
+  const sourceKeychainHelper = path.join(sourceBinDir, HOST_MANAGED.credentialHelperName);
   const managedRunner = path.join(managedBinDir, 'run-agentpay-daemon.sh');
   const managedDaemon = path.join(managedBinDir, 'agentpay-daemon');
-  const managedKeychainHelper = path.join(managedBinDir, 'agentpay-system-keychain');
+  const managedKeychainHelper = path.join(managedBinDir, HOST_MANAGED.credentialHelperName);
 
   fs.mkdirSync(sourceBinDir, { recursive: true, mode: 0o700 });
   fs.mkdirSync(managedBinDir, { recursive: true, mode: 0o700 });
@@ -381,10 +456,10 @@ test('managedLaunchDaemonAssetsMatchSource fails closed for size mismatches and 
   const managedBinDir = path.join(tempRoot, 'managed-bin');
   const sourceRunner = path.join(sourceBinDir, 'run-agentpay-daemon.sh');
   const sourceDaemon = path.join(sourceBinDir, 'agentpay-daemon');
-  const sourceKeychainHelper = path.join(sourceBinDir, 'agentpay-system-keychain');
+  const sourceKeychainHelper = path.join(sourceBinDir, HOST_MANAGED.credentialHelperName);
   const managedRunner = path.join(managedBinDir, 'run-agentpay-daemon.sh');
   const managedDaemon = path.join(managedBinDir, 'agentpay-daemon');
-  const managedKeychainHelper = path.join(managedBinDir, 'agentpay-system-keychain');
+  const managedKeychainHelper = path.join(managedBinDir, HOST_MANAGED.credentialHelperName);
 
   fs.mkdirSync(sourceBinDir, { recursive: true, mode: 0o700 });
   fs.mkdirSync(managedBinDir, { recursive: true, mode: 0o700 });
@@ -439,8 +514,8 @@ test('assertManagedDaemonInstallPreconditions fails closed when staged assets ar
   const rustBinDir = path.join(tempRoot, 'bin');
   const runnerPath = path.join(rustBinDir, 'run-agentpay-daemon.sh');
   const daemonBin = path.join(rustBinDir, 'agentpay-daemon');
-  const keychainHelperBin = path.join(rustBinDir, 'agentpay-system-keychain');
-  const installScript = path.join(tempRoot, 'install-user-daemon.sh');
+  const keychainHelperBin = path.join(rustBinDir, HOST_MANAGED.credentialHelperName);
+  const installScript = path.join(tempRoot, HOST_MANAGED.installScriptName);
 
   fs.mkdirSync(rustBinDir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(runnerPath, '#!/bin/sh\n', { mode: 0o755 });
@@ -453,8 +528,8 @@ test('assertManagedDaemonInstallPreconditions fails closed when staged assets ar
     () =>
       adminSetup.assertManagedDaemonInstallPreconditions(
         { rustBinDir, chains: {} },
-        '/Library/AgentPay/run/daemon.sock',
-        '/var/db/agentpay/daemon-state.enc',
+        HOST_MANAGED.daemonSocket,
+        HOST_MANAGED.stateFile,
         {
           assertTrustedExecutablePath: () => {},
           assertTrustedRootPlannedDaemonSocketPath: () => {},
@@ -471,8 +546,8 @@ test('assertManagedDaemonInstallPreconditions fails closed when staged assets ar
     () =>
       adminSetup.assertManagedDaemonInstallPreconditions(
         { rustBinDir, chains: {} },
-        '/Library/AgentPay/run/daemon.sock',
-        '/var/db/agentpay/daemon-state.enc',
+        HOST_MANAGED.daemonSocket,
+        HOST_MANAGED.stateFile,
         {
           assertTrustedExecutablePath: () => {},
           assertTrustedRootPlannedDaemonSocketPath: () => {},
@@ -480,7 +555,7 @@ test('assertManagedDaemonInstallPreconditions fails closed when staged assets ar
           resolveInstallScriptPath: () => installScript,
         },
       ),
-    /daemon keychain helper is not installed/u,
+    /daemon credential helper is not installed/u,
   );
 
   fs.writeFileSync(keychainHelperBin, 'helper-bin\n', { mode: 0o755 });
@@ -489,8 +564,8 @@ test('assertManagedDaemonInstallPreconditions fails closed when staged assets ar
     () =>
       adminSetup.assertManagedDaemonInstallPreconditions(
         { rustBinDir, chains: {} },
-        '/Library/AgentPay/run/daemon.sock',
-        '/var/db/agentpay/daemon-state.enc',
+        HOST_MANAGED.daemonSocket,
+        HOST_MANAGED.stateFile,
         {
           assertTrustedExecutablePath: () => {},
           assertTrustedRootPlannedDaemonSocketPath: () => {},
@@ -498,7 +573,7 @@ test('assertManagedDaemonInstallPreconditions fails closed when staged assets ar
           resolveInstallScriptPath: () => installScript,
         },
       ),
-    /launchd install helper is not installed/u,
+    /managed daemon install helper is not installed/u,
   );
 
   fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -509,8 +584,8 @@ test('assertManagedDaemonInstallPreconditions fails closed when the daemon runne
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-admin-setup-'));
   const rustBinDir = path.join(tempRoot, 'bin');
   const daemonBin = path.join(rustBinDir, 'agentpay-daemon');
-  const keychainHelperBin = path.join(rustBinDir, 'agentpay-system-keychain');
-  const installScript = path.join(tempRoot, 'install-user-daemon.sh');
+  const keychainHelperBin = path.join(rustBinDir, HOST_MANAGED.credentialHelperName);
+  const installScript = path.join(tempRoot, HOST_MANAGED.installScriptName);
 
   fs.mkdirSync(rustBinDir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(daemonBin, 'daemon-bin\n', { mode: 0o755 });
@@ -521,8 +596,8 @@ test('assertManagedDaemonInstallPreconditions fails closed when the daemon runne
     () =>
       adminSetup.assertManagedDaemonInstallPreconditions(
         { rustBinDir, chains: {} },
-        '/Library/AgentPay/run/daemon.sock',
-        '/var/db/agentpay/daemon-state.enc',
+        HOST_MANAGED.daemonSocket,
+        HOST_MANAGED.stateFile,
         {
           assertTrustedExecutablePath: () => {},
           assertTrustedRootPlannedDaemonSocketPath: () => {},
@@ -1032,8 +1107,11 @@ test('formatAdminCommandOutput keeps setup output keychain-first unless secrets 
   assert.match(rendered, /daemon socket: \/Library\/AgentPay\/run\/daemon\.sock/);
   assert.match(rendered, /state file: \/var\/db\/agentpay\/daemon-state\.enc/);
   assert.match(rendered, /chain: eth/);
-  assert.match(rendered, /agent auth token: stored in macOS Keychain/);
-  assert.match(rendered, /keychain service: agentpay-agent-auth-token/);
+  assert.match(
+    rendered,
+    new RegExp(`agent auth token: stored in ${HOST_AGENT_AUTH_STORAGE}`, 'u'),
+  );
+  assert.match(rendered, /credential service: agentpay-agent-auth-token/);
   assert.doesNotMatch(rendered, /secret-agent-token/);
   assert.doesNotMatch(rendered, /vault private key:/);
 
@@ -1285,7 +1363,7 @@ test('formatAdminSetupPlanText includes install failures and the nested wallet p
   const rendered = adminSetup.formatAdminSetupPlanText(plan);
 
   assert.match(rendered, /^Admin Setup Preview/m);
-  assert.match(rendered, /LaunchDaemon Install: blocked/);
+  assert.match(rendered, /Managed Service Install: blocked/);
   assert.match(rendered, /daemon binary is not installed/);
   assert.match(rendered, /Existing Wallet\n- none/);
   assert.match(rendered, /Wallet Setup Preview/);
@@ -1549,10 +1627,35 @@ test('formatAdminCommandOutput falls back to unconfigured defaults when optional
 
   assert.match(rendered, /setup complete/u);
   assert.match(rendered, /chain: unconfigured/u);
-  assert.match(rendered, /agent auth token: stored in macOS Keychain/u);
+  assert.match(
+    rendered,
+    new RegExp(`agent auth token: stored in ${HOST_AGENT_AUTH_STORAGE}`, 'u'),
+  );
   assert.doesNotMatch(rendered, /daemon socket:/u);
   assert.doesNotMatch(rendered, /state file:/u);
-  assert.doesNotMatch(rendered, /keychain service:/u);
+  assert.doesNotMatch(rendered, /credential service:/u);
+});
+
+test('formatAdminCommandOutput renders direct file-storage notes when setup falls back from secret-tool', async () => {
+  const adminSetup = await loadModule(`${Date.now()}-format-admin-output-linux-file-note`);
+
+  const rendered = adminSetup.formatAdminCommandOutput({
+    command: 'setup',
+    agentKeyId: bootstrapPayload().agent_key_id,
+    config: {
+      chainName: 'bsc',
+    },
+    keychain: {
+      service: '/tmp/agent-auth/00000000-0000-0000-0000-000000000001.token',
+      label: 'Linux local credential file',
+      locationType: 'file',
+      note: 'secret-tool is unavailable, so the agent auth token is stored in a local file and is directly accessible to this user',
+    },
+  });
+
+  assert.match(rendered, /agent auth token: stored in Linux local credential file/u);
+  assert.match(rendered, /credential file: \/tmp\/agent-auth\/00000000-0000-0000-0000-000000000001\.token/u);
+  assert.match(rendered, /note: secret-tool is unavailable/u);
 });
 
 function writeExecutable(targetPath, body) {
@@ -1561,6 +1664,45 @@ function writeExecutable(targetPath, body) {
 
 function writeNodeExecutable(targetPath, body) {
   fs.writeFileSync(targetPath, `#!/usr/bin/env node\n${body}\n`, { mode: 0o755 });
+}
+
+function writeMockSecretTool(targetPath) {
+  writeNodeExecutable(
+    targetPath,
+    [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "const root = process.env.AGENTPAY_MOCK_SECRET_TOOL_ROOT;",
+      "if (!root) { process.stderr.write('missing AGENTPAY_MOCK_SECRET_TOOL_ROOT\\n'); process.exit(2); }",
+      'const args = process.argv.slice(2);',
+      'const command = args[0];',
+      'const attrs = new Map();',
+      'for (let i = 1; i < args.length; i += 2) {',
+      '  attrs.set(String(args[i]), String(args[i + 1] ?? ""));',
+      '}',
+      'const service = attrs.get("service") || "default-service";',
+      'const account = attrs.get("account") || "default-account";',
+      'const targetPath = path.join(root, encodeURIComponent(service), encodeURIComponent(account));',
+      'if (command === "store") {',
+      '  const input = fs.readFileSync(0, "utf8").replace(/[\\r\\n]+$/u, "");',
+      '  fs.mkdirSync(path.dirname(targetPath), { recursive: true, mode: 0o700 });',
+      '  fs.writeFileSync(targetPath, input, { encoding: "utf8", mode: 0o600 });',
+      '  process.exit(0);',
+      '}',
+      'if (command === "lookup") {',
+      '  if (!fs.existsSync(targetPath)) { process.exit(1); }',
+      '  process.stdout.write(fs.readFileSync(targetPath, "utf8"));',
+      '  process.exit(0);',
+      '}',
+      'if (command === "clear") {',
+      '  if (!fs.existsSync(targetPath)) { process.exit(1); }',
+      '  fs.rmSync(targetPath, { force: true });',
+      '  process.exit(0);',
+      '}',
+      'process.stderr.write(`unsupported secret-tool command: ${command}\\n`);',
+      'process.exit(2);',
+    ].join('\n'),
+  );
 }
 
 function writePrivateJsonFile(targetPath, payload) {
@@ -1826,15 +1968,14 @@ async function withMockedAdminSetupEnv(fn) {
   const agentpayHome = path.join(homeDir, '.agentpay');
   const rustBinDir = path.join(agentpayHome, 'bin');
   const toolDir = path.join(tempRoot, 'tools');
+  const secretToolRoot = path.join(tempRoot, 'secret-tool');
   fs.mkdirSync(rustBinDir, { recursive: true, mode: 0o700 });
   fs.mkdirSync(toolDir, { recursive: true, mode: 0o700 });
 
   writeExecutable(path.join(toolDir, 'security'), 'exit 0');
   writeDefaultMockSudo(path.join(toolDir, 'sudo'));
-  writeExecutable(path.join(rustBinDir, 'run-agentpay-daemon.sh'), 'exit 0');
-  writeExecutable(path.join(rustBinDir, 'install-user-daemon.sh'), 'exit 0');
-  writeExecutable(path.join(rustBinDir, 'agentpay-daemon'), 'exit 0');
-  writeExecutable(path.join(rustBinDir, 'agentpay-system-keychain'), 'exit 0');
+  writeMockSecretTool(path.join(toolDir, 'secret-tool'));
+  writeManagedSetupHelpers(rustBinDir);
   writeMockAdminBinary(path.join(rustBinDir, 'agentpay-admin'));
 
   fs.writeFileSync(
@@ -1856,6 +1997,7 @@ async function withMockedAdminSetupEnv(fn) {
   process.env.HOME = homeDir;
   process.env.AGENTPAY_HOME = agentpayHome;
   process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
+  process.env.AGENTPAY_MOCK_SECRET_TOOL_ROOT = secretToolRoot;
 
   try {
     await fn({ tempRoot, homeDir, agentpayHome, rustBinDir, toolDir });
@@ -1873,6 +2015,7 @@ async function withMockedAdminSetupEnv(fn) {
     delete process.env.AGENTPAY_MOCK_RELAY_SEQUENCE;
     delete process.env.AGENTPAY_MOCK_RELAY_ERROR_MESSAGE;
     delete process.env.AGENTPAY_MOCK_RELAY_COUNTER;
+    delete process.env.AGENTPAY_MOCK_SECRET_TOOL_ROOT;
     process.exitCode = undefined;
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -2031,8 +2174,65 @@ test('runAdminSetupCli non-json mode renders progress and human summary output',
 
       assert.match(stdoutChunks.join(''), /setup complete/u);
       assert.match(stdoutChunks.join(''), /chain: bsc/u);
-      assert.match(stdoutChunks.join(''), /agent auth token: stored in macOS Keychain/u);
+      assert.match(
+        stdoutChunks.join(''),
+        new RegExp(`agent auth token: stored in ${HOST_AGENT_AUTH_STORAGE}`, 'u'),
+      );
       assert.match(stderrChunks.join(''), /Setting up wallet access|Daemon is ready/u);
+    });
+  });
+});
+
+test('runAdminSetupCli falls back to a local credential file when secret-tool is unavailable on Linux', async () => {
+  if (process.platform !== 'linux') {
+    return;
+  }
+
+  await withTrustedRootDaemonSocket(async (trustedSocket) => {
+    await withMockedAdminSetupEnv(async ({ agentpayHome, toolDir }) => {
+      const stdoutChunks = [];
+      const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+      const originalPath = process.env.PATH;
+      const expectedAgentKeyId = bootstrapPayload().agent_key_id;
+      const expectedToken = bootstrapPayload().agent_auth_token;
+      const expectedCredentialPath = path.join(
+        agentpayHome,
+        'agent-auth',
+        `${expectedAgentKeyId}.token`,
+      );
+
+      process.stdout.write = ((chunk, ...args) => {
+        stdoutChunks.push(String(chunk));
+        return originalStdoutWrite(chunk, ...args);
+      });
+      process.env.PATH = `${toolDir}:${path.dirname(process.execPath)}`;
+      fs.rmSync(path.join(toolDir, 'secret-tool'), { force: true });
+
+      try {
+        const adminSetup = await loadModule(`${Date.now()}-run-setup-linux-file-fallback`);
+        await withMockedPrompt('vault-secret', async () => {
+          await adminSetup.runAdminSetupCli([
+            '--yes',
+            '--daemon-socket',
+            trustedSocket,
+            '--bootstrap-output',
+            path.join(agentpayHome, 'bootstrap-linux-file-fallback.json'),
+          ]);
+        });
+      } finally {
+        process.stdout.write = originalStdoutWrite;
+        process.env.PATH = originalPath;
+      }
+
+      const output = stdoutChunks.join('');
+      assert.match(output, /agent auth token: stored in Linux local credential file/u);
+      assert.match(output, /note: secret-tool is unavailable/u);
+      assert.match(
+        output,
+        new RegExp(expectedCredentialPath.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'),
+      );
+      assert.equal(fs.readFileSync(expectedCredentialPath, 'utf8'), expectedToken);
+      assert.equal(fs.statSync(expectedCredentialPath).mode & 0o777, 0o600);
     });
   });
 });
@@ -2447,7 +2647,7 @@ test('runAdminSetupCli fails closed before reinstall when daemon password does n
           '  process.exit(1);',
           '}',
           "if (args[0] === '-n') {",
-          "  if (marker && args.some((value) => String(value).includes('install-user-daemon.sh'))) {",
+          `  if (marker && args.some((value) => String(value).includes(${JSON.stringify(HOST_MANAGED.installScriptName)}))) {`,
           "    fs.writeFileSync(marker, 'installed\\n', 'utf8');",
           '  }',
           '  process.exit(0);',
@@ -2483,7 +2683,7 @@ test('runAdminSetupCli fails closed before reinstall when daemon password does n
           }
         });
         const promptIndex = renderedStderr.indexOf(
-          'macOS admin password for sudo (input hidden; required to install or recover the root daemon): ',
+          'System admin password for sudo (input hidden; required to install or recover the root-managed daemon): ',
         );
         const inspectIndex = renderedStderr.indexOf('Inspecting managed daemon state before install');
         assert.notEqual(promptIndex, -1);
@@ -2775,7 +2975,7 @@ test('runAdminSetupCli reuses the current launchd install when the daemon respon
         {
           agentpayHome,
           daemonSocket: trustedSocket,
-          stateFile: '/var/db/agentpay/daemon-state.enc',
+          stateFile: HOST_MANAGED.stateFile,
         },
         async () => {
           const adminSetup = await loadModule(`${Date.now()}-run-setup-current-install-responding`);
@@ -2808,7 +3008,7 @@ test('runAdminSetupCli reinstalls when launchd metadata looks current but no man
           '  process.exit(1);',
           '}',
           "if (args[0] === '-n') {",
-          "  if (marker && args.some((value) => String(value).includes('install-user-daemon.sh'))) {",
+          `  if (marker && args.some((value) => String(value).includes(${JSON.stringify(HOST_MANAGED.installScriptName)}))) {`,
           "    fs.writeFileSync(marker, 'installed\\n', 'utf8');",
           '  }',
           '  process.exit(0);',
@@ -2822,7 +3022,7 @@ test('runAdminSetupCli reinstalls when launchd metadata looks current but no man
           {
             agentpayHome,
             daemonSocket: trustedSocket,
-            stateFile: '/var/db/agentpay/daemon-state.enc',
+            stateFile: HOST_MANAGED.stateFile,
           },
           async () => {
             await withInstallMarkerConnectionGate(installMarkerPath, async () => {
@@ -2863,7 +3063,7 @@ test('runAdminSetupCli forwards AGENTPAY_RELAY_DAEMON_TOKEN into the root instal
           '  process.exit(1);',
           '}',
           "if (args[0] === '-n') {",
-          "  if (installMarker && args.some((value) => String(value).includes('install-user-daemon.sh'))) {",
+          `  if (installMarker && args.some((value) => String(value).includes(${JSON.stringify(HOST_MANAGED.installScriptName)}))) {`,
           "    fs.writeFileSync(installMarker, 'installed\\n', 'utf8');",
           '  }',
           "  const relayTokenArg = args.find((value) => String(value).startsWith('AGENTPAY_RELAY_DAEMON_TOKEN='));",
@@ -2881,7 +3081,7 @@ test('runAdminSetupCli forwards AGENTPAY_RELAY_DAEMON_TOKEN into the root instal
           {
             agentpayHome,
             daemonSocket: trustedSocket,
-            stateFile: '/var/db/agentpay/daemon-state.enc',
+            stateFile: HOST_MANAGED.stateFile,
           },
           async () => {
             await withInstallMarkerConnectionGate(installMarkerPath, async () => {
@@ -2925,7 +3125,7 @@ test('runAdminSetupCli recovers when launchd metadata looks current and the requ
           '  process.exit(0);',
           '}',
           "if (args[0] === '-n') {",
-          "  if (marker && args.some((value) => String(value).includes('install-user-daemon.sh'))) {",
+          `  if (marker && args.some((value) => String(value).includes(${JSON.stringify(HOST_MANAGED.installScriptName)}))) {`,
           "    fs.writeFileSync(marker, 'installed\\n', 'utf8');",
           '  }',
           '  process.exit(0);',
@@ -2939,7 +3139,7 @@ test('runAdminSetupCli recovers when launchd metadata looks current and the requ
           {
             agentpayHome,
             daemonSocket: trustedSocket,
-            stateFile: '/var/db/agentpay/daemon-state.enc',
+            stateFile: HOST_MANAGED.stateFile,
           },
           async () => {
             await withInstallMarkerConnectionGate(installMarkerPath, async () => {
@@ -3180,7 +3380,7 @@ test('runAdminSetupCli surfaces reinstall launchd failures after state probe rep
           'if [ "$1" = "-n" ] && [ "$2" = "/bin/test" ]; then',
           '  exit 1',
           'fi',
-          'if [ "$1" = "-n" ] && [ "${2#*install-user-daemon.sh}" != "$2" ]; then',
+          `if [ "$1" = "-n" ] && [ "\${2#*${HOST_MANAGED.installScriptName}}" != "$2" ]; then`,
           "  echo 'mock install failure' >&2",
           '  exit 73',
           'fi',

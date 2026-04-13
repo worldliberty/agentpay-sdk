@@ -180,23 +180,44 @@ test('migrateLegacyAgentAuthToken allows an explicit agent key id when config.js
   assert.equal(configState.agentAuthToken, undefined);
 });
 
-test('migrateLegacyAgentAuthToken is macOS-only by default', async () => {
+test('migrateLegacyAgentAuthToken supports Linux Secret Service-backed migration', async () => {
   const migrate = await import(modulePath.href + `?case=${Date.now()}-5`);
+  let configState = {
+    agentKeyId: TEST_AGENT_KEY_ID,
+    agentAuthToken: 'legacy-token',
+    chains: {},
+  };
+  let storedCredentials = null;
 
-  assert.throws(
-    () =>
-      migrate.migrateLegacyAgentAuthToken(
-        {},
-        {
-          platform: 'linux',
-          readConfig: () => ({
-            agentKeyId: TEST_AGENT_KEY_ID,
-            agentAuthToken: 'legacy-token'
-          })
-        }
-      ),
-    /requires macOS Keychain/
+  const result = migrate.migrateLegacyAgentAuthToken(
+    {},
+    {
+      platform: 'linux',
+      readConfig: () => configState,
+      writeConfig: (nextConfig) => {
+        configState = { ...configState, ...nextConfig };
+        return configState;
+      },
+      deleteConfigKey: (key) => {
+        const nextConfig = { ...configState };
+        delete nextConfig[key];
+        configState = nextConfig;
+        return configState;
+      },
+      readAgentAuthToken: () => null,
+      storeAgentAuthToken: (agentKeyId, token) => {
+        storedCredentials = { agentKeyId, token };
+      },
+    },
   );
+
+  assert.deepEqual(storedCredentials, {
+    agentKeyId: TEST_AGENT_KEY_ID,
+    token: 'legacy-token',
+  });
+  assert.equal(result.keychain.service, 'agentpay-agent-auth-token');
+  assert.equal(result.keychain.stored, true);
+  assert.equal(configState.agentAuthToken, undefined);
 });
 
 test('migrateLegacyAgentAuthToken validates configured agentKeyId and explicit overrides', async () => {

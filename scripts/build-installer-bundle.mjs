@@ -15,6 +15,12 @@ const macosHelperScripts = [
   'install-user-daemon.sh',
   'uninstall-user-daemon.sh',
 ];
+const linuxHelperScripts = [
+  'run-agentpay-daemon.sh',
+  'agentpay-daemon-password-helper.sh',
+  'install-system-daemon.sh',
+  'uninstall-system-daemon.sh',
+];
 
 function die(message) {
   process.stderr.write(`[agentpay-bundle] ${message}\n`);
@@ -92,6 +98,9 @@ function helperScriptsForPlatform(platform = process.platform) {
   if (platform === 'darwin') {
     return [...macosHelperScripts];
   }
+  if (platform === 'linux') {
+    return [...linuxHelperScripts];
+  }
   return [];
 }
 
@@ -166,7 +175,10 @@ function main() {
     assertExists(path.join(runtimeDir, binary), `runtime binary ${binary}`);
   }
   for (const helper of helperScripts) {
-    assertExists(path.join(repoRoot, 'scripts', 'launchd', helper), `launchd helper ${helper}`);
+    assertExists(
+      path.join(repoRoot, 'scripts', process.platform === 'darwin' ? 'launchd' : 'systemd', helper),
+      `managed daemon helper ${helper}`,
+    );
   }
 
   const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
@@ -196,7 +208,12 @@ function main() {
     }
     for (const helper of helperScripts) {
       copyExecutable(
-        path.join(repoRoot, 'scripts', 'launchd', helper),
+        path.join(
+          repoRoot,
+          'scripts',
+          process.platform === 'darwin' ? 'launchd' : 'systemd',
+          helper,
+        ),
         path.join(bundleRuntimeDir, helper),
       );
     }

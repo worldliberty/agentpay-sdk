@@ -30,7 +30,10 @@ import {
   assertTrustedDirectoryPath,
   assertTrustedOwner,
 } from './fs-trust.js';
-import { AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE, storeAgentAuthTokenInKeychain } from './keychain.js';
+import {
+  resolveAgentAuthStorageMetadata,
+  storeStoredAgentAuthToken,
+} from './agent-auth-storage.js';
 import { walletProfileFromBootstrapSummary } from './wallet-profile.js';
 
 const PRIVATE_DIR_MODE = 0o700;
@@ -102,6 +105,9 @@ export interface CompleteWalletSetupResult extends BootstrapSetupSummary {
   keychain: {
     stored: true;
     service: string;
+    label?: string;
+    locationType?: 'service' | 'file';
+    note?: string | null;
   };
   config: Record<string, unknown>;
 }
@@ -175,7 +181,7 @@ export interface WalletSetupPlan {
     rustPasswordTransport: 'interactive-prompt' | 'stdin-relay' | 'not-available';
     childArgvContainsVaultPassword: false;
     childEnvContainsVaultPassword: false;
-    keyMaterialStorage: 'macOS Keychain';
+    keyMaterialStorage: 'macOS Keychain' | 'Linux Secret Service' | 'Linux local credential file';
     bootstrapCredentialCleanup: BootstrapCleanupAction;
     notes: string[];
   };
@@ -1109,14 +1115,18 @@ export function createWalletSetupPlan(
   const rustArgs = previewWalletSetupRustArgs(input, 'blocked', bootstrapOutput.path);
   const adminAccess = resolveAdminAccess('agentpay-admin', rustArgs, deps);
 
+  const storageMetadata = resolveAgentAuthStorageMetadata();
   const notes = [
     'Rust still performs the real password check and policy creation.',
-    'TypeScript imports the emitted agent auth token into macOS Keychain after bootstrap.',
+    `TypeScript imports the emitted agent auth token into ${storageMetadata.label} after bootstrap.`,
     'TypeScript re-checks the emitted bootstrap summary against the requested setup scope before importing credentials.',
     cleanupAction === 'deleted'
-      ? 'The bootstrap JSON is deleted after Keychain import.'
-      : 'The bootstrap JSON is redacted after Keychain import so the plaintext token is removed.',
+      ? 'The bootstrap JSON is deleted after local credential import.'
+      : 'The bootstrap JSON is redacted after local credential import so the plaintext token is removed.',
   ];
+  if (storageMetadata.note) {
+    notes.push(storageMetadata.note);
+  }
 
   if (chainId !== null && resolvedRpcUrl === null) {
     notes.push(
@@ -1212,7 +1222,10 @@ export function createWalletSetupPlan(
       rustPasswordTransport,
       childArgvContainsVaultPassword: false,
       childEnvContainsVaultPassword: false,
-      keyMaterialStorage: 'macOS Keychain',
+      keyMaterialStorage: storageMetadata.label as
+        | 'macOS Keychain'
+        | 'Linux Secret Service'
+        | 'Linux local credential file',
       bootstrapCredentialCleanup: cleanupAction,
       notes,
     },
@@ -1451,10 +1464,8 @@ export function completeWalletSetup(
 ): CompleteWalletSetupResult {
   /* c8 ignore next -- tests cover both explicit darwin and non-darwin behavior, but c8 misattributes this nullish expression */
   const platform = deps.platform ?? process.platform;
-  if (platform !== 'darwin') {
-    throw new Error(
-      'wallet setup requires macOS because agent auth tokens are imported into macOS Keychain',
-    );
+  if (platform !== 'darwin' && platform !== 'linux') {
+    throw new Error('wallet setup requires macOS or Linux local credential storage support');
   }
 
   const normalizedRpcUrl = presentString(options.rpcUrl);
@@ -1466,8 +1477,10 @@ export function completeWalletSetup(
     throw new Error('--chain-name requires --network');
   }
 
-  /* c8 ignore next -- default keychain storage is environment-coupled, so tests exercise the injected path instead */
-  const storeAgentAuthToken = deps.storeAgentAuthToken ?? storeAgentAuthTokenInKeychain;
+  /* c8 ignore next -- default local credential storage is environment-coupled, so tests exercise the injected path instead */
+  const storeAgentAuthToken =
+    deps.storeAgentAuthToken ??
+    ((agentKeyId: string, token: string) => storeStoredAgentAuthToken(agentKeyId, token, platform));
   const loadConfig = deps.readConfig ?? readConfig;
   const persistConfig = deps.writeConfig ?? writeConfig;
   const clearLegacyConfigKey = deps.deleteConfigKey ?? deleteConfigKey;
@@ -1524,6 +1537,7 @@ export function completeWalletSetup(
     }
 
     storeAgentAuthToken(credentials.agentKeyId, credentials.agentAuthToken);
+    const storageMetadata = resolveAgentAuthStorageMetadata(platform, credentials.agentKeyId);
 
     let updated = persistConfig(nextConfig);
     if (updated.agentAuthToken !== undefined) {
@@ -1536,7 +1550,10 @@ export function completeWalletSetup(
       sourceCleanup: options.cleanupAction,
       keychain: {
         stored: true,
-        service: AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE,
+        service: storageMetadata.service ?? 'agentpay-agent-auth-token',
+        label: storageMetadata.label,
+        locationType: storageMetadata.locationType ?? undefined,
+        note: storageMetadata.note,
       },
       config: redactConfig(updated),
     };

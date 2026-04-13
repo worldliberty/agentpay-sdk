@@ -42,7 +42,11 @@ function renderWalletProfileRecoveryHint(platform: NodeJS.Platform = process.pla
     return 'rerun `agentpay admin setup` or import a bootstrap file first';
   }
 
-  return 'the managed `agentpay admin setup` flow is currently macOS-only; provision the wallet on macOS first or point the CLI at existing source-managed wallet metadata';
+  if (platform === 'linux') {
+    return 'rerun `agentpay admin setup` or import a bootstrap file first';
+  }
+
+  return 'managed wallet setup is currently supported on macOS and Linux only';
 }
 
 function findMatchingBootstrapSummary(
