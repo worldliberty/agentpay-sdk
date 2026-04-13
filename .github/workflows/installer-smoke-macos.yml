@@ -1,4 +1,4 @@
-name: Installer Smoke (macOS)
+name: Installer Smoke
 
 on:
   workflow_dispatch:
@@ -29,6 +29,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - runner: ubuntu-24.04
+            bundle_name: agentpay-sdk-linux-x64.tar.gz
+            artifact_name: agentpay-installer-bundle-linux-x64
+            smoke_logs_name: installer-smoke-logs-linux-x64
+            run_unit_tests: true
           - runner: macos-15-intel
             bundle_name: agentpay-sdk-macos-x64.tar.gz
             artifact_name: agentpay-installer-bundle-macos-x64
@@ -107,7 +112,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     needs:
       - installer-smoke
-    runs-on: macos-15
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
@@ -126,7 +131,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: agentpay-installer-bundle-macos-*
+          pattern: agentpay-installer-bundle-*
           path: bundles
           merge-multiple: true
 
