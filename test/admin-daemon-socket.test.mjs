@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const modulePath = new URL('../src/lib/admin-daemon-socket.ts', import.meta.url);
+const expectedDefaultManagedSocket =
+  process.platform === 'linux' ? '/run/agentpay/daemon.sock' : '/Library/AgentPay/run/daemon.sock';
 
 function loadModule(caseId) {
   return import(modulePath.href + `?case=${caseId}`);
@@ -31,7 +33,7 @@ test('resolveAdminDaemonSocketSelection prioritizes explicit, env, config, then 
     { value: '/config.sock', source: 'config-daemon-socket' },
   );
   assert.deepEqual(adminDaemonSocket.resolveAdminDaemonSocketSelection(undefined, {}, {}), {
-    value: '/Library/AgentPay/run/daemon.sock',
+    value: expectedDefaultManagedSocket,
     source: 'default',
   });
 });
@@ -103,20 +105,19 @@ test('resolveValidatedAdminDaemonSocket adds AGENTPAY_HOME recovery guidance for
   );
 });
 
-test('resolveValidatedAdminDaemonSocket fails fast on Linux when no explicit daemon socket is configured', async () => {
-  const adminDaemonSocket = await loadModule(`${Date.now()}-linux-default-blocked`);
+test('resolveValidatedAdminDaemonSocket uses the managed Linux default when no override is configured', async () => {
+  const adminDaemonSocket = await loadModule(`${Date.now()}-linux-default-supported`);
 
-  assert.throws(
-    () =>
-      adminDaemonSocket.resolveValidatedAdminDaemonSocket(undefined, {}, {
-        env: {},
-        platform: 'linux',
-        assertTrustedAdminDaemonSocketPath: () => {
-          throw new Error('should not reach trust validation');
-        },
-      }),
-    /No managed default daemon socket is available on this platform/u,
-  );
+  const resolved = adminDaemonSocket.resolveValidatedAdminDaemonSocket(undefined, {}, {
+    env: {},
+    platform: 'linux',
+    assertTrustedAdminDaemonSocketPath: (targetPath) => {
+      assert.equal(targetPath, '/run/agentpay/daemon.sock');
+      return targetPath;
+    },
+  });
+
+  assert.equal(resolved, '/run/agentpay/daemon.sock');
 });
 
 test('wrapAdminDaemonSocketTrustError gives Linux-specific recovery guidance', async () => {
@@ -129,7 +130,7 @@ test('wrapAdminDaemonSocketTrustError gives Linux-specific recovery guidance', a
     'linux',
   );
 
-  assert.match(error.message, /point the command at your existing daemon socket/u);
-  assert.doesNotMatch(error.message, /agentpay admin setup --reuse-existing-wallet/u);
-  assert.match(error.message, /managed `agentpay admin setup` daemon flow is currently macOS-only/u);
+  assert.match(error.message, /managed root-owned socket `\/run\/agentpay\/daemon\.sock`/u);
+  assert.match(error.message, /agentpay admin setup --reuse-existing-wallet/u);
+  assert.doesNotMatch(error.message, /point the command at your existing daemon socket with/u);
 });

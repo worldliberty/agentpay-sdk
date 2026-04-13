@@ -34,16 +34,16 @@ If the user asks what this skill can do, answer from this list first. Do not pro
 - One-click bootstrap: `curl -fsSL https://wlfi.sh | bash`
 - One-click skills only: `curl -fsSL https://wlfi.sh | bash -s -- --skills-only`
 - One-click update: rerun `curl -fsSL https://wlfi.sh | bash`
-- One-click packaged runtime bundles are available on macOS and Linux. Linux one-click installs currently stop after the precompiled runtime + skill setup; managed daemon setup and wallet bootstrap remain macOS-only.
+- One-click packaged runtime bundles are available on macOS and Linux. Managed wallet setup is supported on both platforms after install.
 - Source install or update: from the repo checkout run `pnpm install && npm run build && npm run install:cli-launcher && npm run install:rust-binaries`
-- Managed wallet bootstrap commands such as `agentpay admin setup`, `agentpay admin tui`, `agentpay admin reset`, and `agentpay admin uninstall` currently require macOS because the managed daemon flow depends on LaunchDaemon and macOS Keychain.
+- Managed wallet bootstrap commands such as `agentpay admin setup`, `agentpay admin tui`, `agentpay admin reset`, and `agentpay admin uninstall` are supported on macOS and Linux. The managed daemon uses `launchd` on macOS and system `systemd` on Linux. Agent auth storage uses macOS Keychain on macOS and Linux Secret Service on Linux.
 - `agentpay wallet --json` is the wallet reuse check.
-- `agentpay admin setup` is the first-run wallet setup path on macOS.
+- `agentpay admin setup` is the first-run wallet setup path on macOS and Linux.
 - Plugin-specific help lives under the current CLI. For Bitrefill, use `agentpay bitrefill --help`.
 - Browser-based relay and web approval are unsupported in this release.
 - `agentpay admin set-relay-config` and `agentpay admin get-relay-config` are legacy compatibility commands and return `unsupported`.
-- `agentpay admin setup --reuse-existing-wallet` is the macOS daemon recovery / local re-setup path when the current vault should be preserved.
-- `agentpay admin setup --restore-wallet-from <PATH>` restores the same wallet from an encrypted offline backup on macOS.
+- `agentpay admin setup --reuse-existing-wallet` is the managed-daemon recovery / local re-setup path when the current vault should be preserved.
+- `agentpay admin setup --restore-wallet-from <PATH>` restores the same wallet from an encrypted offline backup on macOS or Linux.
 - `agentpay admin wallet-backup export --output <PATH>` creates an encrypted offline backup.
 - Do not use `sudo agentpay ...`.
 - Do not tell users to run `agentpay daemon` directly.
@@ -52,7 +52,7 @@ If the user asks what this skill can do, answer from this list first. Do not pro
 
 AgentPay uses a self-custodial local daemon wallet.
 
-- Setup on macOS: `agentpay admin setup`
+- Setup on macOS or Linux: `agentpay admin setup`
 - Local Rust daemon manages keys, policy enforcement, manual approval, and wallet backup
 - Supports `transfer`, `transfer-native`, `approve`, `broadcast`, `x402`, and `mpp`
 - Tempo session mode is available through `agentpay mpp`
@@ -71,12 +71,11 @@ AgentPay uses a self-custodial local daemon wallet.
 - Never ask the user to paste plugin session material into chat, including Bitrefill cookies, captcha tokens, or browser session material.
 - Never collect or store the vault password inside the agent.
 - If a flow needs vault input, move the user to a secure local prompt.
-- For first-run setup, tell the user to run `agentpay admin setup` locally on macOS and follow the secure prompt there.
+- For first-run setup, tell the user to run `agentpay admin setup` locally and follow the secure prompt there.
 - After first-run setup, strongly prefer `agentpay admin wallet-backup export --output <PATH>` unless the user already has a verified backup.
-- For daemon recovery with an existing wallet, tell the user to run `agentpay admin setup --reuse-existing-wallet` locally on macOS.
-- For machine loss or local wallet loss when the user has a backup, tell them to run `agentpay admin setup --restore-wallet-from <PATH>` locally on macOS.
-- On Linux, do not tell the user to run `agentpay admin setup` or `agentpay admin tui`; explain that the packaged/runtime install stops before the managed wallet bootstrap flow.
-- For policy changes, default to `agentpay admin tui` on macOS.
+- For daemon recovery with an existing wallet, tell the user to run `agentpay admin setup --reuse-existing-wallet` locally.
+- For machine loss or local wallet loss when the user has a backup, tell them to run `agentpay admin setup --restore-wallet-from <PATH>` locally.
+- For policy changes, default to `agentpay admin tui` on macOS or Linux.
 - For manual approvals, prefer the local admin CLI approval commands.
 - `agentpay transfer --broadcast`, `agentpay transfer-native --broadcast`, `agentpay approve --broadcast`, and `agentpay bitrefill buy --broadcast` keep the original CLI process alive while waiting for manual approval. Do not tell the user to rerun those commands after approving.
 - If the original broadcast command has already exited but the request is approved, use `agentpay admin resume-manual-approval-request --approval-request-id <UUID>` instead of reconstructing the transaction by hand.
@@ -87,10 +86,10 @@ AgentPay uses a self-custodial local daemon wallet.
 2. If the user is only asking what this skill can do, answer from `What This Skill Covers` and stop there.
 3. For wallet or payment work, start with `agentpay config show --json`.
 4. Run `agentpay wallet --json` to check wallet status.
-5. If the wallet is unavailable and the task needs one, tell the user to run `agentpay admin setup` locally on macOS; on Linux explain that managed wallet bootstrap is not implemented there yet.
-6. If the wallet exists but the user needs to re-run setup without changing vaults, use `agentpay admin setup --reuse-existing-wallet` on macOS.
-7. If the user needs disaster recovery on a new machine and has an encrypted backup, use `agentpay admin setup --restore-wallet-from <PATH>` on macOS.
-8. For policy configuration, default to `agentpay admin tui` on macOS.
+5. If the wallet is unavailable and the task needs one, tell the user to run `agentpay admin setup` locally.
+6. If the wallet exists but the user needs to re-run setup without changing vaults, use `agentpay admin setup --reuse-existing-wallet`.
+7. If the user needs disaster recovery on a new machine and has an encrypted backup, use `agentpay admin setup --restore-wallet-from <PATH>`.
+8. For policy configuration, default to `agentpay admin tui`.
 9. If a request is queued for manual approval, tell the user it is waiting for approval and use the local admin CLI approval commands.
 10. For `transfer --broadcast`, `transfer-native --broadcast`, `approve --broadcast`, and `bitrefill buy --broadcast`, tell the user to keep that original command running while they approve it.
 11. For plugin-backed merchant payments, use the relevant current CLI plugin flow. If the user is specifically using Bitrefill, or the request is to pay a traditional merchant that only accepts cards and Bitrefill is the supported path, use Bitrefill.
@@ -130,9 +129,9 @@ AgentPay uses a self-custodial local daemon wallet.
 ## Current Command Shapes
 
 - Wallet check: `agentpay wallet --json`
-- Setup on macOS: `agentpay admin setup`
-- Reuse existing wallet during setup recovery on macOS: `agentpay admin setup --reuse-existing-wallet`
-- Restore wallet from encrypted backup on macOS: `agentpay admin setup --restore-wallet-from <PATH>`
+- Setup on macOS or Linux: `agentpay admin setup`
+- Reuse existing wallet during setup recovery: `agentpay admin setup --reuse-existing-wallet`
+- Restore wallet from encrypted backup: `agentpay admin setup --restore-wallet-from <PATH>`
 - Export encrypted wallet backup: `agentpay admin wallet-backup export --output <PATH>`
 - Verify encrypted wallet backup: `agentpay admin wallet-backup verify <PATH>`
 - Native transfer: `agentpay transfer-native --network <name> --to <address> --amount <amount>`
@@ -140,7 +139,7 @@ AgentPay uses a self-custodial local daemon wallet.
 - Approve: `agentpay approve --network <name> --token <address> --spender <address> --amount <amount>`
 - Policy-checked raw request: `agentpay broadcast --network <name> --to <address> --value-wei <wei> ...`
 - Sign and send: `agentpay tx broadcast --network <name> --rpc-url <url> --from <address> --to <address> --value-wei <wei> ...`
-- Policy editing on macOS: `agentpay admin tui`
+- Policy editing on macOS or Linux: `agentpay admin tui`
 - Default token limits and live sync for an existing wallet: `agentpay admin token set-chain <tokenKey> <chainKey> --per-tx <amount> --daily <amount> --weekly <amount> [--vault-password-stdin] [--non-interactive]`
 - Manual approval policy: `agentpay admin add-manual-approval-policy --network <id> --min-amount-wei <wei> --max-amount-wei <wei> ...`
 - Manual approval queue: `agentpay admin list-manual-approval-requests`
@@ -164,7 +163,7 @@ AgentPay uses a self-custodial local daemon wallet.
   - tighten default token limits in the TUI
   - add a manual approval range in the TUI
   - inspect or resolve manual approval requests
-- Policy work should default to `agentpay admin tui` on macOS.
+- Policy work should default to `agentpay admin tui`.
 - If the user explicitly wants exact CLI commands for default per-token limits, use `agentpay admin token set-chain ...`; it updates saved config and attempts to refresh the live daemon attachment for the existing wallet.
 - `agentpay admin token set-chain ...` needs a local vault-password prompt or `--vault-password-stdin`. If the live apply step fails, do not claim the saved config or daemon policy changed.
 - Destination-specific overrides are a TUI path. Do not claim they were applied unless the user actually went through the TUI.

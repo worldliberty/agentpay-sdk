@@ -185,15 +185,15 @@ test('destructive admin commands fail closed in non-interactive sessions without
   try {
     const reset = runCli(['admin', 'reset', '--yes', '--non-interactive', '--json'], homeDir);
     assert.equal(reset.status, 1);
-    if (process.platform === 'darwin') {
+    if (process.platform === 'darwin' || process.platform === 'linux') {
       assert.match(
         combinedOutput(reset),
-        /macOS admin password for sudo is required; rerun on a local TTY/u,
+        /System admin password for sudo is required; rerun on a local TTY/u,
       );
     } else {
       assert.match(
         combinedOutput(reset),
-        /`agentpay admin reset` is currently supported only on macOS/u,
+        /`agentpay admin reset` is currently supported only on macOS and Linux/u,
       );
     }
 
@@ -202,15 +202,15 @@ test('destructive admin commands fail closed in non-interactive sessions without
       homeDir,
     );
     assert.equal(uninstall.status, 1);
-    if (process.platform === 'darwin') {
+    if (process.platform === 'darwin' || process.platform === 'linux') {
       assert.match(
         combinedOutput(uninstall),
-        /macOS admin password for sudo is required; rerun on a local TTY/u,
+        /System admin password for sudo is required; rerun on a local TTY/u,
       );
     } else {
       assert.match(
         combinedOutput(uninstall),
-        /`agentpay admin uninstall` is currently supported only on macOS/u,
+        /`agentpay admin uninstall` is currently supported only on macOS and Linux/u,
       );
     }
   } finally {

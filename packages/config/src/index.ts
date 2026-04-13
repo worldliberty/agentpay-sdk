@@ -198,6 +198,13 @@ export const BUILTIN_TOKENS: Record<string, TokenProfile> = {
         decimals: 18,
         defaultPolicy: defaultTokenPolicy('10', '100', '700'),
       },
+      tempo: {
+        chainId: 4217,
+        isNative: false,
+        address: "0x111111d2bf19e43C34263401e0CAd979eD1cdb61",
+        decimals: 18,
+        defaultPolicy: defaultTokenPolicy('10', '100', '700'),
+      },
     },
   },
   pathusd: {

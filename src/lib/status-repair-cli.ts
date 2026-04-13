@@ -88,7 +88,7 @@ export function registerRepairCommand(program: Command, deps: RepairCommandDeps 
     .option('--agent-key-id <uuid>', 'Agent key id override for legacy token migration')
     .option(
       '--overwrite-keychain',
-      'Replace a different existing Keychain token for this agent when migrating plaintext config storage',
+      'Replace a different existing stored local credential for this agent when migrating plaintext config storage',
       false,
     )
     .option(

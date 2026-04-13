@@ -350,8 +350,8 @@ test('getWalletStatus handles missing agent ids, empty legacy secrets, and parti
   });
 
   assert.equal(result.agent.agentKeyId, null);
-  assert.equal(result.agent.keychain.supported, false);
-  assert.equal(result.agent.keychain.service, null);
+  assert.equal(result.agent.keychain.supported, true);
+  assert.equal(result.agent.keychain.service, 'agentpay-agent-auth-token');
   assert.equal(result.agent.legacyConfigToken.present, false);
   assert.equal(result.chain.chainId, null);
   assert.equal(result.chain.rpcUrlTrusted, true);
@@ -550,8 +550,8 @@ test('getWalletStatus covers default dependency fallbacks with a real temp confi
 
     assert.equal(result.config.readable, true);
     assert.equal(result.agent.agentKeyIdValid, false);
-    assert.equal(result.agent.keychain.supported, false);
-    assert.equal(result.agent.keychain.service, null);
+    assert.equal(result.agent.keychain.supported, true);
+    assert.equal(result.agent.keychain.service, 'agentpay-agent-auth-token');
     assert.equal(result.daemonSocket.path.length > 0, true);
     assert.equal(result.stateFile.path.length > 0, true);
     assert.equal(result.chainProfiles.length > 0, true);
@@ -1014,7 +1014,7 @@ test('getWalletStatus marks inaccessible state files as untrusted', async () => 
   );
 });
 
-test('getWalletStatus reports non-macOS keychain limits, untrusted binaries, untrusted bootstrap files, and missing active rpcUrl', async () => {
+test('getWalletStatus reports Linux credential-storage state, untrusted binaries, untrusted bootstrap files, and missing active rpcUrl', async () => {
   const walletStatus = await loadWalletStatusModule(`${Date.now()}-linux-untrusted-and-missing-rpc`);
 
   const result = walletStatus.getWalletStatus({
@@ -1063,8 +1063,8 @@ test('getWalletStatus reports non-macOS keychain limits, untrusted binaries, unt
     true,
   );
   assert.equal(
-    result.security.warnings.includes('macOS Keychain integration is unavailable on this platform'),
-    true,
+    result.security.warnings.includes('local credential storage is unavailable on this platform'),
+    false,
   );
   assert.equal(
     result.security.warnings.some((warning) =>
@@ -1202,7 +1202,7 @@ test('getWalletStatus captures legacy keychain comparison errors and formatWalle
   );
   assert.match(
     unsupportedKeychain,
-    /agent auth token: macOS Keychain integration unavailable on this platform/,
+    /agent auth token: local credential storage unavailable on this platform/,
   );
   assert.match(unsupportedKeychain, /active chain: mainnet/);
 

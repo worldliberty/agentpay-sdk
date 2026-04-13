@@ -5,10 +5,12 @@ import {
   type WlfiConfig
 } from '../../packages/config/src/index.js';
 import {
-  AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE,
   assertValidAgentKeyId,
-  deleteAgentAuthTokenFromKeychain
 } from './keychain.js';
+import {
+  deleteStoredAgentAuthToken,
+  resolveAgentAuthStorageService,
+} from './agent-auth-storage.js';
 
 export interface ClearAgentAuthTokenResult {
   agentKeyId: string;
@@ -32,7 +34,9 @@ export function clearAgentAuthToken(
 ): ClearAgentAuthTokenResult {
   const platform = deps.platform ?? process.platform;
   const normalizedAgentKeyId = assertValidAgentKeyId(agentKeyId);
-  const removeAgentAuthToken = deps.deleteAgentAuthToken ?? deleteAgentAuthTokenFromKeychain;
+  const removeAgentAuthToken =
+    deps.deleteAgentAuthToken ??
+    ((resolvedAgentKeyId: string) => deleteStoredAgentAuthToken(resolvedAgentKeyId, platform));
   const loadConfig = deps.readConfig ?? readConfig;
   const clearConfigKey = deps.deleteConfigKey ?? deleteConfigKey;
 
@@ -51,7 +55,7 @@ export function clearAgentAuthToken(
     agentKeyId: normalizedAgentKeyId,
     keychain: {
       removed,
-      service: platform === 'darwin' ? AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE : null
+      service: resolveAgentAuthStorageService(platform, normalizedAgentKeyId)
     },
     config: redactConfig(updated)
   };

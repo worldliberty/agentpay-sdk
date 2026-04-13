@@ -386,7 +386,7 @@ test('resolveWalletProfile rejects expired bootstrap artifacts when they are the
   }
 });
 
-test('resolveWalletProfile reports Linux-specific setup guidance when wallet metadata is missing', async () => {
+test('resolveWalletProfile reports Linux setup guidance when wallet metadata is missing', async () => {
   await withMockPlatform('linux', async () => {
     const walletProfile = await import(
       walletProfileModulePath.href + `?case=${Date.now()}-linux-metadata-missing`
@@ -394,7 +394,7 @@ test('resolveWalletProfile reports Linux-specific setup guidance when wallet met
 
     assert.throws(
       () => walletProfile.resolveWalletProfile({}),
-      /managed `agentpay admin setup` flow is currently macOS-only/u,
+      /wallet metadata is unavailable; rerun `agentpay admin setup` or import a bootstrap file first/u,
     );
   });
 });

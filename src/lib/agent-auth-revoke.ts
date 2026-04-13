@@ -6,10 +6,12 @@ import {
   writeConfig
 } from '../../packages/config/src/index.js';
 import {
-  AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE,
   assertValidAgentKeyId,
-  deleteAgentAuthTokenFromKeychain
 } from './keychain.js';
+import {
+  deleteStoredAgentAuthToken,
+  resolveAgentAuthStorageService,
+} from './agent-auth-storage.js';
 
 export interface RevokeAgentKeyAdminArgsInput {
   agentKeyId: string;
@@ -75,7 +77,9 @@ export function completeAgentKeyRevocation(
     throw new Error('revoke-agent-key did not confirm revocation');
   }
 
-  const removeAgentAuthToken = deps.deleteAgentAuthToken ?? deleteAgentAuthTokenFromKeychain;
+  const removeAgentAuthToken =
+    deps.deleteAgentAuthToken ??
+    ((resolvedAgentKeyId: string) => deleteStoredAgentAuthToken(resolvedAgentKeyId, platform));
   const loadConfig = deps.readConfig ?? readConfig;
   const persistConfig = deps.writeConfig ?? writeConfig;
   const clearLegacyConfigKey = deps.deleteConfigKey ?? deleteConfigKey;
@@ -96,7 +100,7 @@ export function completeAgentKeyRevocation(
     revoked: true,
     keychain: {
       removed,
-      service: platform === 'darwin' ? AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE : null
+      service: resolveAgentAuthStorageService(platform, agentKeyId)
     },
     config: redactConfig(updated)
   };

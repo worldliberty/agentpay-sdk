@@ -24,7 +24,7 @@ export function rewriteAdminHelpText(value: string): string {
 
 export function blockedRawAdminPassthroughMessage(command: string | undefined): string | null {
   if (command === 'rotate-agent-auth-token') {
-    return '`agentpay admin rotate-agent-auth-token` is disabled; use `agentpay config agent-auth rotate` so the rotated token is stored in macOS Keychain.';
+    return '`agentpay admin rotate-agent-auth-token` is disabled; use `agentpay config agent-auth rotate` so the rotated token is stored in the local credential store.';
   }
   if (command === 'revoke-agent-key') {
     return '`agentpay admin revoke-agent-key` is disabled; use `agentpay config agent-auth revoke` so local credentials are removed safely.';

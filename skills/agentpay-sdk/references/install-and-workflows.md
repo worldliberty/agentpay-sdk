@@ -18,8 +18,8 @@ That installer can:
 - let the user toggle preset destinations and add custom skill-pack or adapter paths
 - install the AgentPay skill pack into Codex, Claude, Cline, Goose, Windsurf, OpenClaw, portable `.config/agents`, legacy `.agents`, and matching workspace skill directories
 - install workspace adapters for `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md`, `.clinerules/agentpay-sdk.md`, and Cursor
-- on macOS, stop after installation so the user can run `agentpay admin setup` separately
-- on Linux, stop after installing the packaged runtime + skill pack; managed daemon setup and wallet bootstrap remain macOS-only
+- stop after installation so the user can run `agentpay admin setup` separately
+- support managed wallet setup on macOS with `launchd` and on Linux with system `systemd`
 - do not configure browser-based relay or web approval services
 
 If the user only wants the skill pack and editor adapters, use:
@@ -92,7 +92,7 @@ If the runtime has already been refreshed and the user only needs to reconnect t
 agentpay admin setup --reuse-existing-wallet
 ```
 
-Managed wallet bootstrap commands such as `agentpay admin setup`, `agentpay admin tui`, `agentpay admin reset`, and `agentpay admin uninstall` currently require macOS because the managed daemon flow still depends on LaunchDaemon and macOS Keychain.
+Managed wallet bootstrap commands such as `agentpay admin setup`, `agentpay admin tui`, `agentpay admin reset`, and `agentpay admin uninstall` are supported on macOS and Linux. The managed daemon uses `launchd` on macOS and system `systemd` on Linux. Agent auth storage uses macOS Keychain on macOS and Linux Secret Service on Linux.
 
 ## Default Payment Assumption
 
@@ -121,14 +121,14 @@ agentpay wallet --json
 Interpret the result like this:
 
 - If `wallet --json` works, reuse the existing wallet.
-- If it fails with `wallet metadata is unavailable`, the agent should treat that as "wallet setup is not in a reusable state yet". On macOS, move to setup; on Linux, explain that managed wallet bootstrap is not implemented there yet.
-- If `wallet --json` works but the user needs to re-run setup while preserving the same vault, use `agentpay admin setup --reuse-existing-wallet` on macOS.
+- If it fails with `wallet metadata is unavailable`, the agent should treat that as "wallet setup is not in a reusable state yet" and move to setup.
+- If `wallet --json` works but the user needs to re-run setup while preserving the same vault, use `agentpay admin setup --reuse-existing-wallet`.
 
 ## First-Run Setup
 
 Do not ask the user to paste `VAULT_PASSWORD` into chat.
 
-Run on macOS:
+Run on macOS or Linux:
 
 ```bash
 agentpay admin setup
@@ -138,7 +138,7 @@ The command:
 
 - installs or refreshes the managed daemon
 - creates the vault key and agent key
-- imports the agent auth token into macOS Keychain
+- imports the agent auth token into the local credential store
 - prints the wallet address
 - prompts securely in the local terminal if it needs vault input
 
@@ -260,8 +260,6 @@ Do not ask the user to paste `VAULT_PASSWORD` into chat for policy work.
 
 Default path:
 
-On macOS:
-
 ```bash
 agentpay admin tui
 ```
@@ -273,11 +271,9 @@ Use the TUI when the user wants to:
 - add destination-specific rules
 - review or resolve approval requests
 
-On Linux, explain that the packaged/runtime install currently has no `agentpay admin tui` path and only edits saved shared config.
-
 When guiding the user, keep it concrete:
 
-- tell them to open `agentpay admin tui` on macOS
+- tell them to open `agentpay admin tui`
 - tell them which network and token to edit
 - tell them the exact ceilings or approval thresholds to enter
 

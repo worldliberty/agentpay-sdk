@@ -115,7 +115,7 @@ export async function prepareAgentAuthRelay(
   if (inlineArg) {
     validateSecret(inlineArg.value, 'agentAuthToken');
     throw new Error(
-      '--agent-auth-token is disabled for security; use --agent-auth-token-stdin or macOS Keychain-backed `agentpay` commands'
+      '--agent-auth-token is disabled for security; use --agent-auth-token-stdin or local credential store-backed `agentpay` commands'
     );
   }
 

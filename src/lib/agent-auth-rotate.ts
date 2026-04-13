@@ -6,10 +6,12 @@ import {
   writeConfig
 } from '../../packages/config/src/index.js';
 import {
-  AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE,
   assertValidAgentKeyId,
-  storeAgentAuthTokenInKeychain
 } from './keychain.js';
+import {
+  resolveAgentAuthStorageService,
+  storeStoredAgentAuthToken,
+} from './agent-auth-storage.js';
 
 export interface RotateAgentAuthTokenAdminArgsInput {
   agentKeyId: string;
@@ -35,6 +37,7 @@ export interface CompleteAgentAuthRotationResult {
 }
 
 interface CompleteAgentAuthRotationDeps {
+  platform?: NodeJS.Platform;
   storeAgentAuthToken?: (agentKeyId: string, token: string) => void;
   readConfig?: () => WlfiConfig;
   writeConfig?: (nextConfig: WlfiConfig) => WlfiConfig;
@@ -75,6 +78,7 @@ export function completeAgentAuthRotation(
   output: RotateAgentAuthTokenAdminOutput,
   deps: CompleteAgentAuthRotationDeps = {}
 ): CompleteAgentAuthRotationResult {
+  const platform = deps.platform ?? process.platform;
   const agentKeyId = assertValidAgentKeyId(output.agent_key_id);
   if (output.agent_auth_token_redacted) {
     throw new Error('rotate-agent-auth-token returned a redacted agent auth token');
@@ -83,7 +87,10 @@ export function completeAgentAuthRotation(
     throw new Error('rotate-agent-auth-token returned an empty agent auth token');
   }
 
-  const storeAgentAuthToken = deps.storeAgentAuthToken ?? storeAgentAuthTokenInKeychain;
+  const storeAgentAuthToken =
+    deps.storeAgentAuthToken ??
+    ((resolvedAgentKeyId: string, token: string) =>
+      storeStoredAgentAuthToken(resolvedAgentKeyId, token, platform));
   const loadConfig = deps.readConfig ?? readConfig;
   const persistConfig = deps.writeConfig ?? writeConfig;
   const clearLegacyConfigKey = deps.deleteConfigKey ?? deleteConfigKey;
@@ -100,7 +107,8 @@ export function completeAgentAuthRotation(
     agentKeyId,
     keychain: {
       stored: true,
-      service: AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE
+      service:
+        resolveAgentAuthStorageService(platform, agentKeyId) ?? 'agentpay-agent-auth-token'
     },
     config: redactConfig(updated)
   };
