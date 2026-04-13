@@ -752,6 +752,51 @@ where
                 self.explain_authorized_request(&request, now)?;
             self.ensure_replay_id_available(request.request_id, now)?;
             let approved_manual_request_id = match policy_explanation.decision {
+                PolicyDecision::Allow
+                    if payload_action.requires_eip712_policy()
+                        && policy_explanation.evaluated_policy_ids.is_empty() =>
+                {
+                    // EIP-712 defaults to manual approval when no explicit
+                    // Eip712Signing policy was evaluated (even under AllPolicies).
+                    let payload_hash = payload_hash_hex(&request.payload);
+                    let relay_private_key_hex = self
+                        .relay_private_key_hex
+                        .read()
+                        .map_err(|_| DaemonError::LockPoisoned)?
+                        .clone();
+                    match self.resolve_manual_approval_request(
+                        &agent_key,
+                        &payload_action,
+                        &payload_hash,
+                        vec![],
+                        now,
+                    )? {
+                        ManualApprovalResolution::Approved(request_id) => request_id,
+                        ManualApprovalResolution::Pending {
+                            approval_request_id,
+                            relay_config,
+                        } => {
+                            let frontend_url = manual_approval_capability_token(
+                                &relay_private_key_hex,
+                                approval_request_id,
+                            )
+                                .ok()
+                                .and_then(|approval_capability| {
+                                    manual_approval_frontend_url(
+                                        &relay_config,
+                                        approval_request_id,
+                                        &approval_capability,
+                                    )
+                                });
+                            self.persist_or_revert(backup)?;
+                            return Err(DaemonError::ManualApprovalRequired {
+                                approval_request_id,
+                                relay_url: relay_config.relay_url.clone(),
+                                frontend_url,
+                            });
+                        }
+                    }
+                }
                 PolicyDecision::Allow => None,
                 PolicyDecision::Deny(PolicyError::ManualApprovalRequired { policy_id, .. }) => {
                     let payload_hash = payload_hash_hex(&request.payload);

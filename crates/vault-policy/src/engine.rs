@@ -118,9 +118,7 @@ impl PolicyEngine {
                 attached_policy_ids,
                 applicable_policy_ids: Vec::new(),
                 evaluated_policy_ids: Vec::new(),
-                decision: if matches!(attachment, PolicyAttachment::AllPolicies)
-                    && !action.requires_eip712_policy()
-                {
+                decision: if matches!(attachment, PolicyAttachment::AllPolicies) {
                     PolicyDecision::Allow
                 } else if action.requires_eip712_policy() {
                     PolicyDecision::Deny(Self::default_eip712_manual_approval())
