@@ -118,7 +118,9 @@ impl PolicyEngine {
                 attached_policy_ids,
                 applicable_policy_ids: Vec::new(),
                 evaluated_policy_ids: Vec::new(),
-                decision: if matches!(attachment, PolicyAttachment::AllPolicies) {
+                decision: if matches!(attachment, PolicyAttachment::AllPolicies)
+                    && !action.requires_eip712_policy()
+                {
                     PolicyDecision::Allow
                 } else if action.requires_eip712_policy() {
                     PolicyDecision::Deny(Self::default_eip712_manual_approval())
@@ -129,15 +131,6 @@ impl PolicyEngine {
         }
 
         if action.requires_eip712_policy() {
-            if matches!(attachment, PolicyAttachment::AllPolicies) {
-                return PolicyExplanation {
-                    attached_policy_ids,
-                    applicable_policy_ids: Vec::new(),
-                    evaluated_policy_ids: Vec::new(),
-                    decision: PolicyDecision::Allow,
-                };
-            }
-
             let action_chain_id = action.chain_id();
             let applicable: Vec<&SpendingPolicy> = attached
                 .into_iter()

@@ -925,6 +925,7 @@ install_runtime_from_bundle() {
   fi
 
   mkdir -p "$RUNTIME_DIR/bin"
+  chmod 700 "$RUNTIME_DIR/bin"
   rm -rf "$RUNTIME_DIR/app"
   mkdir -p "$RUNTIME_DIR/app"
   cp -R "$BUNDLE_ROOT/app"/. "$RUNTIME_DIR/app"/

@@ -753,11 +753,6 @@ where
             self.ensure_replay_id_available(request.request_id, now)?;
             let approved_manual_request_id = match policy_explanation.decision {
                 PolicyDecision::Allow => None,
-                _ if payload_action.requires_eip712_policy()
-                    && matches!(agent_key.policies, PolicyAttachment::AllPolicies) =>
-                {
-                    None
-                }
                 PolicyDecision::Deny(PolicyError::ManualApprovalRequired { policy_id, .. }) => {
                     let payload_hash = payload_hash_hex(&request.payload);
                     // Read the relay secret before creating or mutating approval state so a
