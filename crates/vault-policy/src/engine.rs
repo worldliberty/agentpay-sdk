@@ -1,7 +1,8 @@
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 use vault_domain::{
-    AgentAction, ApprovalType, PolicyAttachment, PolicyType, SpendEvent, SpendingPolicy,
+    canonical_policy_chain_id, AgentAction, ApprovalType, EntityScope, PolicyAttachment,
+    PolicyType, SpendEvent, SpendingPolicy,
 };
 
 use crate::{PolicyDecision, PolicyError, PolicyEvaluation, PolicyExplanation};
@@ -54,6 +55,16 @@ pub(crate) fn enforce_calldata_bytes_limit(
     }
 
     Ok(())
+}
+
+fn network_scope_allows(scope: &EntityScope<u64>, chain_id: u64) -> bool {
+    let canonical_chain_id = canonical_policy_chain_id(chain_id);
+    match scope {
+        EntityScope::All => true,
+        EntityScope::Set(values) => values
+            .iter()
+            .any(|value| canonical_policy_chain_id(*value) == canonical_chain_id),
+    }
 }
 
 /// Stateless policy evaluator.
@@ -113,6 +124,14 @@ impl PolicyEngine {
             .collect();
         attached.sort_by(|a, b| a.priority.cmp(&b.priority).then_with(|| a.id.cmp(&b.id)));
         let attached_policy_ids = attached.iter().map(|p| p.id).collect::<Vec<_>>();
+        if action.is_wallet_maintenance() {
+            return PolicyExplanation {
+                attached_policy_ids,
+                applicable_policy_ids: Vec::new(),
+                evaluated_policy_ids: Vec::new(),
+                decision: PolicyDecision::Allow,
+            };
+        }
         if attached.is_empty() {
             return PolicyExplanation {
                 attached_policy_ids,
@@ -134,7 +153,7 @@ impl PolicyEngine {
                 .into_iter()
                 .filter(|p| {
                     p.policy_type == PolicyType::Eip712Signing
-                        && p.networks.allows(&action_chain_id)
+                        && network_scope_allows(&p.networks, action_chain_id)
                 })
                 .collect();
             let applicable_policy_ids = applicable.iter().map(|p| p.id).collect::<Vec<_>>();
@@ -180,7 +199,7 @@ impl PolicyEngine {
                 p.policy_type != PolicyType::Eip712Signing
                     && p.assets.allows(&action_asset)
                     && p.recipients.allows(&action_recipient)
-                    && p.networks.allows(&action_chain_id)
+                    && network_scope_allows(&p.networks, action_chain_id)
             })
             .collect();
         let applicable_policy_ids = applicable.iter().map(|p| p.id).collect::<Vec<_>>();
@@ -347,7 +366,7 @@ impl PolicyEngine {
                     && event.at <= window_end
                     && policy.assets.allows(&event.asset)
                     && policy.recipients.allows(&event.recipient)
-                    && policy.networks.allows(&event.chain_id)
+                    && network_scope_allows(&policy.networks, event.chain_id)
             })
             .any(|_| increment_counter_or_mark_overflow(&mut used_tx_count));
 
@@ -383,7 +402,7 @@ impl PolicyEngine {
                 && event.at <= window_end
                 && policy.assets.allows(&event.asset)
                 && policy.recipients.allows(&event.recipient)
-                && policy.networks.allows(&event.chain_id)
+                && network_scope_allows(&policy.networks, event.chain_id)
         }) {
             match used_amount_wei.checked_add(event.amount_wei) {
                 Some(next) => used_amount_wei = next,

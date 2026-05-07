@@ -8,6 +8,9 @@ pub enum DomainError {
         "address must start with 0x, contain exactly 40 hex characters, and use a valid EIP-55 checksum when mixed-case"
     )]
     InvalidAddress,
+    /// Provided Solana address was malformed.
+    #[error("solana address must be a valid base58-encoded 32-byte public key")]
+    InvalidSolanaAddress,
     /// Spending amount was zero.
     #[error("amount must be greater than zero")]
     InvalidAmount,
@@ -59,6 +62,24 @@ pub enum DomainError {
     /// Typed-data domain or nonce field is malformed.
     #[error("invalid typed-data domain: {0}")]
     InvalidTypedDataDomain(String),
+    /// Solana recent blockhash was malformed.
+    #[error("solana recent blockhash must be a valid base58-encoded 32-byte hash")]
+    InvalidSolanaRecentBlockhash,
+    /// Solana token decimals were invalid.
+    #[error("solana token decimals are invalid")]
+    InvalidSolanaTokenDecimals,
+    /// Solana token program was unsupported or mismatched.
+    #[error("solana token program must be token or token_2022")]
+    InvalidSolanaTokenProgram,
+    /// Solana compute budget settings were invalid.
+    #[error("solana compute budget configuration is invalid")]
+    InvalidSolanaComputeBudget,
+    /// Solana durable nonce seed was invalid.
+    #[error("solana nonce account seed must be non-empty ASCII and at most 32 bytes")]
+    InvalidSolanaNonceSeed,
+    /// Action requested a signer algorithm that does not match the wallet key.
+    #[error("signer key algorithm does not support this action")]
+    InvalidKeyAlgorithmForAction,
     /// Relay capability secret could not derive a secure approval token.
     #[error("invalid relay approval capability secret")]
     InvalidRelayCapabilitySecret,

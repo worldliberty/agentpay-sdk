@@ -8,14 +8,16 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
+use ed25519_dalek::{Signer as Ed25519Signer, SigningKey as Ed25519SigningKey};
 use k256::ecdsa::signature::Signer;
 use k256::ecdsa::{Signature as EcdsaSignature, SigningKey};
-use k256::elliptic_curve::rand_core::OsRng;
+use k256::elliptic_curve::rand_core::OsRng as Secp256k1OsRng;
+use rand::random;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
-use vault_domain::{KeySource, Signature, VaultKey};
+use vault_domain::{KeyAlgorithm, KeySource, Signature, VaultKey};
 use zeroize::Zeroizing;
 
 #[cfg(target_os = "windows")]
@@ -65,8 +67,15 @@ pub enum BackendKind {
 pub enum KeyCreateRequest {
     /// Generate a fresh private key.
     Generate,
+    /// Generate a fresh private key with an explicit algorithm.
+    GenerateWithAlgorithm { algorithm: KeyAlgorithm },
     /// Import an existing hex-encoded 32-byte secp256k1 private key.
     Import { private_key_hex: String },
+    /// Import an existing hex-encoded 32-byte private key with an explicit algorithm.
+    ImportWithAlgorithm {
+        algorithm: KeyAlgorithm,
+        private_key_hex: String,
+    },
 }
 
 /// Errors returned by signer backends.
@@ -104,6 +113,30 @@ pub trait VaultSignerBackend: Send + Sync {
         vault_key_id: Uuid,
         payload: &[u8],
     ) -> Result<Signature, SignerError>;
+
+    /// Returns the Solana Ed25519 public key derived for `vault_key_id`.
+    ///
+    /// Software secp256k1 vault keys derive a deterministic Ed25519 signer from
+    /// the same 32-byte private key material. Hardware backends that cannot
+    /// expose or derive that material should leave this unsupported.
+    fn solana_public_key_hex(&self, vault_key_id: Uuid) -> Result<String, SignerError> {
+        let _ = vault_key_id;
+        Err(SignerError::Unsupported(
+            "backend does not support Solana signing".to_string(),
+        ))
+    }
+
+    /// Signs a Solana message with the Ed25519 signer derived for `vault_key_id`.
+    async fn sign_solana_payload(
+        &self,
+        vault_key_id: Uuid,
+        payload: &[u8],
+    ) -> Result<Signature, SignerError> {
+        let _ = (vault_key_id, payload);
+        Err(SignerError::Unsupported(
+            "backend does not support Solana signing".to_string(),
+        ))
+    }
 
     /// Signs a prehashed 32-byte digest with key `vault_key_id`.
     ///
@@ -161,13 +194,48 @@ pub trait AttestableSignerBackend: VaultSignerBackend {
 /// Pure software signer for development and tests.
 #[derive(Debug, Clone, Default)]
 pub struct SoftwareSignerBackend {
-    keys: Arc<RwLock<HashMap<Uuid, SigningKey>>>,
+    keys: Arc<RwLock<HashMap<Uuid, SoftwareSigningKey>>>,
+}
+
+#[derive(Debug, Clone)]
+enum SoftwareSigningKey {
+    Secp256k1(SigningKey),
+    Ed25519(Ed25519SigningKey),
 }
 
 impl SoftwareSignerBackend {
-    fn public_key_hex(signing_key: &SigningKey) -> String {
+    fn secp256k1_public_key_hex(signing_key: &SigningKey) -> String {
         let verifying_key = signing_key.verifying_key();
         hex::encode(verifying_key.to_encoded_point(false).as_bytes())
+    }
+
+    fn ed25519_public_key_hex(signing_key: &Ed25519SigningKey) -> String {
+        hex::encode(signing_key.verifying_key().to_bytes())
+    }
+
+    fn derive_ed25519_from_secp256k1(signing_key: &SigningKey) -> Ed25519SigningKey {
+        let private_key_bytes = signing_key.to_bytes();
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(private_key_bytes.as_ref());
+        Ed25519SigningKey::from_bytes(&seed)
+    }
+
+    fn solana_signing_key(signing_key: &SoftwareSigningKey) -> Ed25519SigningKey {
+        match signing_key {
+            SoftwareSigningKey::Secp256k1(signing_key) => {
+                Self::derive_ed25519_from_secp256k1(signing_key)
+            }
+            SoftwareSigningKey::Ed25519(signing_key) => signing_key.clone(),
+        }
+    }
+
+    fn ed25519_signature(payload: &[u8], signing_key: &Ed25519SigningKey) -> Signature {
+        let signature = signing_key.sign(payload);
+        Signature {
+            bytes: signature.to_bytes().to_vec(),
+            signature_base58: Some(bs58::encode(signature.to_bytes()).into_string()),
+            ..Signature::default()
+        }
     }
 
     fn map_recoverable_digest_signature<T, E>(
@@ -184,7 +252,7 @@ impl SoftwareSignerBackend {
         Ok(Signature::from_der(signature.to_der().as_bytes().to_vec()))
     }
 
-    fn parse_import_key(private_key_hex: &str) -> Result<SigningKey, SignerError> {
+    fn parse_import_secp256k1_key(private_key_hex: &str) -> Result<SigningKey, SignerError> {
         let raw = hex::decode(
             private_key_hex
                 .strip_prefix("0x")
@@ -196,6 +264,18 @@ impl SoftwareSignerBackend {
         }
         SigningKey::from_slice(&raw).map_err(|_| SignerError::InvalidPrivateKey)
     }
+
+    fn parse_import_ed25519_key(private_key_hex: &str) -> Result<Ed25519SigningKey, SignerError> {
+        let raw = hex::decode(
+            private_key_hex
+                .strip_prefix("0x")
+                .unwrap_or(private_key_hex),
+        )
+        .map_err(|_| SignerError::InvalidPrivateKey)?;
+        let bytes =
+            <[u8; 32]>::try_from(raw.as_slice()).map_err(|_| SignerError::InvalidPrivateKey)?;
+        Ok(Ed25519SigningKey::from_bytes(&bytes))
+    }
 }
 
 #[async_trait]
@@ -205,16 +285,80 @@ impl VaultSignerBackend for SoftwareSignerBackend {
     }
 
     async fn create_vault_key(&self, request: KeyCreateRequest) -> Result<VaultKey, SignerError> {
-        let (signing_key, source) = match request {
-            KeyCreateRequest::Generate => (SigningKey::random(&mut OsRng), KeySource::Generated),
+        let (signing_key, source, algorithm, public_key_hex) = match request {
+            KeyCreateRequest::Generate => {
+                let key = SigningKey::random(&mut Secp256k1OsRng);
+                let public_key_hex = Self::secp256k1_public_key_hex(&key);
+                (
+                    SoftwareSigningKey::Secp256k1(key),
+                    KeySource::Generated,
+                    KeyAlgorithm::Secp256k1,
+                    public_key_hex,
+                )
+            }
+            KeyCreateRequest::GenerateWithAlgorithm {
+                algorithm: KeyAlgorithm::Secp256k1,
+            } => {
+                let key = SigningKey::random(&mut Secp256k1OsRng);
+                let public_key_hex = Self::secp256k1_public_key_hex(&key);
+                (
+                    SoftwareSigningKey::Secp256k1(key),
+                    KeySource::Generated,
+                    KeyAlgorithm::Secp256k1,
+                    public_key_hex,
+                )
+            }
+            KeyCreateRequest::GenerateWithAlgorithm {
+                algorithm: KeyAlgorithm::Ed25519,
+            } => {
+                let key = Ed25519SigningKey::from_bytes(&random::<[u8; 32]>());
+                let public_key_hex = Self::ed25519_public_key_hex(&key);
+                (
+                    SoftwareSigningKey::Ed25519(key),
+                    KeySource::Generated,
+                    KeyAlgorithm::Ed25519,
+                    public_key_hex,
+                )
+            }
             KeyCreateRequest::Import { private_key_hex } => {
-                let key = Self::parse_import_key(&private_key_hex)?;
-                (key, KeySource::Imported)
+                let key = Self::parse_import_secp256k1_key(&private_key_hex)?;
+                let public_key_hex = Self::secp256k1_public_key_hex(&key);
+                (
+                    SoftwareSigningKey::Secp256k1(key),
+                    KeySource::Imported,
+                    KeyAlgorithm::Secp256k1,
+                    public_key_hex,
+                )
+            }
+            KeyCreateRequest::ImportWithAlgorithm {
+                algorithm: KeyAlgorithm::Secp256k1,
+                private_key_hex,
+            } => {
+                let key = Self::parse_import_secp256k1_key(&private_key_hex)?;
+                let public_key_hex = Self::secp256k1_public_key_hex(&key);
+                (
+                    SoftwareSigningKey::Secp256k1(key),
+                    KeySource::Imported,
+                    KeyAlgorithm::Secp256k1,
+                    public_key_hex,
+                )
+            }
+            KeyCreateRequest::ImportWithAlgorithm {
+                algorithm: KeyAlgorithm::Ed25519,
+                private_key_hex,
+            } => {
+                let key = Self::parse_import_ed25519_key(&private_key_hex)?;
+                let public_key_hex = Self::ed25519_public_key_hex(&key);
+                (
+                    SoftwareSigningKey::Ed25519(key),
+                    KeySource::Imported,
+                    KeyAlgorithm::Ed25519,
+                    public_key_hex,
+                )
             }
         };
 
         let key_id = Uuid::new_v4();
-        let public_key_hex = Self::public_key_hex(&signing_key);
         let created_at = OffsetDateTime::now_utc();
 
         self.keys
@@ -225,6 +369,7 @@ impl VaultSignerBackend for SoftwareSignerBackend {
         Ok(VaultKey {
             id: key_id,
             source,
+            algorithm,
             public_key_hex,
             created_at,
         })
@@ -242,9 +387,46 @@ impl VaultSignerBackend for SoftwareSignerBackend {
         let signing_key = keys
             .get(&vault_key_id)
             .ok_or(SignerError::UnknownKey(vault_key_id))?;
+        match signing_key {
+            SoftwareSigningKey::Secp256k1(signing_key) => {
+                let signature: EcdsaSignature = signing_key.sign(payload);
+                Ok(Signature::from_der(signature.to_der().as_bytes().to_vec()))
+            }
+            SoftwareSigningKey::Ed25519(signing_key) => {
+                Ok(Self::ed25519_signature(payload, signing_key))
+            }
+        }
+    }
 
-        let signature: EcdsaSignature = signing_key.sign(payload);
-        Ok(Signature::from_der(signature.to_der().as_bytes().to_vec()))
+    fn solana_public_key_hex(&self, vault_key_id: Uuid) -> Result<String, SignerError> {
+        let keys = self
+            .keys
+            .read()
+            .map_err(|_| SignerError::Internal("poisoned lock".into()))?;
+        let signing_key = keys
+            .get(&vault_key_id)
+            .ok_or(SignerError::UnknownKey(vault_key_id))?;
+        Ok(Self::ed25519_public_key_hex(&Self::solana_signing_key(
+            signing_key,
+        )))
+    }
+
+    async fn sign_solana_payload(
+        &self,
+        vault_key_id: Uuid,
+        payload: &[u8],
+    ) -> Result<Signature, SignerError> {
+        let keys = self
+            .keys
+            .read()
+            .map_err(|_| SignerError::Internal("poisoned lock".into()))?;
+        let signing_key = keys
+            .get(&vault_key_id)
+            .ok_or(SignerError::UnknownKey(vault_key_id))?;
+        Ok(Self::ed25519_signature(
+            payload,
+            &Self::solana_signing_key(signing_key),
+        ))
     }
 
     async fn sign_digest(
@@ -259,8 +441,14 @@ impl VaultSignerBackend for SoftwareSignerBackend {
         let signing_key = keys
             .get(&vault_key_id)
             .ok_or(SignerError::UnknownKey(vault_key_id))?;
-
-        Self::map_recoverable_digest_signature(signing_key.sign_prehash_recoverable(&digest))
+        match signing_key {
+            SoftwareSigningKey::Secp256k1(signing_key) => Self::map_recoverable_digest_signature(
+                signing_key.sign_prehash_recoverable(&digest),
+            ),
+            SoftwareSigningKey::Ed25519(_) => Err(SignerError::Unsupported(
+                "ed25519 keys do not support prehashed digest signing".to_string(),
+            )),
+        }
     }
 
     fn export_persistable_key_material(
@@ -276,11 +464,22 @@ impl VaultSignerBackend for SoftwareSignerBackend {
             let signing_key = keys
                 .get(vault_key_id)
                 .ok_or(SignerError::UnknownKey(*vault_key_id))?;
-            let private_key_bytes = Zeroizing::new(signing_key.to_bytes());
-            exported.insert(
-                *vault_key_id,
-                Zeroizing::new(hex::encode(&*private_key_bytes)),
-            );
+            match signing_key {
+                SoftwareSigningKey::Secp256k1(signing_key) => {
+                    let private_key_bytes = Zeroizing::new(signing_key.to_bytes());
+                    exported.insert(
+                        *vault_key_id,
+                        Zeroizing::new(format!("secp256k1:{}", hex::encode(&*private_key_bytes))),
+                    );
+                }
+                SoftwareSigningKey::Ed25519(signing_key) => {
+                    let private_key_bytes = Zeroizing::new(signing_key.to_bytes());
+                    exported.insert(
+                        *vault_key_id,
+                        Zeroizing::new(format!("ed25519:{}", hex::encode(&*private_key_bytes))),
+                    );
+                }
+            }
         }
         Ok(exported)
     }
@@ -291,7 +490,21 @@ impl VaultSignerBackend for SoftwareSignerBackend {
     ) -> Result<(), SignerError> {
         let mut restored = HashMap::with_capacity(persisted.len());
         for (vault_key_id, private_key_hex) in persisted {
-            let signing_key = Self::parse_import_key(private_key_hex)?;
+            let normalized = private_key_hex.as_str();
+            let (prefix, material) = normalized
+                .split_once(':')
+                .unwrap_or(("secp256k1", normalized));
+            let signing_key = match prefix {
+                "secp256k1" => {
+                    SoftwareSigningKey::Secp256k1(Self::parse_import_secp256k1_key(material)?)
+                }
+                "ed25519" => SoftwareSigningKey::Ed25519(Self::parse_import_ed25519_key(material)?),
+                _ => {
+                    return Err(SignerError::Internal(format!(
+                        "unsupported persisted software key algorithm '{prefix}'"
+                    )))
+                }
+            };
             restored.insert(*vault_key_id, signing_key);
         }
         *self
@@ -500,7 +713,10 @@ impl VaultSignerBackend for SecureEnclaveSignerBackend {
         #[cfg(all(target_os = "macos", not(coverage)))]
         {
             match request {
-                KeyCreateRequest::Generate => {
+                KeyCreateRequest::Generate
+                | KeyCreateRequest::GenerateWithAlgorithm {
+                    algorithm: KeyAlgorithm::Secp256k1,
+                } => {
                     Self::require_root()?;
                     let key_id = Uuid::new_v4();
                     let private_key = self.generate_secure_enclave_key(key_id)?;
@@ -508,11 +724,17 @@ impl VaultSignerBackend for SecureEnclaveSignerBackend {
                     Ok(VaultKey {
                         id: key_id,
                         source: KeySource::Generated,
+                        algorithm: KeyAlgorithm::Secp256k1,
                         public_key_hex,
                         created_at: OffsetDateTime::now_utc(),
                     })
                 }
-                KeyCreateRequest::Import { .. } => Err(SignerError::Unsupported(
+                KeyCreateRequest::GenerateWithAlgorithm {
+                    algorithm: KeyAlgorithm::Ed25519,
+                } => Err(SignerError::Unsupported(
+                    "Secure Enclave backend does not support Ed25519 keys".to_string(),
+                )),
+                KeyCreateRequest::Import { .. } | KeyCreateRequest::ImportWithAlgorithm { .. } => Err(SignerError::Unsupported(
                     "Secure Enclave keys are non-importable; use a non-enclave backend for imports"
                         .to_string(),
                 )),
@@ -664,6 +886,14 @@ mod tests {
             backend.sign_digest(Uuid::new_v4(), [0x11; 32]).await,
             Err(SignerError::Unsupported(message)) if message == "not implemented"
         ));
+        assert!(matches!(
+            backend.solana_public_key_hex(Uuid::new_v4()),
+            Err(SignerError::Unsupported(message)) if message == "backend does not support Solana signing"
+        ));
+        assert!(matches!(
+            backend.sign_solana_payload(Uuid::new_v4(), b"payload").await,
+            Err(SignerError::Unsupported(message)) if message == "backend does not support Solana signing"
+        ));
         assert_eq!(
             backend
                 .export_persistable_key_material(&[])
@@ -784,6 +1014,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn secp256k1_key_derives_solana_public_key_and_signer() {
+        use ed25519_dalek::{Signature as Ed25519Signature, Verifier, VerifyingKey};
+
+        let backend = SoftwareSignerBackend::default();
+        let key = backend
+            .create_vault_key(KeyCreateRequest::Import {
+                private_key_hex: "11".repeat(32),
+            })
+            .await
+            .expect("must import key");
+
+        let solana_public_key_hex = backend
+            .solana_public_key_hex(key.id)
+            .expect("solana public key");
+        assert_eq!(solana_public_key_hex.len(), 64);
+        assert_ne!(solana_public_key_hex, key.public_key_hex);
+
+        let signature = backend
+            .sign_solana_payload(key.id, b"solana-message")
+            .await
+            .expect("must sign solana payload");
+        assert_eq!(signature.bytes.len(), 64);
+        assert!(signature.signature_base58.is_some());
+
+        let public_key_bytes = <[u8; 32]>::try_from(
+            hex::decode(solana_public_key_hex)
+                .expect("public key hex")
+                .as_slice(),
+        )
+        .expect("public key bytes");
+        let verifying_key = VerifyingKey::from_bytes(&public_key_bytes).expect("verifying key");
+        let ed25519_signature =
+            Ed25519Signature::from_slice(&signature.bytes).expect("ed25519 signature");
+        verifying_key
+            .verify(b"solana-message", &ed25519_signature)
+            .expect("valid ed25519 signature");
+    }
+
+    #[tokio::test]
     async fn generated_key_can_sign_digest() {
         use k256::ecdsa::{RecoveryId, Signature as K256Signature, VerifyingKey};
 
@@ -857,17 +1126,28 @@ mod tests {
 
         let stored = backend.keys.read().expect("read keys");
         let signing_key = stored.get(&key.id).expect("stored signing key");
-        assert_eq!(
-            SoftwareSignerBackend::public_key_hex(signing_key),
-            key.public_key_hex
-        );
+        match signing_key {
+            crate::SoftwareSigningKey::Secp256k1(signing_key) => {
+                assert_eq!(
+                    SoftwareSignerBackend::secp256k1_public_key_hex(signing_key),
+                    key.public_key_hex
+                );
+            }
+            crate::SoftwareSigningKey::Ed25519(signing_key) => {
+                assert_eq!(
+                    SoftwareSignerBackend::ed25519_public_key_hex(signing_key),
+                    key.public_key_hex
+                );
+            }
+        }
         drop(stored);
 
-        let imported = SoftwareSignerBackend::parse_import_key(&format!("0x{}", "22".repeat(32)))
-            .expect("must parse prefixed import key");
+        let imported =
+            SoftwareSignerBackend::parse_import_secp256k1_key(&format!("0x{}", "22".repeat(32)))
+                .expect("must parse prefixed import key");
         assert_eq!(imported.to_bytes().len(), 32);
         assert!(matches!(
-            SoftwareSignerBackend::parse_import_key("not-hex"),
+            SoftwareSignerBackend::parse_import_secp256k1_key("not-hex"),
             Err(SignerError::InvalidPrivateKey)
         ));
         assert!(matches!(

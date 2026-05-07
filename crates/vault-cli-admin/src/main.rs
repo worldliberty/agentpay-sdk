@@ -9,9 +9,10 @@ use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 use vault_daemon::{DaemonError, KeyManagerDaemonApi};
 use vault_domain::{
-    AdminSession, AgentAction, ApprovalType as DomainApprovalType, AssetId, EntityScope,
-    EvmAddress, ManualApprovalDecision, ManualApprovalRequest, PolicyAttachment, PolicyType,
-    RelayConfig, SpendingPolicy, DEFAULT_MAX_GAS_SPEND_PER_CHAIN_WEI,
+    canonical_policy_chain_id, is_solana_chain_id, AdminSession, AgentAction,
+    ApprovalType as DomainApprovalType, AssetId, EntityScope, EvmAddress, KeyAlgorithm,
+    ManualApprovalDecision, ManualApprovalRequest, PolicyAttachment, PolicyType, RecipientId,
+    RelayConfig, SolanaAddress, SpendingPolicy, DEFAULT_MAX_GAS_SPEND_PER_CHAIN_WEI,
 };
 use vault_signer::KeyCreateRequest;
 use vault_transport_unix::{assert_root_owned_daemon_socket_path, UnixDaemonClient};
@@ -392,7 +393,9 @@ struct BootstrapOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     per_tx_max_calldata_bytes_policy_id: Option<String>,
     vault_key_id: String,
+    vault_key_algorithm: String,
     vault_public_key: String,
+    solana_public_key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     vault_private_key: Option<String>,
     agent_key_id: String,
@@ -587,6 +590,53 @@ pub(crate) struct DestinationPolicyOverride {
     per_tx_max_calldata_bytes: u128,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TokenAddress {
+    Evm(EvmAddress),
+    Solana(SolanaAddress),
+}
+
+impl TokenAddress {
+    pub(crate) fn parse(label: &str, chain_id: u64, value: &str) -> Result<Self> {
+        let trimmed = value.trim();
+        if is_solana_chain_id(chain_id) {
+            trimmed
+                .parse::<SolanaAddress>()
+                .map(Self::Solana)
+                .map_err(|err| anyhow::anyhow!("invalid {label} address: {err}"))
+        } else {
+            trimmed
+                .parse::<EvmAddress>()
+                .map(Self::Evm)
+                .map_err(|err| anyhow::anyhow!("invalid {label} address: {err}"))
+        }
+    }
+}
+
+impl std::fmt::Display for TokenAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Evm(address) => std::fmt::Display::fmt(address, f),
+            Self::Solana(address) => std::fmt::Display::fmt(address, f),
+        }
+    }
+}
+
+fn parse_token_recipient(label: &str, chain_id: u64, value: &str) -> Result<RecipientId> {
+    let trimmed = value.trim();
+    if is_solana_chain_id(chain_id) {
+        trimmed
+            .parse::<SolanaAddress>()
+            .map(RecipientId::Solana)
+            .map_err(|err| anyhow::anyhow!("invalid {label}: {err}"))
+    } else {
+        trimmed
+            .parse::<EvmAddress>()
+            .map(RecipientId::Evm)
+            .map_err(|err| anyhow::anyhow!("invalid {label}: {err}"))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct TokenPolicyConfig {
     token_key: String,
@@ -594,7 +644,7 @@ pub(crate) struct TokenPolicyConfig {
     chain_key: String,
     chain_id: u64,
     is_native: bool,
-    address: Option<EvmAddress>,
+    address: Option<TokenAddress>,
     per_tx_max_wei: u128,
     daily_max_wei: u128,
     weekly_max_wei: u128,
@@ -612,7 +662,7 @@ pub(crate) struct TokenSelectorConfig {
     chain_key: String,
     chain_id: u64,
     is_native: bool,
-    address: Option<EvmAddress>,
+    address: Option<TokenAddress>,
 }
 
 impl TokenSelectorConfig {
@@ -632,7 +682,7 @@ impl TokenSelectorConfig {
 pub(crate) struct TokenDestinationPolicyOverride {
     token_key: String,
     chain_key: String,
-    recipient: EvmAddress,
+    recipient: RecipientId,
     per_tx_max_wei: u128,
     daily_max_wei: u128,
     weekly_max_wei: u128,
@@ -650,9 +700,9 @@ pub(crate) struct TokenManualApprovalPolicyConfig {
     chain_key: String,
     chain_id: u64,
     is_native: bool,
-    address: Option<EvmAddress>,
+    address: Option<TokenAddress>,
     priority: u32,
-    recipient: Option<EvmAddress>,
+    recipient: Option<RecipientId>,
     min_amount_wei: u128,
     max_amount_wei: u128,
 }
@@ -794,6 +844,7 @@ async fn main() -> Result<()> {
                 build_shared_config_bootstrap_params(
                     &shared_config.config,
                     print_agent_auth_token,
+                    network,
                     attach_policy_id,
                     attach_bootstrap_policies,
                     existing_vault_key_id,
@@ -1086,7 +1137,7 @@ async fn execute_bootstrap(
         let default_bundle = build_policy_bundle(
             DEFAULT_BOOTSTRAP_POLICY_PRIORITY_BASE,
             &default_limits,
-            recipient_scope.clone(),
+            lift_evm_recipient_scope(recipient_scope.clone()),
             asset_scope.clone(),
             network_scope.clone(),
         )?;
@@ -1106,7 +1157,7 @@ async fn execute_bootstrap(
             let bundle = build_policy_bundle(
                 priority_base,
                 &PolicyLimitConfig::from_destination_override(&destination_override),
-                single_scope(destination_override.recipient.clone()),
+                single_scope(RecipientId::Evm(destination_override.recipient.clone())),
                 asset_scope.clone(),
                 network_scope.clone(),
             )?;
@@ -1147,7 +1198,14 @@ async fn execute_bootstrap(
             ));
         }
 
-        let (vault_key_id, vault_public_key, vault_private_key, key_status_message) =
+        let (
+            vault_key_id,
+            vault_key_algorithm,
+            vault_public_key,
+            solana_public_key,
+            vault_private_key,
+            key_status_message,
+        ) =
             resolve_bootstrap_vault_material(daemon.as_ref(), &session, &mut params, &mut policy_note)
                 .await?;
         on_status(key_status_message);
@@ -1261,7 +1319,9 @@ async fn execute_bootstrap(
                 .as_ref()
                 .map(|policy| policy.id.to_string()),
             vault_key_id: vault_key_id.to_string(),
+            vault_key_algorithm: format_key_algorithm(vault_key_algorithm).to_string(),
             vault_public_key,
+            solana_public_key,
             vault_private_key,
             agent_key_id: agent_credentials.agent_key.id.to_string(),
             agent_auth_token,
@@ -1308,7 +1368,7 @@ async fn execute_per_token_bootstrap(
         let mut token_policy_bundles = Vec::with_capacity(effective_token_policies.len());
         for (index, token_policy) in effective_token_policies.iter().cloned().enumerate() {
             let asset_scope = build_asset_scope_for_token_policy(&token_policy)?;
-            let network_scope = single_scope(token_policy.chain_id);
+            let network_scope = build_network_scope(Some(token_policy.chain_id));
             let priority_base = policy_bundle_priority_base(
                 DEFAULT_BOOTSTRAP_POLICY_PRIORITY_BASE,
                 index,
@@ -1346,7 +1406,7 @@ async fn execute_per_token_bootstrap(
                     )
                 })?;
             let asset_scope = build_asset_scope_for_token_policy(&token_policy)?;
-            let network_scope = single_scope(token_policy.chain_id);
+            let network_scope = build_network_scope(Some(token_policy.chain_id));
             let priority_base = policy_bundle_priority_base(
                 DESTINATION_OVERRIDE_POLICY_PRIORITY_BASE,
                 index,
@@ -1372,12 +1432,12 @@ async fn execute_per_token_bootstrap(
             Vec::with_capacity(params.token_manual_approval_policies.len());
         for manual_approval in params.token_manual_approval_policies.iter().cloned() {
             let asset_scope = build_asset_scope_for_token_manual_approval(&manual_approval)?;
-            let network_scope = single_scope(manual_approval.chain_id);
+            let network_scope = build_network_scope(Some(manual_approval.chain_id));
             let recipient_scope = manual_approval
                 .recipient
                 .clone()
                 .map_or(EntityScope::All, single_scope);
-            let policy = SpendingPolicy::new_manual_approval(
+            let policy = SpendingPolicy::new_manual_approval_with_recipient_scope(
                 manual_approval.priority,
                 manual_approval.min_amount_wei,
                 manual_approval.max_amount_wei,
@@ -1464,7 +1524,14 @@ async fn execute_per_token_bootstrap(
             );
         }
 
-        let (vault_key_id, vault_public_key, vault_private_key, key_status_message) =
+        let (
+            vault_key_id,
+            vault_key_algorithm,
+            vault_public_key,
+            solana_public_key,
+            vault_private_key,
+            key_status_message,
+        ) =
             resolve_bootstrap_vault_material(
                 daemon.as_ref(),
                 &session,
@@ -1645,7 +1712,9 @@ async fn execute_per_token_bootstrap(
             per_tx_max_calldata_bytes: None,
             per_tx_max_calldata_bytes_policy_id: None,
             vault_key_id: vault_key_id.to_string(),
+            vault_key_algorithm: format_key_algorithm(vault_key_algorithm).to_string(),
             vault_public_key,
+            solana_public_key,
             vault_private_key,
             agent_key_id: agent_credentials.agent_key.id.to_string(),
             agent_auth_token,
@@ -1672,6 +1741,7 @@ async fn execute_per_token_bootstrap(
 fn build_shared_config_bootstrap_params(
     config: &shared_config::WlfiConfig,
     print_agent_auth_token: bool,
+    network: Option<u64>,
     attach_policy_ids: Vec<Uuid>,
     attach_bootstrap_policies: bool,
     existing_vault_key_id: Option<Uuid>,
@@ -1685,6 +1755,9 @@ fn build_shared_config_bootstrap_params(
         print_agent_auth_token,
         reuse_existing_wallet,
     )?;
+    if network.is_some() {
+        params.network = network;
+    }
     params.attach_policy_ids = attach_policy_ids;
     params.attach_bootstrap_policies = attach_bootstrap_policies;
     params.existing_vault_key_id = existing_vault_key_id;
@@ -1698,7 +1771,15 @@ async fn resolve_bootstrap_vault_material(
     session: &AdminSession,
     params: &mut BootstrapParams,
     policy_note: &mut String,
-) -> Result<(Uuid, String, Option<String>, &'static str)> {
+) -> Result<(
+    Uuid,
+    KeyAlgorithm,
+    String,
+    String,
+    Option<String>,
+    &'static str,
+)> {
+    let wallet_key_algorithm = KeyAlgorithm::Secp256k1;
     if let Some(mut private_key_hex) = params.import_vault_private_key.take() {
         if params.existing_vault_key_id.is_some() || params.existing_vault_public_key.is_some() {
             private_key_hex.zeroize();
@@ -1714,10 +1795,13 @@ async fn resolve_bootstrap_vault_material(
             )
             .await?;
         private_key_hex.zeroize();
+        let solana_public_key = daemon.solana_public_key_hex(session, vault_key.id).await?;
         policy_note.push_str("; restored the wallet from an imported private key");
         return Ok((
             vault_key.id,
+            vault_key.algorithm,
             vault_key.public_key_hex,
+            solana_public_key,
             None,
             "importing vault and creating agent keys",
         ));
@@ -1728,10 +1812,13 @@ async fn resolve_bootstrap_vault_material(
         params.existing_vault_public_key.as_ref(),
     ) {
         (Some(vault_key_id), Some(vault_public_key)) => {
+            let solana_public_key = daemon.solana_public_key_hex(session, vault_key_id).await?;
             policy_note.push_str("; reused the existing wallet address");
             Ok((
                 vault_key_id,
+                wallet_key_algorithm,
                 vault_public_key.clone(),
+                solana_public_key,
                 None,
                 "creating agent key",
             ))
@@ -1746,6 +1833,7 @@ async fn resolve_bootstrap_vault_material(
             let vault_key = daemon
                 .create_vault_key(session, KeyCreateRequest::Generate)
                 .await?;
+            let solana_public_key = daemon.solana_public_key_hex(session, vault_key.id).await?;
             let vault_private_key = if params.print_vault_private_key {
                 daemon
                     .export_vault_private_key(session, vault_key.id)
@@ -1755,7 +1843,9 @@ async fn resolve_bootstrap_vault_material(
             };
             Ok((
                 vault_key.id,
+                vault_key.algorithm,
                 vault_key.public_key_hex,
+                solana_public_key,
                 vault_private_key,
                 "creating vault and agent keys",
             ))
@@ -1934,10 +2024,19 @@ fn policy_bundle_priority(priority_base: u32, offset: u32) -> Result<u32> {
         .context("invalid policy configuration: priority overflow")
 }
 
+fn lift_evm_recipient_scope(scope: EntityScope<EvmAddress>) -> EntityScope<RecipientId> {
+    match scope {
+        EntityScope::All => EntityScope::All,
+        EntityScope::Set(values) => {
+            EntityScope::Set(values.into_iter().map(RecipientId::Evm).collect())
+        }
+    }
+}
+
 fn build_policy_bundle(
     priority_base: u32,
     limits: &PolicyLimitConfig,
-    recipient_scope: EntityScope<EvmAddress>,
+    recipient_scope: EntityScope<RecipientId>,
     asset_scope: EntityScope<AssetId>,
     network_scope: EntityScope<u64>,
 ) -> Result<PolicyBundle> {
@@ -1951,7 +2050,7 @@ fn build_policy_bundle(
     let per_tx_max_calldata_priority = policy_bundle_priority(priority_base, 7)?;
 
     Ok(PolicyBundle {
-        per_tx: SpendingPolicy::new(
+        per_tx: SpendingPolicy::new_with_recipient_scope(
             per_tx_priority,
             PolicyType::PerTxMaxSpending,
             limits.per_tx_max_wei,
@@ -1960,7 +2059,7 @@ fn build_policy_bundle(
             network_scope.clone(),
         )
         .context("invalid policy configuration")?,
-        daily: SpendingPolicy::new(
+        daily: SpendingPolicy::new_with_recipient_scope(
             daily_priority,
             PolicyType::DailyMaxSpending,
             limits.daily_max_wei,
@@ -1969,7 +2068,7 @@ fn build_policy_bundle(
             network_scope.clone(),
         )
         .context("invalid policy configuration")?,
-        weekly: SpendingPolicy::new(
+        weekly: SpendingPolicy::new_with_recipient_scope(
             weekly_priority,
             PolicyType::WeeklyMaxSpending,
             limits.weekly_max_wei,
@@ -1980,7 +2079,7 @@ fn build_policy_bundle(
         .context("invalid policy configuration")?,
         gas: (limits.max_gas_per_chain_wei > 0)
             .then(|| {
-                SpendingPolicy::new_gas_spend_limit(
+                SpendingPolicy::new_gas_spend_limit_with_recipient_scope(
                     gas_priority,
                     limits.max_gas_per_chain_wei,
                     recipient_scope.clone(),
@@ -1992,7 +2091,7 @@ fn build_policy_bundle(
             .context("invalid policy configuration")?,
         daily_tx_count: (limits.daily_max_tx_count > 0)
             .then(|| {
-                SpendingPolicy::new_tx_count_limit(
+                SpendingPolicy::new_tx_count_limit_with_recipient_scope(
                     daily_tx_count_priority,
                     limits.daily_max_tx_count,
                     recipient_scope.clone(),
@@ -2004,7 +2103,7 @@ fn build_policy_bundle(
             .context("invalid policy configuration")?,
         per_tx_max_fee: (limits.per_tx_max_fee_per_gas_wei > 0)
             .then(|| {
-                SpendingPolicy::new_fee_per_gas_limit(
+                SpendingPolicy::new_fee_per_gas_limit_with_recipient_scope(
                     per_tx_max_fee_priority,
                     limits.per_tx_max_fee_per_gas_wei,
                     recipient_scope.clone(),
@@ -2016,7 +2115,7 @@ fn build_policy_bundle(
             .context("invalid policy configuration")?,
         per_tx_max_priority_fee: (limits.per_tx_max_priority_fee_per_gas_wei > 0)
             .then(|| {
-                SpendingPolicy::new_priority_fee_per_gas_limit(
+                SpendingPolicy::new_priority_fee_per_gas_limit_with_recipient_scope(
                     per_tx_max_priority_fee_priority,
                     limits.per_tx_max_priority_fee_per_gas_wei,
                     recipient_scope.clone(),
@@ -2028,7 +2127,7 @@ fn build_policy_bundle(
             .context("invalid policy configuration")?,
         per_tx_max_calldata_bytes: (limits.per_tx_max_calldata_bytes > 0)
             .then(|| {
-                SpendingPolicy::new_calldata_limit(
+                SpendingPolicy::new_calldata_limit_with_recipient_scope(
                     per_tx_max_calldata_priority,
                     limits.per_tx_max_calldata_bytes,
                     recipient_scope,
@@ -2265,7 +2364,7 @@ fn validate_token_selector(
     chain_key: &str,
     chain_id: u64,
     is_native: bool,
-    address: Option<&EvmAddress>,
+    address: Option<&TokenAddress>,
 ) -> Result<()> {
     if token_key.trim().is_empty() || chain_key.trim().is_empty() {
         bail!("token policy selectors must include token and chain keys");
@@ -2287,7 +2386,7 @@ fn validate_token_selector(
         }
     } else if address.is_none() {
         bail!(
-            "token policy '{}:{}' requires an ERC-20 address",
+            "token policy '{}:{}' requires a token address",
             token_key,
             chain_key
         );
@@ -2301,6 +2400,7 @@ fn build_asset_scope_for_token_policy(
     build_asset_scope_for_token_selector(
         &token_policy.token_key,
         &token_policy.chain_key,
+        token_policy.chain_id,
         token_policy.is_native,
         token_policy.address.as_ref(),
     )
@@ -2312,6 +2412,7 @@ fn build_asset_scope_for_token_manual_approval(
     build_asset_scope_for_token_selector(
         &manual_approval.token_key,
         &manual_approval.chain_key,
+        manual_approval.chain_id,
         manual_approval.is_native,
         manual_approval.address.as_ref(),
     )
@@ -2320,8 +2421,9 @@ fn build_asset_scope_for_token_manual_approval(
 fn build_asset_scope_for_token_selector(
     token_key: &str,
     chain_key: &str,
+    chain_id: u64,
     is_native: bool,
-    address: Option<&EvmAddress>,
+    address: Option<&TokenAddress>,
 ) -> Result<EntityScope<AssetId>> {
     if is_native {
         if address.is_some() {
@@ -2331,15 +2433,22 @@ fn build_asset_scope_for_token_selector(
                 chain_key
             );
         }
-        Ok(single_scope(AssetId::NativeEth))
+        Ok(single_scope(if is_solana_chain_id(chain_id) {
+            AssetId::NativeSol
+        } else {
+            AssetId::NativeEth
+        }))
     } else {
-        let address = address.cloned().with_context(|| {
+        let address = address.with_context(|| {
             format!(
-                "token policy '{}:{}' requires an ERC-20 address",
+                "token policy '{}:{}' requires a token address",
                 token_key, chain_key
             )
         })?;
-        Ok(single_scope(AssetId::Erc20(address)))
+        Ok(single_scope(match address {
+            TokenAddress::Evm(a) => AssetId::Erc20(a.clone()),
+            TokenAddress::Solana(a) => AssetId::SplToken(a.clone()),
+        }))
     }
 }
 
@@ -2737,10 +2846,10 @@ async fn validate_existing_policy_attachments(
     }
 
     let existing_policy_ids = daemon
-        .list_policies(session)
+        .list_policy_summaries(session)
         .await?
         .into_iter()
-        .map(|policy| policy.id)
+        .map(|summary| summary.id)
         .collect::<BTreeSet<_>>();
     let missing = attach_policy_ids
         .iter()
@@ -2770,11 +2879,11 @@ async fn resolve_attach_bootstrap_policy_ids(
     }
 
     Ok(daemon
-        .list_policies(session)
+        .list_policy_summaries(session)
         .await?
         .into_iter()
-        .filter(|policy| policy.enabled)
-        .map(|policy| policy.id)
+        .filter(|summary| summary.enabled)
+        .map(|summary| summary.id)
         .collect())
 }
 
@@ -2784,10 +2893,10 @@ async fn resolve_effective_token_policies(
     params: &BootstrapParams,
 ) -> Result<(Vec<TokenPolicyConfig>, usize)> {
     let has_enabled_daemon_policies = daemon
-        .list_policies(session)
+        .list_policy_summaries(session)
         .await?
         .into_iter()
-        .any(|policy| policy.enabled);
+        .any(|summary| summary.enabled);
     let requires_scoped_unrestricted_selectors = has_enabled_daemon_policies
         || !params.attach_policy_ids.is_empty()
         || !params.token_policies.is_empty()
@@ -3000,6 +3109,7 @@ fn print_bootstrap_output(
                 "Keys".to_string(),
                 format!("  Vault Key ID: {}", output.vault_key_id),
                 format!("  Vault Public Key: {}", output.vault_public_key),
+                format!("  Solana Public Key: {}", output.solana_public_key),
                 output
                     .vault_private_key
                     .as_ref()
@@ -3597,7 +3707,7 @@ fn build_asset_scope(tokens: &[EvmAddress], allow_native_eth: bool) -> EntitySco
 
 fn build_network_scope(network: Option<u64>) -> EntityScope<u64> {
     match network {
-        Some(chain_id) => single_scope(chain_id),
+        Some(chain_id) => single_scope(canonical_policy_chain_id(chain_id)),
         None => EntityScope::All,
     }
 }
@@ -3607,7 +3717,9 @@ fn describe_network_scope(scope: &EntityScope<u64>) -> String {
         EntityScope::All => "all networks".to_string(),
         EntityScope::Set(values) => values
             .iter()
-            .map(ToString::to_string)
+            .map(|chain_id| canonical_policy_chain_id(*chain_id).to_string())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect::<Vec<_>>()
             .join(","),
     }
@@ -3624,7 +3736,10 @@ fn describe_asset_scope(scope: &EntityScope<AssetId>) -> String {
     }
 }
 
-fn describe_recipient_scope(scope: &EntityScope<EvmAddress>) -> String {
+fn describe_recipient_scope<T>(scope: &EntityScope<T>) -> String
+where
+    T: std::fmt::Display + Ord,
+{
     match scope {
         EntityScope::All => "all recipients".to_string(),
         EntityScope::Set(values) => values
@@ -3632,6 +3747,13 @@ fn describe_recipient_scope(scope: &EntityScope<EvmAddress>) -> String {
             .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(","),
+    }
+}
+
+fn format_key_algorithm(algorithm: KeyAlgorithm) -> &'static str {
+    match algorithm {
+        KeyAlgorithm::Secp256k1 => "secp256k1",
+        KeyAlgorithm::Ed25519 => "ed25519",
     }
 }
 
@@ -3663,10 +3785,11 @@ mod tests {
         DestinationPolicyOverride, DomainApprovalType, ExportVaultPrivateKeyParams,
         ManualApprovalPolicyOutput, OutputFormat, OutputTarget, PolicyLimitConfig,
         RevokeAgentKeyOutput, RevokeAgentKeyParams, RotateAgentAuthTokenOutput,
-        RotateAgentAuthTokenParams, SetRelayConfigParams, TokenDestinationPolicyOverride,
-        TokenManualApprovalPolicyConfig, TokenPolicyConfig, TokenSelectorConfig,
-        BOOTSTRAP_POLICY_PRIORITY_STRIDE, DEFAULT_BOOTSTRAP_POLICY_PRIORITY_BASE,
-        DESTINATION_OVERRIDE_POLICY_PRIORITY_BASE, POLICY_BUNDLE_PRIORITY_SLOTS,
+        RotateAgentAuthTokenParams, SetRelayConfigParams, TokenAddress,
+        TokenDestinationPolicyOverride, TokenManualApprovalPolicyConfig, TokenPolicyConfig,
+        TokenSelectorConfig, BOOTSTRAP_POLICY_PRIORITY_STRIDE,
+        DEFAULT_BOOTSTRAP_POLICY_PRIORITY_BASE, DESTINATION_OVERRIDE_POLICY_PRIORITY_BASE,
+        POLICY_BUNDLE_PRIORITY_SLOTS,
     };
     use crate::{
         shared_config::{
@@ -3687,7 +3810,7 @@ mod tests {
     use vault_domain::{
         AdminSession, AgentAction, AssetId, EntityScope, EvmAddress, ManualApprovalDecision,
         ManualApprovalStatus, PolicyAttachment, PolicyType, RelayConfig, SignRequest,
-        SpendingPolicy,
+        SpendingPolicy, SOLANA_DEVNET_CHAIN_ID, SOLANA_POLICY_CHAIN_ID,
     };
     use vault_signer::{KeyCreateRequest, SoftwareSignerBackend};
     use zeroize::Zeroize;
@@ -3849,12 +3972,16 @@ mod tests {
             build_network_scope(Some(1)),
             EntityScope::Set(values) if values.contains(&1)
         ));
+        assert!(matches!(
+            build_network_scope(Some(SOLANA_DEVNET_CHAIN_ID)),
+            EntityScope::Set(values) if values.contains(&SOLANA_POLICY_CHAIN_ID) && values.len() == 1
+        ));
     }
 
     #[test]
     fn describe_recipient_scope_supports_all_or_specific_recipient() {
         assert_eq!(
-            describe_recipient_scope(&EntityScope::All),
+            describe_recipient_scope(&EntityScope::<EvmAddress>::All),
             "all recipients"
         );
 
@@ -4047,6 +4174,7 @@ mod tests {
         let params = build_shared_config_bootstrap_params(
             &config,
             true,
+            None,
             Vec::new(),
             false,
             Some(existing_vault_key_id),
@@ -4273,11 +4401,11 @@ mod tests {
                 chain_key: "ethereum".to_string(),
                 chain_id: 1,
                 is_native: false,
-                address: Some(
+                address: Some(TokenAddress::Evm(
                     "0x1000000000000000000000000000000000000000"
                         .parse()
                         .expect("usd1 address"),
-                ),
+                )),
                 per_tx_max_wei: 250,
                 daily_max_wei: 1_000,
                 weekly_max_wei: 2_000,
@@ -4634,11 +4762,11 @@ mod tests {
                 chain_key: "ethereum".to_string(),
                 chain_id: 1,
                 is_native: false,
-                address: Some(
+                address: Some(TokenAddress::Evm(
                     "0x1000000000000000000000000000000000000000"
                         .parse()
                         .expect("usd1 address"),
-                ),
+                )),
                 priority: 100,
                 recipient: None,
                 min_amount_wei: 10,
@@ -4792,6 +4920,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shared_config_bootstrap_accepts_native_sol_manual_approval() {
+        let daemon = Arc::new(
+            InMemoryDaemon::new(
+                "vault-password",
+                SoftwareSignerBackend::default(),
+                Default::default(),
+            )
+            .expect("daemon"),
+        );
+        let daemon_api: Arc<dyn KeyManagerDaemonApi> = daemon.clone();
+
+        let mut config_with_sol_manual = WlfiConfig::default();
+        config_with_sol_manual
+            .tokens
+            .get_mut("sol")
+            .expect("sol token")
+            .manual_approval_policies
+            .push(TokenManualApprovalProfile {
+                priority: 100,
+                recipient: None,
+                min_amount: None,
+                max_amount: None,
+                min_amount_decimal: Some("0.00002".to_string()),
+                max_amount_decimal: Some("0.00003".to_string()),
+                min_amount_wei: None,
+                max_amount_wei: None,
+                extra: Default::default(),
+            });
+
+        let params =
+            tui::build_bootstrap_params_from_shared_config(&config_with_sol_manual, true, false)
+                .expect("shared-config params");
+        assert!(params
+            .token_manual_approval_policies
+            .iter()
+            .any(|policy| policy.token_key == "sol" && policy.is_native));
+
+        let bootstrap = execute_bootstrap(
+            daemon_api,
+            "vault-password",
+            "daemon_socket:/tmp/agentpay.sock",
+            params,
+            |_| {},
+        )
+        .await
+        .expect("bootstrap with native sol manual approval");
+
+        let sol_manual_policies = bootstrap
+            .token_manual_approval_policies
+            .iter()
+            .filter(|policy| policy.token_key == "sol")
+            .collect::<Vec<_>>();
+        assert!(!sol_manual_policies.is_empty());
+        assert!(sol_manual_policies
+            .iter()
+            .all(|policy| policy.asset_scope == "native_sol"));
+    }
+
+    #[tokio::test]
     async fn shared_config_reuse_existing_wallet_refreshes_agent_key_after_manual_policy_is_removed(
     ) {
         let daemon = Arc::new(
@@ -4810,6 +4997,7 @@ mod tests {
             build_shared_config_bootstrap_params(
                 &WlfiConfig::default(),
                 true,
+                None,
                 Vec::new(),
                 false,
                 None,
@@ -4872,6 +5060,7 @@ mod tests {
             build_shared_config_bootstrap_params(
                 &refreshed_config,
                 true,
+                None,
                 Vec::new(),
                 false,
                 Some(Uuid::parse_str(&initial.vault_key_id).expect("vault key uuid")),
@@ -5057,11 +5246,11 @@ mod tests {
                 chain_key: "ethereum".to_string(),
                 chain_id: 1,
                 is_native: false,
-                address: Some(
+                address: Some(TokenAddress::Evm(
                     "0x1000000000000000000000000000000000000000"
                         .parse()
                         .expect("usd1 address"),
-                ),
+                )),
                 priority: 100,
                 recipient: None,
                 min_amount_wei: 10,
@@ -5108,7 +5297,7 @@ mod tests {
                 chain_key: "ethereum".to_string(),
                 chain_id: 1,
                 is_native: false,
-                address: Some(usd1_address.clone()),
+                address: Some(TokenAddress::Evm(usd1_address.clone())),
                 priority: 100,
                 recipient: None,
                 min_amount_wei: 20,
@@ -5359,7 +5548,7 @@ mod tests {
                 chain_key: "ethereum".to_string(),
                 chain_id: 1,
                 is_native: false,
-                address: Some(usd1_address.clone()),
+                address: Some(TokenAddress::Evm(usd1_address.clone())),
                 priority: 100,
                 recipient: None,
                 min_amount_wei: 20,

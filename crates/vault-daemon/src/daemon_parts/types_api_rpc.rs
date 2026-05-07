@@ -208,6 +208,12 @@ pub trait KeyManagerDaemonApi: Send + Sync {
         session: &AdminSession,
     ) -> Result<Vec<SpendingPolicy>, DaemonError>;
 
+    /// Lists compact policy metadata for callers that only need ids and enabled state.
+    async fn list_policy_summaries(
+        &self,
+        session: &AdminSession,
+    ) -> Result<Vec<PolicySummary>, DaemonError>;
+
     /// Disables a policy by id.
     ///
     /// Disabled policies remain listed but are ignored during evaluation.
@@ -233,6 +239,13 @@ pub trait KeyManagerDaemonApi: Send + Sync {
         session: &AdminSession,
         vault_key_id: Uuid,
     ) -> Result<Option<String>, DaemonError>;
+
+    /// Returns the Solana Ed25519 public key derived for a vault key.
+    async fn solana_public_key_hex(
+        &self,
+        session: &AdminSession,
+        vault_key_id: Uuid,
+    ) -> Result<String, DaemonError>;
 
     /// Creates an agent key attached to all policies or a selected subset.
     ///
@@ -326,6 +339,13 @@ pub trait KeyManagerDaemonApi: Send + Sync {
     async fn sign_for_agent(&self, request: SignRequest) -> Result<Signature, DaemonError>;
 }
 
+/// Compact policy metadata used when full policy scopes are unnecessary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolicySummary {
+    pub id: Uuid,
+    pub enabled: bool,
+}
+
 /// RPC request type for transport adapters.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "method", content = "params")]
@@ -344,6 +364,11 @@ pub enum DaemonRpcRequest {
     },
     /// List policies.
     ListPolicies {
+        /// Admin session.
+        session: AdminSession,
+    },
+    /// List compact policy metadata.
+    ListPolicySummaries {
         /// Admin session.
         session: AdminSession,
     },
@@ -383,6 +408,13 @@ pub enum DaemonRpcRequest {
     },
     /// Export a software-backed vault private key when supported.
     ExportVaultPrivateKey {
+        /// Admin session.
+        session: AdminSession,
+        /// Vault key id.
+        vault_key_id: Uuid,
+    },
+    /// Derive/read a Solana public key for an existing vault key.
+    SolanaPublicKey {
         /// Admin session.
         session: AdminSession,
         /// Vault key id.
@@ -465,11 +497,13 @@ impl DaemonRpcRequest {
             Self::IssueLease { vault_password } => vault_password.zeroize(),
             Self::AddPolicy { session, .. }
             | Self::ListPolicies { session }
+            | Self::ListPolicySummaries { session }
             | Self::DisablePolicy { session, .. }
             | Self::CreateVaultKey { session, .. }
             | Self::CreateAgentKey { session, .. }
             | Self::RefreshAgentKey { session, .. }
             | Self::ExportVaultPrivateKey { session, .. }
+            | Self::SolanaPublicKey { session, .. }
             | Self::RotateAgentAuthToken { session, .. }
             | Self::RevokeAgentKey { session, .. }
             | Self::ListManualApprovalRequests { session }
@@ -499,6 +533,10 @@ impl std::fmt::Debug for DaemonRpcRequest {
                 .finish(),
             Self::ListPolicies { session } => f
                 .debug_struct("ListPolicies")
+                .field("session", session)
+                .finish(),
+            Self::ListPolicySummaries { session } => f
+                .debug_struct("ListPolicySummaries")
                 .field("session", session)
                 .finish(),
             Self::DisablePolicy { session, policy_id } => f
@@ -538,6 +576,14 @@ impl std::fmt::Debug for DaemonRpcRequest {
                 vault_key_id,
             } => f
                 .debug_struct("ExportVaultPrivateKey")
+                .field("session", session)
+                .field("vault_key_id", vault_key_id)
+                .finish(),
+            Self::SolanaPublicKey {
+                session,
+                vault_key_id,
+            } => f
+                .debug_struct("SolanaPublicKey")
                 .field("session", session)
                 .field("vault_key_id", vault_key_id)
                 .finish(),
@@ -621,6 +667,8 @@ pub enum DaemonRpcResponse {
     Lease(Lease),
     /// Policy list response.
     Policies(Vec<SpendingPolicy>),
+    /// Compact policy metadata response.
+    PolicySummaries(Vec<PolicySummary>),
     /// Policy evaluation response.
     PolicyEvaluation(PolicyEvaluation),
     /// Policy explanation response.
@@ -631,6 +679,8 @@ pub enum DaemonRpcResponse {
     AgentCredentials(AgentCredentials),
     /// Exported software-backed private key response.
     PrivateKey(Option<String>),
+    /// Public key response.
+    PublicKey(String),
     /// Rotated auth token response.
     AuthToken(String),
     /// Manual approval request list response.
@@ -663,6 +713,9 @@ impl std::fmt::Debug for DaemonRpcResponse {
             Self::Unit => f.write_str("Unit"),
             Self::Lease(lease) => f.debug_tuple("Lease").field(lease).finish(),
             Self::Policies(policies) => f.debug_tuple("Policies").field(policies).finish(),
+            Self::PolicySummaries(summaries) => {
+                f.debug_tuple("PolicySummaries").field(summaries).finish()
+            }
             Self::PolicyEvaluation(evaluation) => {
                 f.debug_tuple("PolicyEvaluation").field(evaluation).finish()
             }
@@ -677,6 +730,7 @@ impl std::fmt::Debug for DaemonRpcResponse {
                 .finish(),
             Self::PrivateKey(Some(_)) => f.debug_tuple("PrivateKey").field(&"<redacted>").finish(),
             Self::PrivateKey(None) => f.debug_tuple("PrivateKey").field(&"<none>").finish(),
+            Self::PublicKey(public_key) => f.debug_tuple("PublicKey").field(public_key).finish(),
             Self::AuthToken(_) => f.debug_tuple("AuthToken").field(&"<redacted>").finish(),
             Self::ManualApprovalRequests(requests) => f
                 .debug_tuple("ManualApprovalRequests")

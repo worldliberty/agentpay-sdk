@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 const modulePath = new URL('../src/lib/passthrough-security.ts', import.meta.url);
+const expectedDefaultManagedSocket =
+  process.platform === 'linux' ? '/run/agentpay/daemon.sock' : '/Library/AgentPay/run/daemon.sock';
 
 function loadModule(caseId) {
   return import(modulePath.href + `?case=${caseId}`);
@@ -156,7 +158,7 @@ test('resolveValidatedPassthroughDaemonSocket defaults admin passthroughs to the
       },
     );
 
-    assert.equal(resolved, '/Library/AgentPay/run/daemon.sock');
+    assert.equal(resolved, expectedDefaultManagedSocket);
   } finally {
     if (originalAgentPayHome === undefined) {
       delete process.env.AGENTPAY_HOME;

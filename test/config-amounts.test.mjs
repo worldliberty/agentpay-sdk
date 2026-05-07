@@ -13,7 +13,9 @@ async function withSeededConfig(caseSuffix, fn) {
   process.env.AGENTPAY_HOME = agentpayHome;
 
   try {
-    const configModule = await import(`${configModulePath.href}?case=${caseSuffix}-config-${Date.now()}`);
+    const configModule = await import(
+      `${configModulePath.href}?case=${caseSuffix}-config-${Date.now()}`
+    );
     const config = configModule.readConfig();
     const amounts = await import(`${modulePath.href}?case=${caseSuffix}-amounts-${Date.now()}`);
     await fn({ config, amounts });
@@ -98,14 +100,17 @@ test('configured amount helpers reject tokens without chain metadata and format 
   );
   assert.throws(
     () =>
-      amounts.resolveConfiguredNativeAsset({
-        tokens: {
-          bnb: {
-            symbol: 'BNB',
-            chains: {},
+      amounts.resolveConfiguredNativeAsset(
+        {
+          tokens: {
+            bnb: {
+              symbol: 'BNB',
+              chains: {},
+            },
           },
         },
-      }, 56),
+        56,
+      ),
     /native asset on chain 56 is not configured/,
   );
   assert.equal(amounts.formatConfiguredAmount(1500n, 3), '1.5');
@@ -246,14 +251,8 @@ test('normalizePositiveDecimalInput validates decimal strings without Number mat
 
 test('normalizePositiveDecimalInput and parseConfiguredAmount reject empty, invalid, and zero values', async () => {
   const amounts = await import(`${modulePath.href}?case=${Date.now()}-amount-validation-edges`);
-  assert.throws(
-    () => amounts.normalizePositiveDecimalInput('   ', 'amount'),
-    /amount is required/,
-  );
-  assert.throws(
-    () => amounts.parseConfiguredAmount('   ', 18, 'amount'),
-    /amount is required/,
-  );
+  assert.throws(() => amounts.normalizePositiveDecimalInput('   ', 'amount'), /amount is required/);
+  assert.throws(() => amounts.parseConfiguredAmount('   ', 18, 'amount'), /amount is required/);
   assert.throws(
     () => amounts.parseConfiguredAmount('1.2.3', 2, 'amount'),
     /at most 2 fractional digits/,
@@ -301,6 +300,20 @@ test('rewriteAmountPolicyErrorMessage rewrites window and manual-approval policy
     assert.equal(
       manualSome,
       'requires manual approval for requested amount 2 USD1 within range Some(1 USD1)..=5 USD1',
+    );
+
+    const solAsset = {
+      assetId: 'native_sol',
+      symbol: 'SOL',
+      decimals: 9,
+    };
+    const amountMax = amounts.rewriteAmountPolicyErrorMessage(
+      'policy check failed: policy 032ef8c6-4ae0-48dd-9a43-828f1fe9f4ba rejected request: amount max 20000 < requested 30000',
+      solAsset,
+    );
+    assert.equal(
+      amountMax,
+      'policy check failed: policy 032ef8c6-4ae0-48dd-9a43-828f1fe9f4ba rejected request: amount max 0.00002 SOL < requested 0.00003 SOL',
     );
   });
 });

@@ -92,6 +92,37 @@ where
         Ok(policies)
     }
 
+    async fn list_policy_summaries(
+        &self,
+        session: &AdminSession,
+    ) -> Result<Vec<PolicySummary>, DaemonError> {
+        self.authenticate(session, OffsetDateTime::now_utc())?;
+        let mut summaries: Vec<(u32, PolicySummary)> = self
+            .policies
+            .read()
+            .map_err(|_| DaemonError::LockPoisoned)?
+            .values()
+            .map(|policy| {
+                (
+                    policy.priority,
+                    PolicySummary {
+                        id: policy.id,
+                        enabled: policy.enabled,
+                    },
+                )
+            })
+            .collect();
+        summaries.sort_by(|(priority_a, summary_a), (priority_b, summary_b)| {
+            priority_a
+                .cmp(priority_b)
+                .then_with(|| summary_a.id.cmp(&summary_b.id))
+        });
+        Ok(summaries
+            .into_iter()
+            .map(|(_priority, summary)| summary)
+            .collect())
+    }
+
     async fn disable_policy(
         &self,
         session: &AdminSession,
@@ -182,9 +213,33 @@ where
             .signer_backend
             .export_persistable_key_material(&[vault_key_id])
             .map_err(DaemonError::Signer)?;
-        Ok(exported
-            .remove(&vault_key_id)
-            .map(|mut material| std::mem::take(&mut *material)))
+        Ok(exported.remove(&vault_key_id).map(|material| {
+            material
+                .split_once(':')
+                .map(|(_, private_key_hex)| private_key_hex.to_string())
+                .unwrap_or_else(|| material.as_str().to_string())
+        }))
+    }
+
+    async fn solana_public_key_hex(
+        &self,
+        session: &AdminSession,
+        vault_key_id: Uuid,
+    ) -> Result<String, DaemonError> {
+        self.authenticate(session, OffsetDateTime::now_utc())?;
+
+        if !self
+            .vault_keys
+            .read()
+            .map_err(|_| DaemonError::LockPoisoned)?
+            .contains_key(&vault_key_id)
+        {
+            return Err(DaemonError::UnknownVaultKey(vault_key_id));
+        }
+
+        self.signer_backend
+            .solana_public_key_hex(vault_key_id)
+            .map_err(DaemonError::Signer)
     }
 
     async fn create_agent_key(
@@ -772,6 +827,11 @@ where
                         now,
                     )? {
                         ManualApprovalResolution::Approved(request_id) => request_id,
+                        ManualApprovalResolution::Rejected(approval_request_id) => {
+                            return Err(DaemonError::ManualApprovalRejected {
+                                approval_request_id,
+                            });
+                        }
                         ManualApprovalResolution::Pending {
                             approval_request_id,
                             relay_config,
@@ -799,6 +859,7 @@ where
                 }
                 PolicyDecision::Allow => None,
                 PolicyDecision::Deny(PolicyError::ManualApprovalRequired { policy_id, .. }) => {
+                    ensure_action_supports_manual_approval(&payload_action)?;
                     let payload_hash = payload_hash_hex(&request.payload);
                     // Read the relay secret before creating or mutating approval state so a
                     // poisoned lock fails this request cleanly instead of silently dropping the
@@ -816,6 +877,11 @@ where
                         now,
                     )? {
                         ManualApprovalResolution::Approved(request_id) => request_id,
+                        ManualApprovalResolution::Rejected(approval_request_id) => {
+                            return Err(DaemonError::ManualApprovalRejected {
+                                approval_request_id,
+                            });
+                        }
                         ManualApprovalResolution::Pending {
                             approval_request_id,
                             relay_config,
@@ -842,6 +908,7 @@ where
                     }
                 }
                 PolicyDecision::Deny(PolicyError::Eip712ManualApprovalRequired { policy_id, .. }) => {
+                    ensure_action_supports_manual_approval(&payload_action)?;
                     let payload_hash = payload_hash_hex(&request.payload);
                     // Read the relay secret before creating or mutating approval state so a
                     // poisoned lock fails this request cleanly instead of silently dropping the
@@ -859,6 +926,11 @@ where
                         now,
                     )? {
                         ManualApprovalResolution::Approved(request_id) => request_id,
+                        ManualApprovalResolution::Rejected(approval_request_id) => {
+                            return Err(DaemonError::ManualApprovalRejected {
+                                approval_request_id,
+                            });
+                        }
                         ManualApprovalResolution::Pending {
                             approval_request_id,
                             relay_config,
@@ -906,6 +978,11 @@ where
 
             let signature = match &payload_action {
                 AgentAction::BroadcastTx { tx } => {
+                    if vault_key.algorithm != vault_domain::KeyAlgorithm::Secp256k1 {
+                        return Err(map_domain_to_signer_error(
+                            vault_domain::DomainError::InvalidKeyAlgorithmForAction,
+                        ));
+                    }
                     if tx.tx_type != 0x02 {
                         return Err(DaemonError::Signer(SignerError::Unsupported(format!(
                             "broadcast transaction type 0x{:02x} is unsupported for signing",
@@ -914,6 +991,16 @@ where
                     }
                     self.sign_broadcast_eip1559(&vault_key, tx).await?
                 }
+                AgentAction::SolanaSplTransfer { transfer } => {
+                    self.sign_solana_spl_transfer(&vault_key, transfer).await?
+                }
+                AgentAction::SolanaSolTransfer { transfer } => {
+                    self.sign_solana_sol_transfer(&vault_key, transfer).await?
+                }
+                AgentAction::SolanaNonceAccountCreate { create } => {
+                    self.sign_solana_nonce_account_create(&vault_key, create)
+                        .await?
+                }
                 AgentAction::Permit2Permit { .. }
                 | AgentAction::Eip3009TransferWithAuthorization { .. }
                 | AgentAction::Eip3009ReceiveWithAuthorization { .. }
@@ -921,10 +1008,20 @@ where
                 | AgentAction::TempoSessionTopUpTransaction { .. }
                 | AgentAction::TempoSessionVoucher { .. }
                 | AgentAction::Eip712TypedData { .. } => {
+                    if vault_key.algorithm != vault_domain::KeyAlgorithm::Secp256k1 {
+                        return Err(map_domain_to_signer_error(
+                            vault_domain::DomainError::InvalidKeyAlgorithmForAction,
+                        ));
+                    }
                     self.sign_typed_data_action(&vault_key, &payload_action)
                         .await?
                 }
                 _ => {
+                    if vault_key.algorithm != vault_domain::KeyAlgorithm::Secp256k1 {
+                        return Err(map_domain_to_signer_error(
+                            vault_domain::DomainError::InvalidKeyAlgorithmForAction,
+                        ));
+                    }
                     self.signer_backend
                         .sign_payload(agent_key.vault_key_id, &request.payload)
                         .await?
@@ -1257,6 +1354,20 @@ fn manual_approval_policy_reference_persistence_error(
             "disabled policies are only rejected when approval-time validation requires enabled policies"
         ),
     }
+}
+
+fn ensure_action_supports_manual_approval(action: &AgentAction) -> Result<(), DaemonError> {
+    let missing_durable_nonce = match action {
+        AgentAction::SolanaSolTransfer { transfer } => transfer.durable_nonce_account.is_none(),
+        AgentAction::SolanaSplTransfer { transfer } => transfer.durable_nonce_account.is_none(),
+        _ => false,
+    };
+    if missing_durable_nonce {
+        return Err(DaemonError::Signer(SignerError::Unsupported(
+            "solana manual approval requires AgentPay-managed durable nonce setup; use the current transfer-sol or transfer-spl broadcast flow".to_string(),
+        )));
+    }
+    Ok(())
 }
 
 fn prepare_loaded_state(mut state: PersistedDaemonState) -> Result<PersistedDaemonState, DaemonError> {

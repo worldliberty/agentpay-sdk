@@ -5,17 +5,55 @@ use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 use vault_domain::{
     AgentAction, ApprovalType, AssetId, BroadcastTx, Eip712TypedData, EntityScope, EvmAddress,
-    PolicyAttachment, PolicyType, SpendEvent, SpendingPolicy,
+    PolicyAttachment, PolicyType, SolanaAddress, SolanaNonceAccountCreate, SolanaSplTransfer,
+    SpendEvent, SpendingPolicy, SOLANA_DEVNET_CHAIN_ID, SOLANA_MAINNET_CHAIN_ID,
+    SOLANA_TESTNET_CHAIN_ID,
 };
 
 use crate::engine::{
     enforce_calldata_bytes_limit, enforce_priority_fee_limit, increment_counter_or_mark_overflow,
 };
 
-use super::{PolicyEngine, PolicyError};
+use super::{PolicyDecision, PolicyEngine, PolicyError};
 
 fn addr(x: &str) -> EvmAddress {
     EvmAddress::from_str(x).expect("valid test address")
+}
+
+fn solana_addr(x: &str) -> SolanaAddress {
+    SolanaAddress::from_str(x).expect("valid test solana address")
+}
+
+fn solana_spl_action(chain_id: u64, amount_wei: u128) -> AgentAction {
+    AgentAction::SolanaSplTransfer {
+        transfer: SolanaSplTransfer {
+            chain_id,
+            recent_blockhash: "11111111111111111111111111111111".to_string(),
+            durable_nonce_account: None,
+            fee_payer: solana_addr("11111111111111111111111111111111"),
+            mint: solana_addr("So11111111111111111111111111111111111111112"),
+            recipient_owner: solana_addr("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+            amount_wei,
+            decimals: 9,
+            token_program: vault_domain::SolanaTokenProgram::Token,
+            transfer_fee_wei: None,
+            compute_unit_limit: None,
+            compute_unit_price_micro_lamports: None,
+        },
+    }
+}
+
+fn solana_nonce_account_create_action() -> AgentAction {
+    AgentAction::SolanaNonceAccountCreate {
+        create: SolanaNonceAccountCreate {
+            chain_id: SOLANA_DEVNET_CHAIN_ID,
+            recent_blockhash: "11111111111111111111111111111111".to_string(),
+            fee_payer: solana_addr("11111111111111111111111111111111"),
+            nonce_account: solana_addr("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+            seed: "agentpay-900000002-nonce".to_string(),
+            rent_lamports: 1_500_000,
+        },
+    }
 }
 
 fn policy_all_per_tx(max: u128) -> SpendingPolicy {
@@ -179,6 +217,47 @@ fn eip712_deny_policy_rejects_signing() {
 }
 
 #[test]
+fn wallet_maintenance_bypasses_spending_and_manual_policies() {
+    let engine = PolicyEngine;
+    let manual_policy = SpendingPolicy::new_manual_approval(
+        0,
+        1,
+        1,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::All,
+    )
+    .expect("manual policy");
+    let spend_policy = policy_all_per_tx(1);
+    let policies = vec![manual_policy, spend_policy];
+    let agent_key_id = Uuid::new_v4();
+
+    let explanation = engine.explain(
+        &policies,
+        &PolicyAttachment::AllPolicies,
+        &solana_nonce_account_create_action(),
+        &[],
+        agent_key_id,
+        OffsetDateTime::now_utc(),
+    );
+
+    assert!(matches!(explanation.decision, PolicyDecision::Allow));
+    assert_eq!(explanation.attached_policy_ids.len(), 2);
+    assert!(explanation.applicable_policy_ids.is_empty());
+    assert!(explanation.evaluated_policy_ids.is_empty());
+
+    let result = engine.evaluate(
+        &policies,
+        &PolicyAttachment::AllPolicies,
+        &solana_nonce_account_create_action(),
+        &[],
+        agent_key_id,
+        OffsetDateTime::now_utc(),
+    );
+    assert!(result.is_ok());
+}
+
+#[test]
 fn eip712_manual_policy_requires_manual_approval() {
     let engine = PolicyEngine;
     let policy =
@@ -224,7 +303,7 @@ fn daily_limit_sums_recent_usage() {
         agent_key_id,
         chain_id: 1,
         asset: AssetId::Erc20(token.clone()),
-        recipient: recipient.clone(),
+        recipient: recipient.clone().into(),
         amount_wei: 70,
         at: now - time::Duration::hours(2),
     }];
@@ -276,7 +355,7 @@ fn daily_limit_ignores_future_dated_usage() {
         agent_key_id,
         chain_id: 1,
         asset: AssetId::Erc20(token.clone()),
-        recipient: recipient.clone(),
+        recipient: recipient.clone().into(),
         amount_wei: 80,
         at: now + Duration::hours(1),
     }];
@@ -324,7 +403,7 @@ fn daily_limit_counts_all_in_scope_usage_across_assets_and_chains() {
             agent_key_id,
             chain_id: 1,
             asset: AssetId::Erc20(token_a),
-            recipient: recipient_a,
+            recipient: recipient_a.into(),
             amount_wei: 70,
             at: now - time::Duration::hours(2),
         },
@@ -332,7 +411,7 @@ fn daily_limit_counts_all_in_scope_usage_across_assets_and_chains() {
             agent_key_id,
             chain_id: 10,
             asset: AssetId::NativeEth,
-            recipient: recipient_b.clone(),
+            recipient: recipient_b.clone().into(),
             amount_wei: 20,
             at: now - time::Duration::hours(1),
         },
@@ -397,6 +476,84 @@ fn network_scope_is_enforced() {
     );
 
     assert!(matches!(result, Err(PolicyError::NoApplicablePolicies)));
+}
+
+#[test]
+fn solana_network_aliases_share_policy_scope() {
+    let engine = PolicyEngine;
+    let policy = SpendingPolicy::new(
+        1,
+        PolicyType::PerTxMaxSpending,
+        10,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::Set(BTreeSet::from([SOLANA_DEVNET_CHAIN_ID])),
+    )
+    .expect("policy");
+    let action = solana_spl_action(SOLANA_MAINNET_CHAIN_ID, 11);
+
+    let result = engine.evaluate(
+        &[policy],
+        &PolicyAttachment::AllPolicies,
+        &action,
+        &[],
+        Uuid::new_v4(),
+        OffsetDateTime::now_utc(),
+    );
+
+    assert!(matches!(
+        result,
+        Err(PolicyError::PerTxLimitExceeded {
+            max_amount_wei: 10,
+            requested_amount_wei: 11,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn solana_window_limits_count_all_network_aliases() {
+    let engine = PolicyEngine;
+    let now = OffsetDateTime::now_utc();
+    let agent_key_id = Uuid::new_v4();
+    let policy = SpendingPolicy::new(
+        1,
+        PolicyType::DailyMaxSpending,
+        10,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::Set(BTreeSet::from([SOLANA_TESTNET_CHAIN_ID])),
+    )
+    .expect("policy");
+    let history_action = solana_spl_action(SOLANA_MAINNET_CHAIN_ID, 7);
+    let action = solana_spl_action(SOLANA_DEVNET_CHAIN_ID, 4);
+    let history = vec![SpendEvent {
+        agent_key_id,
+        chain_id: SOLANA_MAINNET_CHAIN_ID,
+        asset: history_action.asset(),
+        recipient: history_action.recipient(),
+        amount_wei: 7,
+        at: now - Duration::hours(1),
+    }];
+
+    let result = engine.evaluate(
+        &[policy],
+        &PolicyAttachment::AllPolicies,
+        &action,
+        &history,
+        agent_key_id,
+        now,
+    );
+
+    assert!(matches!(
+        result,
+        Err(PolicyError::WindowLimitExceeded {
+            used_amount_wei: 7,
+            requested_amount_wei: 4,
+            max_amount_wei: 10,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -653,7 +810,7 @@ fn window_limit_fails_closed_on_usage_overflow() {
             agent_key_id,
             chain_id: 1,
             asset: AssetId::Erc20(token.clone()),
-            recipient: recipient.clone(),
+            recipient: recipient.clone().into(),
             amount_wei: u128::MAX,
             at: now - time::Duration::hours(2),
         },
@@ -661,7 +818,7 @@ fn window_limit_fails_closed_on_usage_overflow() {
             agent_key_id,
             chain_id: 1,
             asset: AssetId::Erc20(token.clone()),
-            recipient: recipient.clone(),
+            recipient: recipient.clone().into(),
             amount_wei: 1,
             at: now - time::Duration::hours(1),
         },
@@ -894,7 +1051,7 @@ fn daily_tx_count_limit_is_enforced() {
             agent_key_id,
             chain_id: 1,
             asset: AssetId::Erc20(token.clone()),
-            recipient: recipient.clone(),
+            recipient: recipient.clone().into(),
             amount_wei: 1,
             at: now - Duration::hours(2),
         },
@@ -902,7 +1059,7 @@ fn daily_tx_count_limit_is_enforced() {
             agent_key_id,
             chain_id: 1,
             asset: AssetId::Erc20(token.clone()),
-            recipient: recipient.clone(),
+            recipient: recipient.clone().into(),
             amount_wei: 1,
             at: now - Duration::hours(1),
         },
@@ -948,7 +1105,7 @@ fn daily_tx_count_limit_ignores_future_dated_usage() {
         agent_key_id,
         chain_id: 1,
         asset: AssetId::Erc20(token.clone()),
-        recipient: recipient.clone(),
+        recipient: recipient.clone().into(),
         amount_wei: 1,
         at: now + Duration::hours(1),
     }];
@@ -1109,7 +1266,7 @@ fn weekly_limit_and_manual_approval_paths_are_enforced() {
         agent_key_id,
         chain_id: 1,
         asset: AssetId::Erc20(token.clone()),
-        recipient: recipient.clone(),
+        recipient: recipient.clone().into(),
         amount_wei: 80,
         at: now - Duration::days(2),
     }];

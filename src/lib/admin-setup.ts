@@ -4,8 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { Command } from 'commander';
-import type { Hex } from 'viem';
-import { publicKeyToAddress } from 'viem/accounts';
 import {
   defaultRustBinDir,
   readConfig,
@@ -13,6 +11,7 @@ import {
   type WlfiConfig,
   writeConfig,
 } from '../../packages/config/src/index.js';
+import { resolveAgentAuthStorageMetadata } from './agent-auth-storage.js';
 import { cleanupBootstrapAgentCredentialsFile } from './bootstrap-credentials.js';
 import {
   assertTrustedAdminDaemonSocketPath,
@@ -20,7 +19,7 @@ import {
   assertTrustedRootPlannedDaemonSocketPath,
   assertTrustedRootPlannedPrivateFilePath,
 } from './fs-trust.js';
-import { resolveAgentAuthStorageMetadata } from './agent-auth-storage.js';
+import { promptHiddenTty } from './hidden-tty-prompt.js';
 import { DAEMON_PASSWORD_KEYCHAIN_SERVICE } from './keychain.js';
 import {
   LAUNCHD_INSTALL_SCRIPT_NAME,
@@ -32,6 +31,7 @@ import {
   resolveManagedDaemonPlatformSpec,
 } from './managed-daemon-platform.js';
 import { resolveCliNetworkProfile } from './network-selection.js';
+import { assertManagedDaemonPlatform } from './platform-support.js';
 import { passthroughRustBinary, RustBinaryExitError, runRustBinary } from './rust.js';
 import { createSudoSession } from './sudo.js';
 import {
@@ -39,8 +39,16 @@ import {
   SYSTEMD_INSTALL_SCRIPT_NAME,
   SYSTEMD_RUNNER_SCRIPT_NAME,
 } from './systemd-assets.js';
-import { resolveWalletProfile } from './wallet-profile.js';
+import {
+  cleanupTemporaryWalletImportKeyFile,
+  decryptWalletBackup,
+  defaultWalletBackupOutputPath,
+  readWalletBackupFile,
+  resolveWalletBackupPassword,
+  writeTemporaryWalletImportKeyFile,
+} from './wallet-backup.js';
 import { exportEncryptedWalletBackup } from './wallet-backup-admin.js';
+import { deriveWalletAddress, resolveWalletProfile } from './wallet-profile.js';
 import {
   assertWalletSetupExecutionPreconditions,
   buildWalletSetupAdminArgs,
@@ -52,16 +60,6 @@ import {
   resolveWalletSetupCleanupAction,
   type WalletSetupPlan,
 } from './wallet-setup.js';
-import { promptHiddenTty } from './hidden-tty-prompt.js';
-import {
-  cleanupTemporaryWalletImportKeyFile,
-  defaultWalletBackupOutputPath,
-  decryptWalletBackup,
-  readWalletBackupFile,
-  resolveWalletBackupPassword,
-  writeTemporaryWalletImportKeyFile,
-} from './wallet-backup.js';
-import { assertManagedDaemonPlatform } from './platform-support.js';
 
 const MANAGED_DAEMON_SPEC = resolveManagedDaemonPlatformSpec(
   process.platform === 'linux' ? 'linux' : 'darwin',
@@ -292,26 +290,14 @@ async function promptConfirmedVaultPassword(
   return first;
 }
 
-function deriveWalletAddress(vaultPublicKey: string | undefined): string | undefined {
-  const normalized = vaultPublicKey?.trim();
-  if (!normalized) {
-    return undefined;
-  }
-  try {
-    return publicKeyToAddress(
-      (normalized.startsWith('0x') ? normalized : `0x${normalized}`) as Hex,
-    );
-    /* c8 ignore next 2 -- viem currently normalizes malformed public-key strings instead of throwing; catch is defensive */
-  } catch {
-    return undefined;
-  }
-}
-
 export function resolveExistingWalletSetupTarget(
   config: WlfiConfig,
 ): ExistingWalletSetupTarget | null {
   const address =
-    config.wallet?.address?.trim() || deriveWalletAddress(config.wallet?.vaultPublicKey);
+    config.wallet?.address?.trim() ||
+    (config.wallet?.vaultPublicKey
+      ? deriveWalletAddress(config.wallet.vaultPublicKey, config.wallet.algorithm)
+      : undefined);
   const agentKeyId = config.agentKeyId?.trim() || config.wallet?.agentKeyId?.trim();
   const hasLegacyAgentAuthToken = Boolean(config.agentAuthToken?.trim());
 
@@ -334,9 +320,7 @@ function resolveReusableWalletSetupTarget(
   try {
     walletProfile = resolveWalletProfile(config);
   } catch (error) {
-    throw new Error(
-      `${optionLabel} requires a local wallet to reuse; ${renderError(error)}`,
-    );
+    throw new Error(`${optionLabel} requires a local wallet to reuse; ${renderError(error)}`);
   }
 
   const existingVaultKeyId = walletProfile.vaultKeyId?.trim();
@@ -348,14 +332,19 @@ function resolveReusableWalletSetupTarget(
   }
 
   return {
-    address: walletProfile.address?.trim() || deriveWalletAddress(existingVaultPublicKey),
+    address:
+      walletProfile.address?.trim() ||
+      deriveWalletAddress(existingVaultPublicKey, walletProfile.algorithm),
     existingVaultKeyId,
     existingVaultPublicKey,
   };
 }
 
 function resolveRequestedReusableWalletSetupTarget(
-  options: Pick<AdminSetupOptions, 'reuseExistingWallet' | 'restoreWalletFrom' | 'attachBootstrapPolicies'>,
+  options: Pick<
+    AdminSetupOptions,
+    'reuseExistingWallet' | 'restoreWalletFrom' | 'attachBootstrapPolicies'
+  >,
   config: WlfiConfig,
 ): ReusableWalletSetupTarget | null {
   if (options.restoreWalletFrom) {
@@ -457,20 +446,15 @@ export async function resolveAdminSetupVaultPassword(
 }
 
 async function resolveAdminSetupBackupPassword(
-  options: Pick<
-    AdminSetupOptions,
-    'backupPassword' | 'backupPasswordStdin' | 'nonInteractive'
-  >,
+  options: Pick<AdminSetupOptions, 'backupPassword' | 'backupPasswordStdin' | 'nonInteractive'>,
   confirm = true,
 ): Promise<string> {
-  return resolveWalletBackupPassword(
-    {
-      backupPassword: options.backupPassword,
-      backupPasswordStdin: options.backupPasswordStdin,
-      nonInteractive: options.nonInteractive,
-      confirm,
-    },
-  );
+  return resolveWalletBackupPassword({
+    backupPassword: options.backupPassword,
+    backupPasswordStdin: options.backupPasswordStdin,
+    nonInteractive: options.nonInteractive,
+    confirm,
+  });
 }
 
 function resolveAdminSetupRestoreConflictErrors(options: AdminSetupOptions): void {
@@ -482,10 +466,12 @@ function resolveAdminSetupRestoreConflictErrors(options: AdminSetupOptions): voi
       '--vault-password-stdin conflicts with --backup-password-stdin; provide one secret via a local TTY prompt',
     );
   }
-  if ((options.backupPassword || options.backupPasswordStdin) && !options.restoreWalletFrom && !options.backupOutput) {
-    throw new Error(
-      '--backup-password-stdin requires --restore-wallet-from or --backup-output',
-    );
+  if (
+    (options.backupPassword || options.backupPasswordStdin) &&
+    !options.restoreWalletFrom &&
+    !options.backupOutput
+  ) {
+    throw new Error('--backup-password-stdin requires --restore-wallet-from or --backup-output');
   }
 }
 
@@ -720,7 +706,9 @@ export function prepareAdminCommandOutputPayload(
   }
 
   const prepared = { ...payload };
-  for (const [fieldName, redactedFieldName] of [['vaultPrivateKey', 'vaultPrivateKeyRedacted']] as const) {
+  for (const [fieldName, redactedFieldName] of [
+    ['vaultPrivateKey', 'vaultPrivateKeyRedacted'],
+  ] as const) {
     const value = prepared[fieldName];
     if (typeof value === 'string' && value.trim()) {
       prepared[fieldName] = REDACTED_SECRET_PLACEHOLDER;
@@ -729,7 +717,9 @@ export function prepareAdminCommandOutputPayload(
   }
 
   if (!includeSecrets) {
-    for (const [fieldName, redactedFieldName] of [['agentAuthToken', 'agentAuthTokenRedacted']] as const) {
+    for (const [fieldName, redactedFieldName] of [
+      ['agentAuthToken', 'agentAuthTokenRedacted'],
+    ] as const) {
       const value = prepared[fieldName];
       if (typeof value === 'string' && value.trim()) {
         prepared[fieldName] = REDACTED_SECRET_PLACEHOLDER;
@@ -772,11 +762,20 @@ export function formatAdminCommandOutput(
   const includeSecrets = options.includeSecrets ?? false;
 
   let addressLine: string | null = null;
+  let solanaAddressLine: string | null = null;
   if (vaultPublicKey) {
-    const normalizedPublicKey = (
-      vaultPublicKey.startsWith('0x') ? vaultPublicKey : `0x${vaultPublicKey}`
-    ) as Hex;
-    addressLine = `address: ${publicKeyToAddress(normalizedPublicKey)}`;
+    const walletKeyAlgorithm =
+      prepared.vaultKeyAlgorithm === 'ed25519' || prepared.vaultKeyAlgorithm === 'secp256k1'
+        ? prepared.vaultKeyAlgorithm
+        : undefined;
+    const derivedAddress = deriveWalletAddress(vaultPublicKey, walletKeyAlgorithm);
+    if (derivedAddress) {
+      addressLine = `address: ${derivedAddress}`;
+    }
+  }
+  const solanaAddress = String(prepared.solanaAddress ?? '').trim();
+  if (solanaAddress) {
+    solanaAddressLine = `solana address: ${solanaAddress}`;
   }
 
   const daemonSocket = String(daemon.daemonSocket ?? config.daemonSocket ?? '').trim();
@@ -802,7 +801,11 @@ export function formatAdminCommandOutput(
 
   const lines = [
     title,
+    typeof prepared.vaultKeyAlgorithm === 'string' && prepared.vaultKeyAlgorithm.trim()
+      ? `algorithm: ${prepared.vaultKeyAlgorithm}`
+      : null,
     addressLine,
+    solanaAddressLine,
     typeof prepared.vaultKeyId === 'string' && prepared.vaultKeyId.trim()
       ? `vault key id: ${prepared.vaultKeyId}`
       : null,
@@ -824,7 +827,8 @@ export function formatAdminCommandOutput(
     keychainNote ? `note: ${keychainNote}` : null,
     typeof walletBackupStatus === 'string' ? `wallet backup: ${walletBackupStatus}` : null,
     walletBackup.status !== 'not-created' &&
-    typeof walletBackup.outputPath === 'string' && walletBackup.outputPath.trim()
+    typeof walletBackup.outputPath === 'string' &&
+    walletBackup.outputPath.trim()
       ? `wallet backup path: ${walletBackup.outputPath}`
       : null,
     typeof walletBackup.createdAt === 'string' && walletBackup.createdAt.trim()
@@ -945,8 +949,9 @@ export function assertManagedDaemonInstallPreconditions(
     deps.assertTrustedRootPlannedDaemonSocketPath ?? assertTrustedRootPlannedDaemonSocketPath;
   const trustStateFilePath =
     deps.assertTrustedRootPlannedPrivateFilePath ?? assertTrustedRootPlannedPrivateFilePath;
-  const installScript =
-    (deps.resolveInstallScriptPath ?? (() => resolveLaunchDaemonInstallScriptPath(config)))();
+  const installScript = (
+    deps.resolveInstallScriptPath ?? (() => resolveLaunchDaemonInstallScriptPath(config))
+  )();
   const sourcePaths = resolveSourceLaunchDaemonPaths(config);
   const managedPaths = resolveManagedLaunchDaemonPaths();
 
@@ -1304,10 +1309,7 @@ function plistContainsValue(plistContents: string, value: string): boolean {
   return plistContents.includes(`<string>${value}</string>`);
 }
 
-export function launchDaemonPlistValue(
-  plistContents: string,
-  key: string,
-): string | null {
+export function launchDaemonPlistValue(plistContents: string, key: string): string | null {
   const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
   const match = plistContents.match(
     new RegExp(`<key>${escapedKey}</key>\\s*<string>([^<]+)</string>`, 'u'),
@@ -1502,7 +1504,8 @@ async function installLaunchDaemon(
     serviceManager: MANAGED_DAEMON_SPEC.serviceManager,
     ...(process.platform === 'linux'
       ? {
-          passwordFile: MANAGED_DAEMON_SPEC.daemonPasswordFile ?? '/var/lib/agentpay/daemon-password',
+          passwordFile:
+            MANAGED_DAEMON_SPEC.daemonPasswordFile ?? '/var/lib/agentpay/daemon-password',
         }
       : {
           keychainAccount: os.userInfo().username,
@@ -1560,9 +1563,10 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
   let temporaryImportKeyFile: string | null = null;
 
   const existingDaemonProgress = createProgress('Checking existing daemon', showProgress);
-  const plistContents = process.platform === 'darwin' && fs.existsSync(DEFAULT_LAUNCH_DAEMON_PLIST)
-    ? fs.readFileSync(DEFAULT_LAUNCH_DAEMON_PLIST, 'utf8')
-    : null;
+  const plistContents =
+    process.platform === 'darwin' && fs.existsSync(DEFAULT_LAUNCH_DAEMON_PLIST)
+      ? fs.readFileSync(DEFAULT_LAUNCH_DAEMON_PLIST, 'utf8')
+      : null;
   const installedPaths = plistContents
     ? resolveInstalledLaunchDaemonPaths(config, plistContents)
     : null;
@@ -1578,24 +1582,30 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
     existingDaemonResponding = true;
     const accepted = await daemonAcceptsVaultPassword(config, daemonSocket, vaultPassword);
     if (accepted) {
-      installIsCurrent = true;
-      daemon = {
-        label: DEFAULT_LAUNCH_DAEMON_LABEL,
-        runnerPath: installedPaths?.runnerPath ?? resolveManagedLaunchDaemonPaths().runnerPath,
-        daemonBin: installedPaths?.daemonBin ?? resolveManagedLaunchDaemonPaths().daemonBin,
-        stateFile,
-        serviceManager: MANAGED_DAEMON_SPEC.serviceManager,
-        ...(process.platform === 'linux'
-          ? {
-              passwordFile:
-                MANAGED_DAEMON_SPEC.daemonPasswordFile ?? '/var/lib/agentpay/daemon-password',
-            }
-          : {
-              keychainAccount: os.userInfo().username,
-              keychainService: DAEMON_PASSWORD_KEYCHAIN_SERVICE,
-            }),
-      };
-      existingDaemonProgress.succeed('Existing daemon is ready and accepted the vault password');
+      if (process.platform !== 'darwin' || installIsCurrent) {
+        installIsCurrent = true;
+        daemon = {
+          label: DEFAULT_LAUNCH_DAEMON_LABEL,
+          runnerPath: installedPaths?.runnerPath ?? resolveManagedLaunchDaemonPaths().runnerPath,
+          daemonBin: installedPaths?.daemonBin ?? resolveManagedLaunchDaemonPaths().daemonBin,
+          stateFile,
+          serviceManager: MANAGED_DAEMON_SPEC.serviceManager,
+          ...(process.platform === 'linux'
+            ? {
+                passwordFile:
+                  MANAGED_DAEMON_SPEC.daemonPasswordFile ?? '/var/lib/agentpay/daemon-password',
+              }
+            : {
+                keychainAccount: os.userInfo().username,
+                keychainService: DAEMON_PASSWORD_KEYCHAIN_SERVICE,
+              }),
+        };
+        existingDaemonProgress.succeed('Existing daemon is ready and accepted the vault password');
+      } else {
+        existingDaemonProgress.succeed(
+          'Existing daemon is ready but root-managed binaries need refresh',
+        );
+      }
     } else {
       existingDaemonRejectedPassword = true;
       existingDaemonProgress.succeed(
@@ -1840,7 +1850,10 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
     }
     bootstrapProgress.succeed('Bootstrap completed');
 
-    const finalizeProgress = createProgress('Importing agent token and saving config', showProgress);
+    const finalizeProgress = createProgress(
+      'Importing agent token and saving config',
+      showProgress,
+    );
     let summary: CompleteWalletSetupResult;
     try {
       summary = completeWalletSetup({
@@ -1885,7 +1898,7 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
         : {}),
     });
 
-    const walletAddress = deriveWalletAddress(summary.vaultPublicKey);
+    const walletAddress = deriveWalletAddress(summary.vaultPublicKey, summary.vaultKeyAlgorithm);
     let walletBackup: WalletBackupExportResult | undefined;
     const walletBackupRequest = walletAddress
       ? await resolvePostSetupWalletBackupRequest({
@@ -2037,6 +2050,11 @@ async function runAdminTui(options: AdminTuiOptions): Promise<void> {
     'The current TUI flow refreshes local wallet credentials through managed daemon setup helpers.',
   );
 
+  // Persist the TS-side merged defaults (chains, tokens) so the Rust admin TUI
+  // sees the full set on disk. The Rust loader has its own minimal seed and
+  // does not know about Solana, Tempo, USDC.e, etc. — without this step the
+  // TUI would silently drop those entries.
+  writeConfig({});
   const config = backfillPersistedWalletProfileForTui(readConfig());
 
   const daemonSocket = options.daemonSocket ? resolveDaemonSocket(options.daemonSocket) : undefined;
@@ -2156,7 +2174,11 @@ export async function runAdminSetupCli(argv: string[]): Promise<void> {
       false,
     )
     .option('--bootstrap-output <path>', 'Write temporary bootstrap JSON to this private path')
-    .option('--delete-bootstrap-output', 'Delete the bootstrap JSON after local credential import', false)
+    .option(
+      '--delete-bootstrap-output',
+      'Delete the bootstrap JSON after local credential import',
+      false,
+    )
     .option(
       '--print-agent-auth-token',
       'Print the freshly issued agent auth token after importing it into local credential storage',
@@ -2177,7 +2199,11 @@ export async function runAdminTuiCli(argv: string[]): Promise<void> {
     )
     .option('--daemon-socket <path>', 'Daemon unix socket path')
     .option('--bootstrap-output <path>', 'Write temporary bootstrap JSON to this private path')
-    .option('--delete-bootstrap-output', 'Delete the bootstrap JSON after local credential import', false)
+    .option(
+      '--delete-bootstrap-output',
+      'Delete the bootstrap JSON after local credential import',
+      false,
+    )
     .option(
       '--print-agent-auth-token',
       'Print the freshly issued agent auth token after importing it into local credential storage',

@@ -1,8 +1,12 @@
 import {
   assertSafeRpcUrl,
+  type ChainProfile,
   resolveChainProfile,
   type WlfiConfig,
 } from '../../packages/config/src/index.js';
+
+export const SOLANA_POLICY_CHAIN_ID = 900000001;
+const SOLANA_CHAIN_IDS = new Set([900000001, 900000002, 900000003]);
 
 function presentString(value: string | undefined | null): string | undefined {
   const normalized = value?.trim();
@@ -22,6 +26,14 @@ function resolveActiveNetworkSelector(config: WlfiConfig): string | undefined {
     return String(config.chainId);
   }
   return undefined;
+}
+
+export function isSolanaChainProfile(profile: Pick<ChainProfile, 'chainId' | 'family'>): boolean {
+  return profile.family === 'solana' || SOLANA_CHAIN_IDS.has(profile.chainId);
+}
+
+export function canonicalPolicyChainId(chainId: number): number {
+  return SOLANA_CHAIN_IDS.has(chainId) ? SOLANA_POLICY_CHAIN_ID : chainId;
 }
 
 export function resolveCliNetworkProfile(

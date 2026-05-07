@@ -2,6 +2,17 @@
 
 All notable changes to AgentPay SDK are documented in this file.
 
+## [0.4.0] - 2026-05-07
+
+- added first-class Solana vault account support with software-backed Ed25519 keys plus persisted Solana public key/address wallet metadata
+- added `agentpay transfer-spl` for original-program SPL token transfers with daemon policy checks, optional broadcast, and optional compute budget overrides
+- added built-in Solana network/config support and updated wallet/setup/status flows to surface Solana chain family metadata correctly
+- extended policy/domain/signer/daemon plumbing to model Solana recipients/assets and sign structured Solana SPL transfers instead of arbitrary transactions
+- manual approval is not supported for Solana SPL transfers in this release and now fails closed instead of creating stale approval requests
+- Solana V1 is limited to software-backed Ed25519 wallets and original SPL `TransferChecked` flows with existing associated token accounts
+
+Detailed release notes: [releases/v0.4.0.md](releases/v0.4.0.md)
+
 ## [0.3.1] - 2026-04-13
 
 - added managed Linux wallet support with system `systemd` services and Linux Secret Service-backed agent auth storage

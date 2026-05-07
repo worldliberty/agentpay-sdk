@@ -1,8 +1,21 @@
 import { defineConfig } from 'tsup';
 
+const suppressBigintBufferWarningBanner = `#!/usr/bin/env node
+const __agentpayBigintBufferWarning = 'bigint: Failed to load bindings, pure JS will be used (try npm run rebuild?)';
+if (!globalThis.__agentpaySuppressBigintBufferWarningInstalled) {
+  const __agentpayOriginalConsoleWarn = console.warn.bind(console);
+  console.warn = (...args) => {
+    if (args.length === 1 && args[0] === __agentpayBigintBufferWarning) {
+      return;
+    }
+    __agentpayOriginalConsoleWarn(...args);
+  };
+  globalThis.__agentpaySuppressBigintBufferWarningInstalled = true;
+}`;
+
 export default defineConfig({
   entry: {
-    cli: 'src/cli.ts'
+    cli: 'src/cli.ts',
   },
   format: ['cjs'],
   platform: 'node',
@@ -11,7 +24,7 @@ export default defineConfig({
   sourcemap: true,
   dts: false,
   banner: {
-    js: '#!/usr/bin/env node'
+    js: suppressBigintBufferWarningBanner,
   },
   outExtension() {
     return { js: '.cjs' };
@@ -20,6 +33,6 @@ export default defineConfig({
     '@worldlibertyfinancial/agent-config',
     '@worldlibertyfinancial/agent-rpc',
     'commander',
-    'viem'
-  ]
+    'viem',
+  ],
 });

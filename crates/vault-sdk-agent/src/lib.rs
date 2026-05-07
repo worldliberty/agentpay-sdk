@@ -12,8 +12,9 @@ use vault_daemon::{DaemonError, KeyManagerDaemonApi};
 use vault_domain::{
     action_from_erc20_calldata, AgentAction, AgentCredentials, BroadcastTx, DomainError,
     Eip3009Transfer, Eip712TypedData, EvmAddress, NonceReleaseRequest, NonceReservation,
-    NonceReservationRequest, Permit2Permit, SignRequest, Signature, TempoSessionOpenTransaction,
-    TempoSessionTopUpTransaction, TempoSessionVoucher,
+    NonceReservationRequest, Permit2Permit, SignRequest, Signature, SolanaAddress,
+    SolanaNonceAccountCreate, SolanaSolTransfer, SolanaSplTransfer, SolanaTokenProgram,
+    TempoSessionOpenTransaction, TempoSessionTopUpTransaction, TempoSessionVoucher,
 };
 use zeroize::Zeroizing;
 
@@ -58,6 +59,47 @@ pub trait AgentOperations: Send + Sync {
         chain_id: u64,
         to: EvmAddress,
         amount_wei: u128,
+    ) -> Result<Signature, AgentSdkError>;
+
+    /// Requests a signed native SOL transfer transaction.
+    async fn solana_sol_transfer(
+        &self,
+        chain_id: u64,
+        recent_blockhash: String,
+        durable_nonce_account: Option<SolanaAddress>,
+        fee_payer: SolanaAddress,
+        to: SolanaAddress,
+        amount_wei: u128,
+        compute_unit_limit: Option<u32>,
+        compute_unit_price_micro_lamports: Option<u64>,
+    ) -> Result<Signature, AgentSdkError>;
+
+    /// Requests a signed SPL/Token-2022 token transfer transaction.
+    async fn solana_spl_transfer(
+        &self,
+        chain_id: u64,
+        recent_blockhash: String,
+        durable_nonce_account: Option<SolanaAddress>,
+        fee_payer: SolanaAddress,
+        mint: SolanaAddress,
+        recipient_owner: SolanaAddress,
+        amount_wei: u128,
+        decimals: u8,
+        token_program: SolanaTokenProgram,
+        transfer_fee_wei: Option<u128>,
+        compute_unit_limit: Option<u32>,
+        compute_unit_price_micro_lamports: Option<u64>,
+    ) -> Result<Signature, AgentSdkError>;
+
+    /// Requests a signed Solana durable nonce account creation transaction.
+    async fn solana_nonce_account_create(
+        &self,
+        chain_id: u64,
+        recent_blockhash: String,
+        fee_payer: SolanaAddress,
+        nonce_account: SolanaAddress,
+        seed: String,
+        rent_lamports: u128,
     ) -> Result<Signature, AgentSdkError>;
 
     /// Requests a Permit2 `PermitSingle` signature.
@@ -240,6 +282,88 @@ where
         .await
     }
 
+    async fn solana_spl_transfer(
+        &self,
+        chain_id: u64,
+        recent_blockhash: String,
+        durable_nonce_account: Option<SolanaAddress>,
+        fee_payer: SolanaAddress,
+        mint: SolanaAddress,
+        recipient_owner: SolanaAddress,
+        amount_wei: u128,
+        decimals: u8,
+        token_program: SolanaTokenProgram,
+        transfer_fee_wei: Option<u128>,
+        compute_unit_limit: Option<u32>,
+        compute_unit_price_micro_lamports: Option<u64>,
+    ) -> Result<Signature, AgentSdkError> {
+        self.sign_action(AgentAction::SolanaSplTransfer {
+            transfer: SolanaSplTransfer {
+                chain_id,
+                recent_blockhash,
+                durable_nonce_account,
+                fee_payer,
+                mint,
+                recipient_owner,
+                amount_wei,
+                decimals,
+                token_program,
+                transfer_fee_wei,
+                compute_unit_limit,
+                compute_unit_price_micro_lamports,
+            },
+        })
+        .await
+    }
+
+    async fn solana_sol_transfer(
+        &self,
+        chain_id: u64,
+        recent_blockhash: String,
+        durable_nonce_account: Option<SolanaAddress>,
+        fee_payer: SolanaAddress,
+        to: SolanaAddress,
+        amount_wei: u128,
+        compute_unit_limit: Option<u32>,
+        compute_unit_price_micro_lamports: Option<u64>,
+    ) -> Result<Signature, AgentSdkError> {
+        self.sign_action(AgentAction::SolanaSolTransfer {
+            transfer: SolanaSolTransfer {
+                chain_id,
+                recent_blockhash,
+                durable_nonce_account,
+                fee_payer,
+                to,
+                amount_wei,
+                compute_unit_limit,
+                compute_unit_price_micro_lamports,
+            },
+        })
+        .await
+    }
+
+    async fn solana_nonce_account_create(
+        &self,
+        chain_id: u64,
+        recent_blockhash: String,
+        fee_payer: SolanaAddress,
+        nonce_account: SolanaAddress,
+        seed: String,
+        rent_lamports: u128,
+    ) -> Result<Signature, AgentSdkError> {
+        self.sign_action(AgentAction::SolanaNonceAccountCreate {
+            create: SolanaNonceAccountCreate {
+                chain_id,
+                recent_blockhash,
+                fee_payer,
+                nonce_account,
+                seed,
+                rent_lamports,
+            },
+        })
+        .await
+    }
+
     async fn permit2_permit(&self, permit: Permit2Permit) -> Result<Signature, AgentSdkError> {
         self.sign_action(AgentAction::Permit2Permit { permit })
             .await
@@ -375,7 +499,7 @@ mod tests {
     use async_trait::async_trait;
     use time::OffsetDateTime;
     use uuid::Uuid;
-    use vault_daemon::{DaemonError, KeyManagerDaemonApi};
+    use vault_daemon::{DaemonError, KeyManagerDaemonApi, PolicySummary};
     use vault_domain::{
         AdminSession, AgentAction, AgentCredentials, AgentKey, BroadcastTx, DomainError,
         EntityScope, EvmAddress, Lease, ManualApprovalDecision, ManualApprovalRequest,
@@ -417,6 +541,13 @@ mod tests {
             Err(DaemonError::Transport("not used".to_string()))
         }
 
+        async fn list_policy_summaries(
+            &self,
+            _session: &AdminSession,
+        ) -> Result<Vec<PolicySummary>, DaemonError> {
+            Err(DaemonError::Transport("not used".to_string()))
+        }
+
         async fn disable_policy(
             &self,
             _session: &AdminSession,
@@ -438,6 +569,14 @@ mod tests {
             _session: &AdminSession,
             _vault_key_id: Uuid,
         ) -> Result<Option<String>, DaemonError> {
+            Err(DaemonError::Transport("not used".to_string()))
+        }
+
+        async fn solana_public_key_hex(
+            &self,
+            _session: &AdminSession,
+            _vault_key_id: Uuid,
+        ) -> Result<String, DaemonError> {
             Err(DaemonError::Transport("not used".to_string()))
         }
 

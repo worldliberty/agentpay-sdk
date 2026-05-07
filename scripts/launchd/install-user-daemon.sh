@@ -250,7 +250,8 @@ temp_runner="${managed_runner}.tmp.$$"
 temp_daemon_bin="${managed_daemon_bin}.tmp.$$"
 temp_keychain_helper="${managed_keychain_helper}.tmp.$$"
 temp_relay_token_file="${relay_token_file}.tmp.$$"
-trap 'rm -f "$temp_runner" "$temp_daemon_bin" "$temp_keychain_helper" "$temp_relay_token_file"; unset vault_password relay_daemon_token' EXIT
+temp_keychain_replace_stderr="${managed_keychain_helper}.replace-stderr.$$"
+trap 'rm -f "$temp_runner" "$temp_daemon_bin" "$temp_keychain_helper" "$temp_relay_token_file" "$temp_keychain_replace_stderr"; unset vault_password relay_daemon_token' EXIT
 
 install -o root -g wheel -m 755 "$runner" "$temp_runner"
 install -o root -g wheel -m 755 "$daemon_bin" "$temp_daemon_bin"
@@ -265,11 +266,28 @@ else
   rm -f "$relay_token_file"
 fi
 
-"$managed_keychain_helper" replace-generic-password \
-  --keychain /Library/Keychains/System.keychain \
-  --service "$keychain_service" \
-  --account "$keychain_account" \
-  --password-stdin <<<"$vault_password"
+replace_keychain_password() {
+  "$managed_keychain_helper" replace-generic-password \
+    --keychain /Library/Keychains/System.keychain \
+    --service "$keychain_service" \
+    --account "$keychain_account" \
+    --password-stdin <<<"$vault_password"
+}
+
+replace_status=0
+replace_keychain_password 2>"$temp_keychain_replace_stderr" || replace_status=$?
+if [[ "$replace_status" -ne 0 ]]; then
+  if grep -Eiq 'specified item already exists|already exists in the keychain|errSecDuplicateItem' "$temp_keychain_replace_stderr"; then
+    /usr/bin/security delete-generic-password \
+      -s "$keychain_service" \
+      -a "$keychain_account" \
+      /Library/Keychains/System.keychain >/dev/null 2>&1 || true
+    replace_keychain_password
+  else
+    cat "$temp_keychain_replace_stderr" >&2
+    exit "$replace_status"
+  fi
+fi
 
 cat > "$plist_path" <<EOF2
 <?xml version="1.0" encoding="UTF-8"?>

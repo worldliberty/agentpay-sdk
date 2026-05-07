@@ -42,7 +42,7 @@ mod inner {
     use serde::{Deserialize, Serialize};
     use time::OffsetDateTime;
     use uuid::Uuid;
-    use vault_domain::{KeySource, Signature, VaultKey};
+    use vault_domain::{KeyAlgorithm, KeySource, Signature, VaultKey};
     use zeroize::{Zeroize, Zeroizing};
 
     use sha2::{Digest, Sha256};
@@ -314,12 +314,28 @@ mod inner {
             request: KeyCreateRequest,
         ) -> Result<VaultKey, SignerError> {
             let (signing_key, source) = match request {
-                KeyCreateRequest::Generate => {
-                    (SigningKey::random(&mut OsRng), KeySource::Generated)
-                }
-                KeyCreateRequest::Import { private_key_hex } => {
+                KeyCreateRequest::Generate
+                | KeyCreateRequest::GenerateWithAlgorithm {
+                    algorithm: KeyAlgorithm::Secp256k1,
+                } => (SigningKey::random(&mut OsRng), KeySource::Generated),
+                KeyCreateRequest::Import { private_key_hex }
+                | KeyCreateRequest::ImportWithAlgorithm {
+                    algorithm: KeyAlgorithm::Secp256k1,
+                    private_key_hex,
+                } => {
                     let key = Self::parse_import_key(&private_key_hex)?;
                     (key, KeySource::Imported)
+                }
+                KeyCreateRequest::GenerateWithAlgorithm {
+                    algorithm: KeyAlgorithm::Ed25519,
+                }
+                | KeyCreateRequest::ImportWithAlgorithm {
+                    algorithm: KeyAlgorithm::Ed25519,
+                    ..
+                } => {
+                    return Err(SignerError::Unsupported(
+                        "TPM backend does not support Ed25519 keys".to_string(),
+                    ));
                 }
             };
 
@@ -362,6 +378,7 @@ mod inner {
             Ok(VaultKey {
                 id: key_id,
                 source,
+                algorithm: KeyAlgorithm::Secp256k1,
                 public_key_hex,
                 created_at,
             })

@@ -210,8 +210,11 @@ test('resolveWalletProfile prefers persisted config wallet metadata', async () =
 
   assert.deepEqual(profile, {
     vaultKeyId: undefined,
+    algorithm: 'secp256k1',
     vaultPublicKey: '0x1234',
     address: '0x0000000000000000000000000000000000000001',
+    solanaPublicKey: undefined,
+    solanaAddress: undefined,
     agentKeyId: '00000000-0000-0000-0000-000000000001',
     policyAttachment: 'policy_set',
     attachedPolicyIds: ['policy-1'],
@@ -462,6 +465,12 @@ test('resolveWalletProfileWithBalances fetches balances for configured tokens an
           formatted: '123',
         };
       },
+      getSplTokenBalance: async () => {
+        throw new Error('no spl balances expected');
+      },
+      getSolanaNativeBalance: async () => {
+        throw new Error('no sol balances expected');
+      },
     },
   );
 
@@ -618,6 +627,12 @@ test('resolveWalletProfileWithBalances does not duplicate configured native toke
       getTokenBalance: async () => {
         throw new Error('no erc20 balances expected');
       },
+      getSplTokenBalance: async () => {
+        throw new Error('no spl balances expected');
+      },
+      getSolanaNativeBalance: async () => {
+        throw new Error('no sol balances expected');
+      },
     },
   );
 
@@ -705,6 +720,12 @@ test('resolveWalletProfileWithBalances suppresses native balances on tempo chain
           formatted: '0.073468',
         };
       },
+      getSplTokenBalance: async () => {
+        throw new Error('no spl balances expected');
+      },
+      getSolanaNativeBalance: async () => {
+        throw new Error('no sol balances expected');
+      },
     },
   );
 
@@ -735,6 +756,12 @@ test('resolveWalletProfileWithBalances skips missing token maps and empty chain 
     },
     getTokenBalance: async () => {
       throw new Error('should not read token balances');
+    },
+    getSplTokenBalance: async () => {
+      throw new Error('should not read spl balances');
+    },
+    getSolanaNativeBalance: async () => {
+      throw new Error('should not read sol balances');
     },
   };
 
@@ -865,6 +892,12 @@ test('resolveWalletProfileWithBalances falls back to chain keys, target metadata
         symbol: null,
         formatted: '1',
       }),
+      getSplTokenBalance: async () => {
+        throw new Error('no spl balances expected');
+      },
+      getSolanaNativeBalance: async () => {
+        throw new Error('no sol balances expected');
+      },
     },
   );
 
@@ -1084,6 +1117,12 @@ test('resolveWalletProfileWithBalances surfaces native/erc20 fetch failures and 
       getTokenBalance: async () => {
         throw new Error('erc20 rpc unavailable');
       },
+      getSplTokenBalance: async () => {
+        throw new Error('spl rpc unavailable');
+      },
+      getSolanaNativeBalance: async () => {
+        throw new Error('sol rpc unavailable');
+      },
     },
   );
 
@@ -1096,4 +1135,158 @@ test('resolveWalletProfileWithBalances surfaces native/erc20 fetch failures and 
   const rendered = walletProfile.formatWalletProfileText(profile);
   assert.match(rendered, /error: native rpc unavailable/);
   assert.match(rendered, /error: configured token address/);
+});
+
+test('resolveWalletProfileWithBalances fetches SPL balances when wallet has a Solana address', async () => {
+  const walletProfile = await import(
+    walletProfileModulePath.href + `?case=${Date.now()}-spl-balance`
+  );
+  const account = privateKeyToAccount(`0x${'88'.repeat(32)}`);
+  const splCalls = [];
+  const solCalls = [];
+
+  const profile = await walletProfile.resolveWalletProfileWithBalances(
+    {
+      wallet: {
+        vaultPublicKey: account.publicKey,
+        policyAttachment: 'policy_set',
+        solanaAddress: 'CnPoSPKXu7wJqxe59Fs72tkBeALovhsCxYNKuPHYZRzG',
+      },
+      chains: {
+        'solana-mainnet': {
+          chainId: 900000001,
+          name: 'Solana',
+          family: 'solana',
+          rpcUrl: 'https://api.mainnet-beta.solana.com',
+        },
+      },
+      tokens: {
+        usdc: {
+          name: 'USDC',
+          symbol: 'USDC',
+          chains: {
+            'solana-mainnet': {
+              chainId: 900000001,
+              isNative: false,
+              address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+              decimals: 6,
+            },
+          },
+        },
+      },
+    },
+    {
+      getNativeBalance: async () => {
+        throw new Error('no native balances expected');
+      },
+      getTokenBalance: async () => {
+        throw new Error('no erc20 balances expected');
+      },
+      getSplTokenBalance: async (rpcUrl, mint, owner, decimals) => {
+        splCalls.push({ rpcUrl, mint, owner, decimals });
+        return {
+          raw: 12345n,
+          decimals: 6,
+          formatted: '0.012345',
+        };
+      },
+      getSolanaNativeBalance: async (rpcUrl, owner) => {
+        solCalls.push({ rpcUrl, owner });
+        return {
+          raw: 2_000_000_000n,
+          formatted: '2',
+        };
+      },
+    },
+  );
+
+  assert.deepEqual(solCalls, [
+    {
+      rpcUrl: 'https://api.mainnet-beta.solana.com',
+      owner: 'CnPoSPKXu7wJqxe59Fs72tkBeALovhsCxYNKuPHYZRzG',
+    },
+  ]);
+  assert.deepEqual(splCalls, [
+    {
+      rpcUrl: 'https://api.mainnet-beta.solana.com',
+      mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      owner: 'CnPoSPKXu7wJqxe59Fs72tkBeALovhsCxYNKuPHYZRzG',
+      decimals: 6,
+    },
+  ]);
+  assert.equal(profile.balances.length, 2);
+  const [solEntry, splEntry] = profile.balances;
+  assert.equal(solEntry.kind, 'sol');
+  assert.equal(solEntry.tokenKey, 'sol');
+  assert.equal(solEntry.chainKey, 'solana-mainnet');
+  assert.equal(solEntry.balance.raw, '2000000000');
+  assert.equal(solEntry.balance.formatted, '2');
+  assert.equal(solEntry.error, undefined);
+  assert.equal(splEntry.kind, 'spl');
+  assert.equal(splEntry.tokenKey, 'usdc');
+  assert.equal(splEntry.chainKey, 'solana-mainnet');
+  assert.equal(splEntry.balance.raw, '12345');
+  assert.equal(splEntry.balance.formatted, '0.012345');
+  assert.equal(splEntry.error, undefined);
+});
+
+test('resolveWalletProfileWithBalances surfaces a friendly error when the wallet has no Solana address', async () => {
+  const walletProfile = await import(
+    walletProfileModulePath.href + `?case=${Date.now()}-spl-missing-address`
+  );
+  const account = privateKeyToAccount(`0x${'89'.repeat(32)}`);
+
+  const profile = await walletProfile.resolveWalletProfileWithBalances(
+    {
+      wallet: {
+        vaultPublicKey: account.publicKey,
+        policyAttachment: 'policy_set',
+      },
+      chains: {
+        'solana-mainnet': {
+          chainId: 900000001,
+          name: 'Solana',
+          family: 'solana',
+          rpcUrl: 'https://api.mainnet-beta.solana.com',
+        },
+      },
+      tokens: {
+        usdc: {
+          name: 'USDC',
+          symbol: 'USDC',
+          chains: {
+            'solana-mainnet': {
+              chainId: 900000001,
+              isNative: false,
+              address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+              decimals: 6,
+            },
+          },
+        },
+      },
+    },
+    {
+      getNativeBalance: async () => {
+        throw new Error('no native balances expected');
+      },
+      getTokenBalance: async () => {
+        throw new Error('no erc20 balances expected');
+      },
+      getSplTokenBalance: async () => {
+        throw new Error('SPL fetch should not be called when solanaAddress is missing');
+      },
+      getSolanaNativeBalance: async () => {
+        throw new Error('no sol balances expected');
+      },
+    },
+  );
+
+  assert.equal(profile.balances.length, 2);
+  const [solEntry, splEntry] = profile.balances;
+  assert.equal(solEntry.kind, 'sol');
+  assert.match(solEntry.error ?? '', /no Solana address/);
+  assert.equal(solEntry.balance, undefined);
+  assert.equal(splEntry.kind, 'spl');
+  assert.match(splEntry.error ?? '', /no Solana address/);
+  assert.equal(splEntry.balance, undefined);
 });

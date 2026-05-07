@@ -126,6 +126,129 @@ fn address_deserialize_normalizes_case() {
     );
 }
 
+#[test]
+fn solana_chain_ids_are_canonicalized_for_policy() {
+    let action = AgentAction::SolanaSplTransfer {
+        transfer: SolanaSplTransfer {
+            chain_id: SOLANA_DEVNET_CHAIN_ID,
+            recent_blockhash: "11111111111111111111111111111111".to_string(),
+            durable_nonce_account: None,
+            fee_payer: "11111111111111111111111111111111"
+                .parse()
+                .expect("fee payer"),
+            mint: "So11111111111111111111111111111111111111112"
+                .parse()
+                .expect("mint"),
+            recipient_owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                .parse()
+                .expect("recipient"),
+            amount_wei: 1,
+            decimals: 9,
+            token_program: SolanaTokenProgram::Token,
+            transfer_fee_wei: None,
+            compute_unit_limit: None,
+            compute_unit_price_micro_lamports: None,
+        },
+    };
+
+    action.validate().expect("solana transfer validates");
+    assert_eq!(action.chain_id(), SOLANA_POLICY_CHAIN_ID);
+    assert_eq!(
+        canonical_policy_chain_id(SOLANA_TESTNET_CHAIN_ID),
+        SOLANA_POLICY_CHAIN_ID
+    );
+}
+
+#[test]
+fn solana_native_transfer_projects_to_native_sol_policy_asset() {
+    let action = AgentAction::SolanaSolTransfer {
+        transfer: SolanaSolTransfer {
+            chain_id: SOLANA_DEVNET_CHAIN_ID,
+            recent_blockhash: "11111111111111111111111111111111".to_string(),
+            durable_nonce_account: None,
+            fee_payer: "11111111111111111111111111111111"
+                .parse()
+                .expect("fee payer"),
+            to: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                .parse()
+                .expect("recipient"),
+            amount_wei: 5_000,
+            compute_unit_limit: Some(5_000),
+            compute_unit_price_micro_lamports: Some(1),
+        },
+    };
+
+    action.validate().expect("solana native transfer validates");
+    assert_eq!(action.chain_id(), SOLANA_POLICY_CHAIN_ID);
+    assert_eq!(action.asset(), AssetId::NativeSol);
+}
+
+#[test]
+fn solana_nonce_account_create_is_validated_as_wallet_maintenance() {
+    let create = SolanaNonceAccountCreate {
+        chain_id: SOLANA_DEVNET_CHAIN_ID,
+        recent_blockhash: "11111111111111111111111111111111".to_string(),
+        fee_payer: "11111111111111111111111111111111"
+            .parse()
+            .expect("fee payer"),
+        nonce_account: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            .parse()
+            .expect("nonce account"),
+        seed: "agentpay-900000002-nonce".to_string(),
+        rent_lamports: 1_500_000,
+    };
+    let action = AgentAction::SolanaNonceAccountCreate {
+        create: create.clone(),
+    };
+
+    action.validate().expect("nonce account create validates");
+    assert!(action.is_wallet_maintenance());
+    assert!(!action.records_spend_event());
+    assert_eq!(action.chain_id(), SOLANA_POLICY_CHAIN_ID);
+    assert_eq!(action.asset(), AssetId::NativeSol);
+    assert_eq!(action.recipient(), create.nonce_account.clone());
+
+    let mut invalid_seed = create;
+    invalid_seed.seed = "x".repeat(33);
+    assert!(matches!(
+        invalid_seed.validate(),
+        Err(DomainError::InvalidSolanaNonceSeed)
+    ));
+}
+
+#[test]
+fn token2022_transfer_fee_requires_token2022_program() {
+    let mut transfer = SolanaSplTransfer {
+        chain_id: SOLANA_DEVNET_CHAIN_ID,
+        recent_blockhash: "11111111111111111111111111111111".to_string(),
+        durable_nonce_account: None,
+        fee_payer: "11111111111111111111111111111111"
+            .parse()
+            .expect("fee payer"),
+        mint: "So11111111111111111111111111111111111111112"
+            .parse()
+            .expect("mint"),
+        recipient_owner: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            .parse()
+            .expect("recipient"),
+        amount_wei: 100,
+        decimals: 6,
+        token_program: SolanaTokenProgram::Token,
+        transfer_fee_wei: Some(1),
+        compute_unit_limit: None,
+        compute_unit_price_micro_lamports: None,
+    };
+
+    assert!(matches!(
+        transfer.validate(),
+        Err(DomainError::InvalidSolanaTokenProgram)
+    ));
+    transfer.token_program = SolanaTokenProgram::Token2022;
+    transfer
+        .validate()
+        .expect("token-2022 transfer fee validates");
+}
+
 fn mutate_checksum_case(checksummed: &str) -> String {
     let mut invalid = checksummed.to_owned();
     let (index, ch) = invalid
@@ -608,7 +731,7 @@ fn broadcast_action_derives_erc20_scope_from_calldata() {
     assert_eq!(
         action.recipient(),
         "0x3333333333333333333333333333333333333333"
-            .parse()
+            .parse::<EvmAddress>()
             .expect("recipient")
     );
 }
@@ -805,6 +928,7 @@ fn asset_id_display_formats_native_and_erc20_variants() {
         .expect("token");
 
     assert_eq!(AssetId::NativeEth.to_string(), "native_eth");
+    assert_eq!(AssetId::NativeSol.to_string(), "native_sol");
     assert_eq!(
         AssetId::Erc20(token).to_string(),
         "erc20:0x1234000000000000000000000000000000000000"
@@ -1112,7 +1236,7 @@ fn generic_eip712_actions_produce_signing_hashes() {
             .expect("verifying contract")
             .expect("verifying contract"),
         "0x1111111111111111111111111111111111111111"
-            .parse()
+            .parse::<EvmAddress>()
             .expect("contract")
     );
 }
@@ -1519,7 +1643,7 @@ fn agent_action_helpers_cover_remaining_variants_and_none_paths() {
     assert_eq!(
         approve.recipient(),
         "0x2222222222222222222222222222222222222222"
-            .parse()
+            .parse::<EvmAddress>()
             .expect("spender")
     );
     assert_eq!(approve.max_fee_per_gas_wei(), None);
@@ -1559,7 +1683,7 @@ fn agent_action_helpers_cover_remaining_variants_and_none_paths() {
     assert_eq!(
         receive.recipient(),
         "0x5555555555555555555555555555555555555555"
-            .parse()
+            .parse::<EvmAddress>()
             .expect("to")
     );
 
@@ -1642,7 +1766,7 @@ fn broadcast_action_derives_approve_and_receive_with_authorization_scope() {
     assert_eq!(
         approve_action.recipient(),
         "0x7777777777777777777777777777777777777777"
-            .parse()
+            .parse::<EvmAddress>()
             .expect("spender")
     );
     assert_eq!(approve_action.amount_wei(), 88);
@@ -1676,7 +1800,7 @@ fn broadcast_action_derives_approve_and_receive_with_authorization_scope() {
     assert_eq!(
         receive_action.recipient(),
         "0x2222222222222222222222222222222222222222"
-            .parse()
+            .parse::<EvmAddress>()
             .expect("recipient")
     );
     assert_eq!(receive_action.amount_wei(), 99);

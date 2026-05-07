@@ -6,6 +6,7 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { Keypair, PublicKey, SystemProgram } from '@solana/web3.js';
 import { encodeFunctionData, keccak256, parseTransaction } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
@@ -233,6 +234,7 @@ function installMockSecurityCommand(homeDir) {
   fs.mkdirSync(binDir, { recursive: true, mode: 0o700 });
   const dbPath = path.join(homeDir, 'mock-security-db.json');
   const securityPath = path.join(binDir, 'security');
+  const secretToolPath = path.join(binDir, 'secret-tool');
   const script = `#!/usr/bin/env node
 const fs = require('node:fs');
 
@@ -306,6 +308,80 @@ process.stderr.write('unsupported security command');
 process.exit(1);
 `;
   fs.writeFileSync(securityPath, script, { mode: 0o700 });
+  const secretToolScript = `#!/usr/bin/env node
+const fs = require('node:fs');
+
+const dbPath = process.env.AGENTPAY_SECURITY_DB;
+if (!dbPath) {
+  console.error('missing AGENTPAY_SECURITY_DB');
+  process.exit(1);
+}
+
+const args = process.argv.slice(2);
+const command = args[0];
+
+function attributeValue(name) {
+  const index = args.indexOf(name);
+  if (index < 0 || index + 1 >= args.length) {
+    return undefined;
+  }
+  return args[index + 1];
+}
+
+function readDb() {
+  try {
+    return JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function writeDb(payload) {
+  fs.writeFileSync(dbPath, JSON.stringify(payload), 'utf8');
+}
+
+const service = attributeValue('service') ?? '';
+const account = attributeValue('account') ?? '';
+const key = 'secret-tool' + '\\u0000' + service + '\\u0000' + account;
+
+if (command === 'store') {
+  let secret = fs.readFileSync(0, 'utf8');
+  if (secret.endsWith('\\n')) {
+    secret = secret.slice(0, -1);
+  }
+  if (secret.endsWith('\\r')) {
+    secret = secret.slice(0, -1);
+  }
+  const db = readDb();
+  db[key] = secret;
+  writeDb(db);
+  process.exit(0);
+}
+
+if (command === 'lookup') {
+  const db = readDb();
+  if (!(key in db)) {
+    process.stderr.write('not found');
+    process.exit(1);
+  }
+  process.stdout.write(String(db[key]));
+  process.exit(0);
+}
+
+if (command === 'clear') {
+  const db = readDb();
+  if (!(key in db)) {
+    process.exit(1);
+  }
+  delete db[key];
+  writeDb(db);
+  process.exit(0);
+}
+
+process.stderr.write('unsupported secret-tool command');
+process.exit(1);
+`;
+  fs.writeFileSync(secretToolPath, secretToolScript, { mode: 0o700 });
   return {
     pathEnv: `${binDir}:${process.env.PATH ?? ''}`,
     dbPath,
@@ -472,6 +548,123 @@ function startMockRpcServer({ txHash, from, to, methodOverrides = {}, methodErro
   });
 }
 
+function nonceAccountRpcData({ authority, nonce }) {
+  const data = Buffer.alloc(80);
+  data.writeUInt32LE(1, 0);
+  data.writeUInt32LE(1, 4);
+  authority.toBuffer().copy(data, 8);
+  nonce.toBuffer().copy(data, 40);
+  data.writeBigUInt64LE(0n, 72);
+  return data.toString('base64');
+}
+
+function startMockSolanaRpcServer({ nonceAuthority } = {}) {
+  const calls = [];
+  const blockhash = Keypair.generate().publicKey.toBase58();
+  const signature = Keypair.generate().publicKey.toBase58();
+  let sentTransactions = 0;
+
+  const handleMethod = (method) => {
+    calls.push(method);
+    switch (method) {
+      case 'getLatestBlockhash':
+        return {
+          context: { slot: 1 },
+          value: {
+            blockhash,
+            lastValidBlockHeight: 999,
+          },
+        };
+      case 'getMinimumBalanceForRentExemption':
+        return 1_500_000;
+      case 'getAccountInfo':
+        if (nonceAuthority && sentTransactions > 0) {
+          return {
+            context: { slot: 1 },
+            value: {
+              data: [
+                nonceAccountRpcData({
+                  authority: nonceAuthority,
+                  nonce: new PublicKey(blockhash),
+                }),
+                'base64',
+              ],
+              executable: false,
+              lamports: 1_500_000,
+              owner: SystemProgram.programId.toBase58(),
+              rentEpoch: 0,
+              space: 80,
+            },
+          };
+        }
+        return {
+          context: { slot: 1 },
+          value: null,
+        };
+      case 'sendTransaction':
+        sentTransactions += 1;
+        return signature;
+      case 'getSignatureStatuses':
+        return {
+          context: { slot: 1 },
+          value: [
+            {
+              slot: 1,
+              confirmations: null,
+              err: null,
+              confirmationStatus: 'confirmed',
+            },
+          ],
+        };
+      case 'getRecentPrioritizationFees':
+        return [];
+      default:
+        throw new Error(`unsupported Solana method: ${method}`);
+    }
+  };
+
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (chunk) => {
+      body += chunk.toString();
+    });
+    req.on('end', () => {
+      const payload = JSON.parse(body);
+      const requests = Array.isArray(payload) ? payload : [payload];
+      const responses = requests.map((call) => {
+        try {
+          return {
+            jsonrpc: '2.0',
+            id: call.id ?? null,
+            result: handleMethod(call.method),
+          };
+        } catch (error) {
+          return {
+            jsonrpc: '2.0',
+            id: call.id ?? null,
+            error: { code: -32603, message: String(error?.message ?? error) },
+          };
+        }
+      });
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(Array.isArray(payload) ? responses : responses[0]));
+    });
+  });
+
+  return new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const address = server.address();
+      resolve({
+        server,
+        rpcUrl: `http://127.0.0.1:${address.port}`,
+        signature,
+        calls,
+      });
+    });
+  });
+}
+
 test('root-mode local admin commands mutate chain/token config successfully', () => {
   const { homeDir } = makeIsolatedHome();
 
@@ -554,6 +747,139 @@ test('root-mode local admin commands mutate chain/token config successfully', ()
     });
     assert.equal(configUnset.status, 0);
   } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test('Solana broadcast reuses stdin agent auth for managed nonce creation and transfer', async () => {
+  const { homeDir, agentpayHome } = makeIsolatedHome();
+  const rustBinDir = path.join(agentpayHome, 'bin');
+  fs.mkdirSync(rustBinDir, { recursive: true, mode: 0o700 });
+  const socketPath = path.join(agentpayHome, 'daemon.sock');
+  const socketServer = await startUnixSocket(socketPath);
+  const feePayer = Keypair.generate().publicKey;
+  const { server: rpcServer, rpcUrl, signature, calls } = await startMockSolanaRpcServer({
+    nonceAuthority: feePayer,
+  });
+  const recipient = Keypair.generate().publicKey;
+  const tokenLog = path.join(agentpayHome, 'agent-token.log');
+
+  try {
+    writeExecutable(
+      path.join(rustBinDir, 'agentpay-agent'),
+      [
+        'token=""',
+        'IFS= read -r token || true',
+        'printf "%s\\n" "$token" >> "$AGENTPAY_TOKEN_LOG"',
+        'cmd=""',
+        'for arg in "$@"; do',
+        '  case "$arg" in',
+        '    solana-nonce-account-create|solana-sol-transfer)',
+        '      cmd="$arg"',
+        '      break',
+        '      ;;',
+        '  esac',
+        'done',
+        'case "$cmd" in',
+        '  solana-nonce-account-create)',
+        '    printf "{\\"command\\":\\"solana_nonce_account_create\\",\\"raw_tx_base64\\":\\"AQID\\",\\"tx_id\\":\\"nonce-tx\\"}"',
+        '    ;;',
+        '  solana-sol-transfer)',
+        '    printf "{\\"command\\":\\"solana_sol_transfer\\",\\"network\\":\\"900000002\\",\\"asset\\":\\"native_sol\\",\\"counterparty\\":\\"%s\\",\\"amount_wei\\":\\"100000000\\",\\"signature_hex\\":\\"0x11\\",\\"raw_tx_base64\\":\\"BAUG\\",\\"tx_id\\":\\"sol-tx\\"}" "$AGENTPAY_SOLANA_RECIPIENT"',
+        '    ;;',
+        '  *)',
+        '    echo "unexpected command" 1>&2',
+        '    exit 64',
+        '    ;;',
+        'esac',
+      ].join('\n'),
+    );
+    writeExecutable(path.join(rustBinDir, 'agentpay-admin'), 'printf "{}"');
+    writeConfig(agentpayHome, {
+      rustBinDir,
+      daemonSocket: socketPath,
+      chainId: 900000002,
+      chainName: 'solana-devnet',
+      rpcUrl,
+      agentKeyId: AGENT_KEY_ID,
+      chains: {
+        'solana-devnet': {
+          chainId: 900000002,
+          name: 'Solana Devnet',
+          family: 'solana',
+          rpcUrl,
+        },
+      },
+      wallet: {
+        address: '0x0000000000000000000000000000000000000123',
+        solanaAddress: feePayer.toBase58(),
+        solanaPublicKey: Buffer.from(feePayer.toBytes()).toString('hex'),
+        vaultKeyId: 'vault-key-solana-stdin',
+        vaultPublicKey: '03abcdef',
+        agentKeyId: AGENT_KEY_ID,
+        policyAttachment: 'policy_set',
+        attachedPolicyIds: ['policy-sol'],
+        policyNote: 'solana stdin cache test',
+      },
+      tokens: {
+        sol: {
+          symbol: 'SOL',
+          chains: {
+            'solana-devnet': {
+              chainId: 900000002,
+              isNative: true,
+              decimals: 9,
+            },
+          },
+        },
+      },
+    });
+
+    const result = await runCliAsync(
+      [
+        'transfer-sol',
+        '--network',
+        'solana-devnet',
+        '--to',
+        recipient.toBase58(),
+        '--amount',
+        '0.1',
+        '--broadcast',
+        '--rpc-url',
+        rpcUrl,
+        '--compute-unit-limit',
+        '50000',
+        '--compute-unit-price-micro-lamports',
+        '1',
+        '--agent-key-id',
+        AGENT_KEY_ID,
+        '--agent-auth-token-stdin',
+        '--daemon-socket',
+        socketPath,
+        '--json',
+      ],
+      {
+        homeDir,
+        env: {
+          AGENTPAY_TOKEN_LOG: tokenLog,
+          AGENTPAY_SOLANA_RECIPIENT: recipient.toBase58(),
+        },
+        input: 'stdin-agent-token\n',
+      },
+    );
+
+    assert.equal(result.status, 0, combinedOutput(result));
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.network_tx_id, signature);
+    assert.deepEqual(fs.readFileSync(tokenLog, 'utf8').trim().split('\n'), [
+      'stdin-agent-token',
+      'stdin-agent-token',
+    ]);
+    assert.ok(calls.includes('getMinimumBalanceForRentExemption'));
+    assert.equal(calls.filter((method) => method === 'sendTransaction').length, 2);
+  } finally {
+    await closeServer(rpcServer);
+    await closeServer(socketServer);
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
 });
@@ -1235,6 +1561,7 @@ test('admin dispatch covers help passthrough, local help override, daemon block,
     const helpTui = runCli(['admin', 'help', 'tui'], { homeDir });
     assert.equal(helpTui.status, 0);
     assert.match(helpTui.stdout, /agentpay admin tui/u);
+    assert.doesNotMatch(combinedOutput(helpTui), /bigint: Failed to load bindings/u);
 
     const helpReset = runCli(['admin', 'help', 'reset'], { homeDir });
     assert.equal(helpReset.status, 0);
@@ -2011,9 +2338,11 @@ test('config agent-auth lifecycle commands cover set/import/migrate/rotate/revok
 
     const keychainReadFailure = runCli(['config', 'show', '--json'], {
       homeDir,
+      assumeRoot: true,
       env: {
         ...sharedEnv,
         AGENTPAY_SECURITY_FAIL_FIND: '1',
+        AGENTPAY_TEST_PLATFORM: 'darwin',
       },
     });
     assert.equal(keychainReadFailure.status, 0, combinedOutput(keychainReadFailure));
@@ -2542,6 +2871,21 @@ test('cli validation, amount rewrite, and receipt timeout branches are exercised
         '  printf "{\\"command\\":\\"%s\\",\\"approval_request_id\\":\\"%s\\",\\"cli_approval_command\\":\\"agentpay web approve --approval-id %s\\"}" "$cmd" "$approval_id" "$approval_id"',
         '  exit 9',
         'fi',
+        'if [ "$AGENTPAY_AGENT_MODE" = "manual_rejected_after_pending" ]; then',
+        `  counter_file="\${AGENTPAY_AGENT_MANUAL_COUNTER_FILE:?missing AGENTPAY_AGENT_MANUAL_COUNTER_FILE}"`,
+        '  count=0',
+        '  if [ -f "$counter_file" ]; then',
+        '    count=$(cat "$counter_file")',
+        '  fi',
+        '  count=$((count + 1))',
+        '  printf "%s" "$count" > "$counter_file"',
+        '  if [ "$count" -gt 1 ]; then',
+        '    echo "daemon call failed: manual approval request approval-999 was rejected" 1>&2',
+        '    exit 1',
+        '  fi',
+        '  printf "{\\"command\\":\\"%s\\",\\"approval_request_id\\":\\"approval-999\\",\\"cli_approval_command\\":\\"agentpay web approve --approval-id approval-999\\"}" "$cmd"',
+        '  exit 9',
+        'fi',
         'if [ "$AGENTPAY_AGENT_MODE" = "manual_until_file" ] && [ ! -f "$AGENTPAY_AGENT_MANUAL_FILE" ]; then',
         '  printf "{\\"command\\":\\"%s\\",\\"approval_request_id\\":\\"approval-999\\",\\"cli_approval_command\\":\\"agentpay web approve --approval-id approval-999\\"}" "$cmd"',
         '  exit 9',
@@ -2994,6 +3338,55 @@ test('cli validation, amount rewrite, and receipt timeout branches are exercised
     assert.match(
       combinedOutput(transferBroadcastChangedApproval),
       /manual approval request changed while waiting for a decision/u,
+    );
+
+    const rejectedApprovalCounterPath = path.join(homeDir, 'manual-approval-rejected-counter.txt');
+    const transferBroadcastRejectedApproval = await runCliAsync(
+      [
+        'transfer',
+        '--network',
+        'eth',
+        '--token',
+        ERC20_TOKEN,
+        '--to',
+        TO_ADDRESS,
+        '--amount',
+        '1',
+        '--broadcast',
+        '--rpc-url',
+        rpcUrl,
+        '--from',
+        fromAddress,
+        '--nonce',
+        '1',
+        '--gas-limit',
+        '21000',
+        '--max-fee-per-gas-wei',
+        '1000000000',
+        '--max-priority-fee-per-gas-wei',
+        '1000000000',
+        '--tx-type',
+        '0x02',
+        '--no-wait',
+        ...sharedAgentAuth,
+      ],
+      {
+        homeDir,
+        env: {
+          ...transferSharedEnv,
+          AGENTPAY_AGENT_MODE: 'manual_rejected_after_pending',
+          AGENTPAY_AGENT_MANUAL_COUNTER_FILE: rejectedApprovalCounterPath,
+        },
+      },
+    );
+    assert.equal(transferBroadcastRejectedApproval.status, 1);
+    assert.match(
+      combinedOutput(transferBroadcastRejectedApproval),
+      /manual approval request approval-999 was rejected/u,
+    );
+    assert.doesNotMatch(
+      combinedOutput(transferBroadcastRejectedApproval),
+      /manual approval request changed/u,
     );
 
     const transferBroadcastTimedOut = await runCliAsync(

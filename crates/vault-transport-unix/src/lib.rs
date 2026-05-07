@@ -20,6 +20,7 @@ use tokio::task::JoinHandle;
 use uuid::Uuid;
 use vault_daemon::{
     DaemonError, DaemonRpcRequest, DaemonRpcResponse, InMemoryDaemon, KeyManagerDaemonApi,
+    PolicySummary,
 };
 use vault_domain::{
     AdminSession, AgentCredentials, Lease, ManualApprovalDecision, ManualApprovalRequest,
@@ -30,7 +31,7 @@ use vault_policy::{PolicyEvaluation, PolicyExplanation};
 use vault_signer::{KeyCreateRequest, SignerError, VaultSignerBackend};
 use zeroize::Zeroize;
 
-const MAX_WIRE_BODY_BYTES: usize = 256 * 1024;
+const MAX_WIRE_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 /// Validates that a client daemon socket path is an existing trusted unix socket in a secure directory.
 pub fn assert_trusted_daemon_socket_path(path: &Path) -> Result<PathBuf, String> {
@@ -442,11 +443,13 @@ fn rpc_access_level(request: &DaemonRpcRequest) -> RpcAccessLevel {
         DaemonRpcRequest::IssueLease { .. }
         | DaemonRpcRequest::AddPolicy { .. }
         | DaemonRpcRequest::ListPolicies { .. }
+        | DaemonRpcRequest::ListPolicySummaries { .. }
         | DaemonRpcRequest::DisablePolicy { .. }
         | DaemonRpcRequest::CreateVaultKey { .. }
         | DaemonRpcRequest::CreateAgentKey { .. }
         | DaemonRpcRequest::RefreshAgentKey { .. }
         | DaemonRpcRequest::ExportVaultPrivateKey { .. }
+        | DaemonRpcRequest::SolanaPublicKey { .. }
         | DaemonRpcRequest::RotateAgentAuthToken { .. }
         | DaemonRpcRequest::RevokeAgentKey { .. }
         | DaemonRpcRequest::ListManualApprovalRequests { .. }
@@ -957,6 +960,25 @@ impl KeyManagerDaemonApi for UnixDaemonClient {
         }
     }
 
+    async fn list_policy_summaries(
+        &self,
+        session: &AdminSession,
+    ) -> Result<Vec<PolicySummary>, DaemonError> {
+        match self
+            .call_rpc(DaemonRpcRequest::ListPolicySummaries {
+                session: session.clone(),
+            })
+            .await
+        {
+            Ok(DaemonRpcResponse::PolicySummaries(summaries)) => Ok(summaries),
+            Ok(_) => Err(DaemonError::Transport(
+                "unexpected response type".to_string(),
+            )),
+            Err(UnixTransportError::Daemon(err)) => Err(err),
+            Err(err) => Err(DaemonError::Transport(err.to_string())),
+        }
+    }
+
     async fn disable_policy(
         &self,
         session: &AdminSession,
@@ -1060,6 +1082,27 @@ impl KeyManagerDaemonApi for UnixDaemonClient {
             .await
         {
             Ok(DaemonRpcResponse::PrivateKey(private_key)) => Ok(private_key),
+            Ok(_) => Err(DaemonError::Transport(
+                "unexpected response type".to_string(),
+            )),
+            Err(UnixTransportError::Daemon(err)) => Err(err),
+            Err(err) => Err(DaemonError::Transport(err.to_string())),
+        }
+    }
+
+    async fn solana_public_key_hex(
+        &self,
+        session: &AdminSession,
+        vault_key_id: Uuid,
+    ) -> Result<String, DaemonError> {
+        match self
+            .call_rpc(DaemonRpcRequest::SolanaPublicKey {
+                session: session.clone(),
+                vault_key_id,
+            })
+            .await
+        {
+            Ok(DaemonRpcResponse::PublicKey(public_key)) => Ok(public_key),
             Ok(_) => Err(DaemonError::Transport(
                 "unexpected response type".to_string(),
             )),

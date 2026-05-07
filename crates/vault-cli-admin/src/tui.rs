@@ -648,8 +648,9 @@ impl TokenDraft {
                 None
             } else {
                 Some(
-                    parse_address(
+                    crate::TokenAddress::parse(
                         &format!("token '{}:{}'", token_key, chain_key),
+                        chain_profile.chain_id,
                         &network.address,
                     )?
                     .to_string(),
@@ -672,12 +673,15 @@ impl TokenDraft {
             .destination_overrides
             .iter()
             .map(|override_draft| {
+                let trimmed = override_draft.recipient_address.trim();
+                let recipient = trimmed
+                    .parse::<vault_domain::RecipientId>()
+                    .map_err(|err| {
+                        anyhow::anyhow!("invalid destination override recipient: {err}")
+                    })?
+                    .to_string();
                 Ok(TokenDestinationOverrideProfile {
-                    recipient: parse_address(
-                        "destination override recipient",
-                        &override_draft.recipient_address,
-                    )?
-                    .to_string(),
+                    recipient,
                     limits: override_draft
                         .limits
                         .as_token_level_policy(validation_decimals)?
@@ -710,12 +714,14 @@ impl TokenDraft {
                     recipient: if manual_draft.recipient_address.trim().is_empty() {
                         None
                     } else {
+                        let trimmed = manual_draft.recipient_address.trim();
                         Some(
-                            parse_address(
-                                "manual approval recipient",
-                                &manual_draft.recipient_address,
-                            )?
-                            .to_string(),
+                            trimmed
+                                .parse::<vault_domain::RecipientId>()
+                                .map_err(|err| {
+                                    anyhow::anyhow!("invalid manual approval recipient: {err}")
+                                })?
+                                .to_string(),
                         )
                     },
                     min_amount: None,
@@ -1661,6 +1667,16 @@ impl AppState {
             .chains
             .get(&selected_network.chain_key)
             .with_context(|| format!("unknown saved network '{}'", selected_network.chain_key))?;
+        if vault_domain::is_solana_chain_id(chain_profile.chain_id) {
+            // SPL token metadata fetching is not yet wired up here; let the
+            // user fill name/symbol/decimals manually instead of attempting an
+            // EVM-style RPC call against a Solana endpoint.
+            bail!(
+                "metadata refresh from RPC is not yet supported for Solana tokens; \
+                 enter name, symbol, and decimals manually for '{}'",
+                selected_network.chain_key
+            );
+        }
         let rpc_url = chain_profile
             .rpc_url
             .as_deref()
@@ -3374,8 +3390,9 @@ fn resolve_token_policy_config(
         address: if chain_profile.is_native {
             None
         } else {
-            Some(parse_address(
+            Some(crate::TokenAddress::parse(
                 &format!("token '{}:{}'", token_key, chain_key),
+                chain_profile.chain_id,
                 chain_profile.address.as_deref().unwrap_or_default(),
             )?)
         },
@@ -3408,11 +3425,12 @@ fn resolve_all_token_destination_overrides(
     for token_key in sorted_token_keys(config) {
         let token_profile = &config.tokens[&token_key];
         for override_profile in &token_profile.destination_overrides {
-            let recipient = parse_address(
-                "destination override recipient",
-                &override_profile.recipient,
-            )?;
             for (chain_key, chain_profile) in &token_profile.chains {
+                let recipient = crate::parse_token_recipient(
+                    "destination override recipient",
+                    chain_profile.chain_id,
+                    &override_profile.recipient,
+                )?;
                 if !seen.insert((token_key.clone(), chain_key.clone(), recipient.clone())) {
                     bail!(
                         "duplicate per-token destination override: {}:{} for {}",
@@ -3536,7 +3554,11 @@ fn resolve_all_token_manual_approval_policies(
                     },
                     recipient: match manual_profile.recipient.as_deref() {
                         Some(value) if !value.trim().is_empty() => {
-                            Some(parse_address("manual approval recipient", value)?)
+                            Some(crate::parse_token_recipient(
+                                "manual approval recipient",
+                                chain_profile.chain_id,
+                                value,
+                            )?)
                         }
                         _ => None,
                     },
@@ -3581,12 +3603,18 @@ fn chain_profile_address(
     token_key: &str,
     chain_key: &str,
     chain_profile: &TokenChainProfile,
-) -> Result<Option<EvmAddress>> {
+) -> Result<Option<crate::TokenAddress>> {
     chain_profile
         .address
         .as_deref()
         .filter(|value| !value.trim().is_empty())
-        .map(|value| parse_address(&format!("token '{}:{}'", token_key, chain_key), value))
+        .map(|value| {
+            crate::TokenAddress::parse(
+                &format!("token '{}:{}'", token_key, chain_key),
+                chain_profile.chain_id,
+                value,
+            )
+        })
         .transpose()
 }
 
@@ -4067,7 +4095,9 @@ mod tests {
 
     #[test]
     fn save_and_apply_helpers_return_success_messages() {
+        let token_config_path = temp_config_path("token-save-success");
         let mut token_app = AppState::from_shared_config(&sample_config(), false);
+        token_app.config_path = token_config_path.clone();
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
         let (token_output, token_message) =
@@ -4078,8 +4108,12 @@ mod tests {
             .expect("save token and apply");
         assert_eq!(token_output, 2);
         assert!(token_message.contains("saved token"));
+        fs::remove_dir_all(token_config_path.parent().expect("temp config dir"))
+            .expect("remove temp token config dir");
 
+        let network_config_path = temp_config_path("network-save-success");
         let mut network_app = AppState::from_shared_config(&sample_config(), false);
+        network_app.config_path = network_config_path.clone();
         network_app.view = View::Networks;
         let backend = TestBackend::new(120, 40);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -4094,6 +4128,8 @@ mod tests {
         .expect("save network and apply");
         assert_eq!(network_output, 2);
         assert!(network_message.contains("saved network"));
+        fs::remove_dir_all(network_config_path.parent().expect("temp config dir"))
+            .expect("remove temp network config dir");
     }
 
     #[test]
@@ -4342,7 +4378,7 @@ mod tests {
             super::build_bootstrap_params_from_shared_config(&WlfiConfig::default(), false, false)
                 .expect("params");
         assert!(params.use_per_token_bootstrap);
-        assert_eq!(params.token_selectors.len(), 4);
+        assert_eq!(params.token_selectors.len(), 9);
         assert!(params.token_policies.is_empty());
         assert!(params.token_destination_overrides.is_empty());
         assert!(params.token_manual_approval_policies.is_empty());
@@ -4376,11 +4412,11 @@ mod tests {
             policy.token_key == "usd1"
                 && policy.chain_key == "bsc"
                 && policy.address
-                    == Some(
+                    == Some(crate::TokenAddress::Evm(
                         "0x2000000000000000000000000000000000000000"
                             .parse()
                             .expect("bsc usd1 address"),
-                    )
+                    ))
         }));
 
         let params = super::build_bootstrap_params_from_shared_config(&config, false, false)
@@ -4393,11 +4429,11 @@ mod tests {
             policy.token_key == "usd1"
                 && policy.chain_key == "bsc"
                 && policy.address
-                    == Some(
+                    == Some(crate::TokenAddress::Evm(
                         "0x2000000000000000000000000000000000000000"
                             .parse()
                             .expect("bsc usd1 address"),
-                    )
+                    ))
         }));
     }
 
@@ -5451,5 +5487,195 @@ mod tests {
         assert_eq!(app.selected, selected);
         assert_eq!(app.network_draft.rpc_url, "http");
         assert!(app.network_dirty);
+    }
+
+    #[test]
+    fn token_address_parse_dispatches_on_chain_id() {
+        let mainnet = crate::TokenAddress::parse(
+            "usdc on solana-mainnet",
+            900_000_001,
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        )
+        .expect("parses solana mint");
+        assert!(matches!(mainnet, crate::TokenAddress::Solana(_)));
+
+        let evm = crate::TokenAddress::parse(
+            "usd1 on bsc",
+            56,
+            "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d",
+        )
+        .expect("parses evm address");
+        assert!(matches!(evm, crate::TokenAddress::Evm(_)));
+
+        assert!(crate::TokenAddress::parse(
+            "evm chain rejects base58",
+            1,
+            "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        )
+        .is_err());
+        assert!(crate::TokenAddress::parse(
+            "solana chain rejects 0x address",
+            900_000_001,
+            "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn parse_token_recipient_dispatches_on_chain_id() {
+        let solana = crate::parse_token_recipient(
+            "manual approval recipient",
+            900_000_002,
+            "CnPoSPKXu7wJqxe59Fs72tkBeALovhsCxYNKuPHYZRzG",
+        )
+        .expect("parses solana recipient");
+        assert!(matches!(solana, vault_domain::RecipientId::Solana(_)));
+
+        let evm = crate::parse_token_recipient(
+            "manual approval recipient",
+            56,
+            "0x4a66BE5e29d1cBA04a60aF7348403253b4B9404e",
+        )
+        .expect("parses evm recipient");
+        assert!(matches!(evm, vault_domain::RecipientId::Evm(_)));
+
+        assert!(crate::parse_token_recipient(
+            "manual approval recipient",
+            1,
+            "CnPoSPKXu7wJqxe59Fs72tkBeALovhsCxYNKuPHYZRzG",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn build_bootstrap_params_from_shared_config_accepts_solana_token() {
+        let mut config = empty_config();
+        config.chains.insert(
+            "solana-mainnet".to_string(),
+            ChainProfile {
+                chain_id: 900_000_001,
+                name: "Solana".to_string(),
+                rpc_url: Some("https://api.mainnet-beta.solana.com".to_string()),
+                extra: BTreeMap::new(),
+            },
+        );
+        config.chains.insert(
+            "solana-devnet".to_string(),
+            ChainProfile {
+                chain_id: 900_000_002,
+                name: "Solana Devnet".to_string(),
+                rpc_url: Some("https://api.devnet.solana.com".to_string()),
+                extra: BTreeMap::new(),
+            },
+        );
+        config.tokens.insert(
+            "usdc".to_string(),
+            TokenProfile {
+                name: Some("USDC".to_string()),
+                symbol: "USDC".to_string(),
+                default_policy: None,
+                destination_overrides: Vec::new(),
+                manual_approval_policies: Vec::new(),
+                chains: BTreeMap::from([
+                    (
+                        "solana-mainnet".to_string(),
+                        TokenChainProfile {
+                            chain_id: 900_000_001,
+                            is_native: false,
+                            address: Some(
+                                "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string(),
+                            ),
+                            decimals: 6,
+                            default_policy: None,
+                            extra: BTreeMap::new(),
+                        },
+                    ),
+                    (
+                        "solana-devnet".to_string(),
+                        TokenChainProfile {
+                            chain_id: 900_000_002,
+                            is_native: false,
+                            address: Some(
+                                "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU".to_string(),
+                            ),
+                            decimals: 6,
+                            default_policy: None,
+                            extra: BTreeMap::new(),
+                        },
+                    ),
+                ]),
+                extra: BTreeMap::new(),
+            },
+        );
+
+        let params = super::build_bootstrap_params_from_shared_config(&config, false, false)
+            .expect("solana token selectors");
+        let solana_selectors: Vec<_> = params
+            .token_selectors
+            .iter()
+            .filter(|s| s.token_key == "usdc")
+            .collect();
+        assert_eq!(solana_selectors.len(), 2);
+        for selector in solana_selectors {
+            assert!(matches!(
+                selector.address,
+                Some(crate::TokenAddress::Solana(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn solana_manual_approval_recipient_parses_as_solana() {
+        let mut config = empty_config();
+        config.chains.insert(
+            "solana-mainnet".to_string(),
+            ChainProfile {
+                chain_id: 900_000_001,
+                name: "Solana".to_string(),
+                rpc_url: Some("https://api.mainnet-beta.solana.com".to_string()),
+                extra: BTreeMap::new(),
+            },
+        );
+        config.tokens.insert(
+            "usdc".to_string(),
+            TokenProfile {
+                name: Some("USDC".to_string()),
+                symbol: "USDC".to_string(),
+                default_policy: None,
+                destination_overrides: Vec::new(),
+                manual_approval_policies: vec![TokenManualApprovalProfile {
+                    priority: 100,
+                    recipient: Some("CnPoSPKXu7wJqxe59Fs72tkBeALovhsCxYNKuPHYZRzG".to_string()),
+                    min_amount: None,
+                    max_amount: None,
+                    min_amount_decimal: Some("1".to_string()),
+                    max_amount_decimal: Some("10".to_string()),
+                    min_amount_wei: None,
+                    max_amount_wei: None,
+                    extra: BTreeMap::new(),
+                }],
+                chains: BTreeMap::from([(
+                    "solana-mainnet".to_string(),
+                    TokenChainProfile {
+                        chain_id: 900_000_001,
+                        is_native: false,
+                        address: Some("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v".to_string()),
+                        decimals: 6,
+                        default_policy: None,
+                        extra: BTreeMap::new(),
+                    },
+                )]),
+                extra: BTreeMap::new(),
+            },
+        );
+
+        let token_selectors = resolve_all_token_selectors(&config).expect("token selectors");
+        let manual = resolve_all_token_manual_approval_policies(&config, &token_selectors)
+            .expect("manual approvals");
+        assert_eq!(manual.len(), 1);
+        assert!(matches!(
+            manual[0].recipient,
+            Some(vault_domain::RecipientId::Solana(_))
+        ));
     }
 }

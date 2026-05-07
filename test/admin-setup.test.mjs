@@ -176,6 +176,93 @@ async function withMockedManagedLaunchDaemonMetadata(input, fn) {
   }
 }
 
+async function withMockedStaleManagedLaunchDaemonMetadata(input, fn) {
+  const configPath = path.join(input.agentpayHome, 'config.json');
+  const currentConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  const rustBinDir = currentConfig.rustBinDir;
+  const sourcePaths = {
+    runnerPath: path.join(rustBinDir, HOST_MANAGED.runnerScriptName),
+    daemonBin: path.join(rustBinDir, 'agentpay-daemon'),
+    keychainHelperBin: path.join(rustBinDir, HOST_MANAGED.credentialHelperName),
+  };
+  const managedPaths = {
+    runnerPath: path.join(HOST_MANAGED.managedBinDir, HOST_MANAGED.runnerScriptName),
+    daemonBin: path.join(HOST_MANAGED.managedBinDir, 'agentpay-daemon'),
+    keychainHelperBin: path.join(HOST_MANAGED.managedBinDir, HOST_MANAGED.credentialHelperName),
+  };
+  const staleManagedContents = new Map([
+    [path.resolve(managedPaths.runnerPath), '#!/bin/sh\necho stale-runner\n'],
+    [path.resolve(managedPaths.daemonBin), 'stale-daemon\n'],
+    [path.resolve(managedPaths.keychainHelperBin), 'stale-helper\n'],
+  ]);
+  const plistPath = HOST_MANAGED.serviceFile;
+  const currentUid = String(process.getuid?.() ?? process.geteuid?.() ?? 0);
+  const keychainAccount = os.userInfo().username;
+  const plistContents = [
+    '<plist><dict>',
+    `<string>${managedPaths.runnerPath}</string>`,
+    `<string>${managedPaths.daemonBin}</string>`,
+    `<string>${managedPaths.keychainHelperBin}</string>`,
+    `<string>${HOST_MANAGED.label}</string>`,
+    `<string>${input.daemonSocket}</string>`,
+    `<string>${input.stateFile}</string>`,
+    '<string>agentpay-daemon-password</string>',
+    `<string>${keychainAccount}</string>`,
+    '<string>software</string>',
+    '<key>AGENTPAY_ALLOW_ADMIN_EUID</key>',
+    `<string>${currentUid}</string>`,
+    '<key>AGENTPAY_ALLOW_AGENT_EUID</key>',
+    `<string>${currentUid}</string>`,
+    '</dict></plist>',
+  ].join('\n');
+
+  const originalExistsSync = fs.existsSync;
+  const originalReadFileSync = fs.readFileSync;
+  const originalStatSync = fs.statSync;
+  fs.existsSync = ((targetPath, ...args) => {
+    const resolvedPath = path.resolve(String(targetPath));
+    if (resolvedPath === plistPath || staleManagedContents.has(resolvedPath)) {
+      return true;
+    }
+    return originalExistsSync(targetPath, ...args);
+  });
+  fs.readFileSync = ((targetPath, ...args) => {
+    const resolvedPath = path.resolve(String(targetPath));
+    if (resolvedPath === plistPath) {
+      if (args[0] === 'utf8' || (args[0] && typeof args[0] === 'object' && args[0].encoding === 'utf8')) {
+        return plistContents;
+      }
+      return Buffer.from(plistContents, 'utf8');
+    }
+    const staleContents = staleManagedContents.get(resolvedPath);
+    if (staleContents !== undefined) {
+      if (args[0] === 'utf8' || (args[0] && typeof args[0] === 'object' && args[0].encoding === 'utf8')) {
+        return staleContents;
+      }
+      return Buffer.from(staleContents, 'utf8');
+    }
+    return originalReadFileSync(targetPath, ...args);
+  });
+  fs.statSync = ((targetPath, ...args) => {
+    const staleContents = staleManagedContents.get(path.resolve(String(targetPath)));
+    if (staleContents !== undefined) {
+      return {
+        isFile: () => true,
+        size: Buffer.byteLength(staleContents),
+      };
+    }
+    return originalStatSync(targetPath, ...args);
+  });
+
+  try {
+    await fn({ sourcePaths, managedPaths });
+  } finally {
+    fs.existsSync = originalExistsSync;
+    fs.readFileSync = originalReadFileSync;
+    fs.statSync = originalStatSync;
+  }
+}
+
 async function withInstallMarkerConnectionGate(markerPath, fn) {
   const originalCreateConnection = net.createConnection;
   net.createConnection = ((...args) => {
@@ -2249,20 +2336,29 @@ test('runAdminSetupCli skips wallet backup prompts by default on fresh setup', a
       });
 
       try {
-        const adminSetup = await loadModule(`${Date.now()}-run-setup-skip-default-backup`);
-        await withMockedPrompt((query) => {
-          promptCount += 1;
-          assert.doesNotMatch(query, /wallet backup/iu);
-          return 'vault-secret';
-        }, async () => {
-          await adminSetup.runAdminSetupCli([
-            '--yes',
-            '--daemon-socket',
-            trustedSocket,
-            '--bootstrap-output',
-            path.join(agentpayHome, 'bootstrap-skip-default-backup.json'),
-          ]);
-        });
+        await withMockedManagedLaunchDaemonMetadata(
+          {
+            agentpayHome,
+            daemonSocket: trustedSocket,
+            stateFile: HOST_MANAGED.stateFile,
+          },
+          async () => {
+            const adminSetup = await loadModule(`${Date.now()}-run-setup-skip-default-backup`);
+            await withMockedPrompt((query) => {
+              promptCount += 1;
+              assert.doesNotMatch(query, /wallet backup/iu);
+              return 'vault-secret';
+            }, async () => {
+              await adminSetup.runAdminSetupCli([
+                '--yes',
+                '--daemon-socket',
+                trustedSocket,
+                '--bootstrap-output',
+                path.join(agentpayHome, 'bootstrap-skip-default-backup.json'),
+              ]);
+            });
+          },
+        );
       } finally {
         process.stdout.write = originalStdoutWrite;
       }
@@ -2278,7 +2374,7 @@ test('runAdminSetupCli skips wallet backup prompts by default on fresh setup', a
 
 test('runAdminSetupCli falls back to plain text progress when stderr is not a tty', async () => {
   await withTrustedRootDaemonSocket(async (trustedSocket) => {
-    await withMockedAdminSetupEnv(async () => {
+    await withMockedAdminSetupEnv(async ({ agentpayHome }) => {
       const stderrChunks = [];
       const originalStderrWrite = process.stderr.write.bind(process.stderr);
       process.stderr.write = ((chunk, ...args) => {
@@ -2287,15 +2383,24 @@ test('runAdminSetupCli falls back to plain text progress when stderr is not a tt
       });
 
       try {
-        const adminSetup = await loadModule(`${Date.now()}-run-setup-non-tty-progress`);
-        await withMockedProcessStdin(['vault-secret\n'], async () => {
-          await adminSetup.runAdminSetupCli([
-            '--vault-password-stdin',
-            '--non-interactive',
-            '--daemon-socket',
-            trustedSocket,
-          ]);
-        });
+        await withMockedManagedLaunchDaemonMetadata(
+          {
+            agentpayHome,
+            daemonSocket: trustedSocket,
+            stateFile: HOST_MANAGED.stateFile,
+          },
+          async () => {
+            const adminSetup = await loadModule(`${Date.now()}-run-setup-non-tty-progress`);
+            await withMockedProcessStdin(['vault-secret\n'], async () => {
+              await adminSetup.runAdminSetupCli([
+                '--vault-password-stdin',
+                '--non-interactive',
+                '--daemon-socket',
+                trustedSocket,
+              ]);
+            });
+          },
+        );
       } finally {
         process.stderr.write = originalStderrWrite;
       }
@@ -2984,6 +3089,58 @@ test('runAdminSetupCli reuses the current launchd install when the daemon respon
           });
         },
       );
+    });
+  });
+});
+
+test('runAdminSetupCli refreshes stale launchd binaries even when the existing daemon accepts the password', { skip: process.platform !== 'darwin' }, async () => {
+  await withTrustedRootDaemonSocket(async (trustedSocket) => {
+    await withMockedAdminSetupEnv(async ({ agentpayHome, toolDir }) => {
+      const installMarkerPath = path.join(agentpayHome, 'install-marker-stale-running-daemon.txt');
+      process.env.AGENTPAY_MOCK_INSTALL_MARKER = installMarkerPath;
+      writeNodeExecutable(
+        path.join(toolDir, 'sudo'),
+        [
+          "const fs = require('node:fs');",
+          'const args = process.argv.slice(2);',
+          "const marker = process.env.AGENTPAY_MOCK_INSTALL_MARKER;",
+          "if (args[0] === '-S' && args[3] === '-v') {",
+          '  process.stdin.resume();',
+          "  process.stdin.on('end', () => process.exit(0));",
+          '  return;',
+          '}',
+          "if (args[0] === '-n' && args[1] === '/bin/test') {",
+          '  process.exit(0);',
+          '}',
+          "if (args[0] === '-n') {",
+          `  if (marker && args.some((value) => String(value).includes(${JSON.stringify(HOST_MANAGED.installScriptName)}))) {`,
+          "    fs.writeFileSync(marker, 'installed\\n', 'utf8');",
+          '  }',
+          '  process.exit(0);',
+          '}',
+          'process.exit(0);',
+        ].join('\n'),
+      );
+
+      try {
+        await withMockedStaleManagedLaunchDaemonMetadata(
+          {
+            agentpayHome,
+            daemonSocket: trustedSocket,
+            stateFile: HOST_MANAGED.stateFile,
+          },
+          async () => {
+            const adminSetup = await loadModule(`${Date.now()}-run-setup-stale-running-daemon`);
+            await withMockedPrompt('vault-secret', async () => {
+              await adminSetup.runAdminSetupCli(['--daemon-socket', trustedSocket]);
+            });
+          },
+        );
+      } finally {
+        delete process.env.AGENTPAY_MOCK_INSTALL_MARKER;
+      }
+
+      assert.equal(fs.readFileSync(installMarkerPath, 'utf8'), 'installed\n');
     });
   });
 });

@@ -16,10 +16,16 @@ export interface WlfiConfig {
   tokens?: Record<string, TokenProfile>;
 }
 
+export type WalletKeyAlgorithm = 'secp256k1' | 'ed25519';
+export type ChainFamily = 'evm' | 'solana';
+
 export interface WalletProfile {
   vaultKeyId?: string;
+  algorithm?: WalletKeyAlgorithm;
   vaultPublicKey: string;
   address?: string;
+  solanaPublicKey?: string;
+  solanaAddress?: string;
   agentKeyId?: string;
   policyAttachment: string;
   attachedPolicyIds?: string[];
@@ -32,6 +38,7 @@ export interface WalletProfile {
 export interface ChainProfile {
   chainId: number;
   name: string;
+  family?: ChainFamily;
   rpcUrl?: string;
 }
 
@@ -108,35 +115,76 @@ const STICKY_BIT_MODE = 0o1000;
 const MAX_CONFIG_FILE_BYTES = 256 * 1024;
 const DEFAULT_ETH_RPC_URL = 'https://eth.llamarpc.com';
 const DEFAULT_BSC_RPC_URL = 'https://bsc.drpc.org';
+const DEFAULT_SOLANA_MAINNET_RPC_URL = 'https://api.mainnet-beta.solana.com';
+const DEFAULT_SOLANA_DEVNET_RPC_URL = 'https://api.devnet.solana.com';
+const DEFAULT_SOLANA_TESTNET_RPC_URL = 'https://api.testnet.solana.com';
 const DEFAULT_TEMPO_RPC_URL = 'https://rpc.presto.tempo.xyz';
 const DEFAULT_TEMPO_TESTNET_RPC_URL = 'https://rpc.moderato.tempo.xyz';
 const DEFAULT_USD1_ADDRESS = '0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d';
 const DEFAULT_PATHUSD_ADDRESS = '0x20c0000000000000000000000000000000000000';
 const DEFAULT_TEMPO_USDCE_ADDRESS = '0x20c000000000000000000000b9537d11c60e8b50';
 const DEFAULT_TEMPO_TESTNET_USDCE_ADDRESS = '0x20c0000000000000000000009e8d7eb59b783726';
+const DEFAULT_SOLANA_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const DEFAULT_SOLANA_DEVNET_USDC_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 
 export const BUILTIN_CHAINS: Record<string, ChainProfile> = {
-  eth: { chainId: 1, name: 'eth', rpcUrl: DEFAULT_ETH_RPC_URL },
-  ethereum: { chainId: 1, name: 'ethereum', rpcUrl: DEFAULT_ETH_RPC_URL },
-  mainnet: { chainId: 1, name: 'mainnet', rpcUrl: DEFAULT_ETH_RPC_URL },
-  sepolia: { chainId: 11155111, name: 'sepolia' },
-  base: { chainId: 8453, name: 'base' },
-  'base-sepolia': { chainId: 84532, name: 'base-sepolia' },
-  optimism: { chainId: 10, name: 'optimism' },
-  arbitrum: { chainId: 42161, name: 'arbitrum' },
-  polygon: { chainId: 137, name: 'polygon' },
-  bsc: { chainId: 56, name: 'bsc', rpcUrl: DEFAULT_BSC_RPC_URL },
-  tempo: { chainId: 4217, name: 'tempo', rpcUrl: DEFAULT_TEMPO_RPC_URL },
-  'tempo-mainnet': { chainId: 4217, name: 'tempo-mainnet', rpcUrl: DEFAULT_TEMPO_RPC_URL },
+  eth: { chainId: 1, name: 'eth', family: 'evm', rpcUrl: DEFAULT_ETH_RPC_URL },
+  ethereum: { chainId: 1, name: 'ethereum', family: 'evm', rpcUrl: DEFAULT_ETH_RPC_URL },
+  mainnet: { chainId: 1, name: 'mainnet', family: 'evm', rpcUrl: DEFAULT_ETH_RPC_URL },
+  sepolia: { chainId: 11155111, name: 'sepolia', family: 'evm' },
+  base: { chainId: 8453, name: 'base', family: 'evm' },
+  'base-sepolia': { chainId: 84532, name: 'base-sepolia', family: 'evm' },
+  optimism: { chainId: 10, name: 'optimism', family: 'evm' },
+  arbitrum: { chainId: 42161, name: 'arbitrum', family: 'evm' },
+  polygon: { chainId: 137, name: 'polygon', family: 'evm' },
+  bsc: { chainId: 56, name: 'bsc', family: 'evm', rpcUrl: DEFAULT_BSC_RPC_URL },
+  solana: {
+    chainId: 900000001,
+    name: 'solana',
+    family: 'solana',
+    rpcUrl: DEFAULT_SOLANA_MAINNET_RPC_URL,
+  },
+  'solana-mainnet': {
+    chainId: 900000001,
+    name: 'solana-mainnet',
+    family: 'solana',
+    rpcUrl: DEFAULT_SOLANA_MAINNET_RPC_URL,
+  },
+  'solana-devnet': {
+    chainId: 900000002,
+    name: 'solana-devnet',
+    family: 'solana',
+    rpcUrl: DEFAULT_SOLANA_DEVNET_RPC_URL,
+  },
+  'solana-testnet': {
+    chainId: 900000003,
+    name: 'solana-testnet',
+    family: 'solana',
+    rpcUrl: DEFAULT_SOLANA_TESTNET_RPC_URL,
+  },
+  tempo: { chainId: 4217, name: 'tempo', family: 'evm', rpcUrl: DEFAULT_TEMPO_RPC_URL },
+  'tempo-mainnet': {
+    chainId: 4217,
+    name: 'tempo-mainnet',
+    family: 'evm',
+    rpcUrl: DEFAULT_TEMPO_RPC_URL,
+  },
   'tempo-testnet': {
     chainId: 42431,
     name: 'tempo-testnet',
+    family: 'evm',
     rpcUrl: DEFAULT_TEMPO_TESTNET_RPC_URL,
   },
-  moderato: { chainId: 42431, name: 'moderato', rpcUrl: DEFAULT_TEMPO_TESTNET_RPC_URL },
+  moderato: {
+    chainId: 42431,
+    name: 'moderato',
+    family: 'evm',
+    rpcUrl: DEFAULT_TEMPO_TESTNET_RPC_URL,
+  },
   'tempo-moderato': {
     chainId: 42431,
     name: 'tempo-moderato',
+    family: 'evm',
     rpcUrl: DEFAULT_TEMPO_TESTNET_RPC_URL,
   },
 };
@@ -164,6 +212,31 @@ export const BUILTIN_TOKENS: Record<string, TokenProfile> = {
       'base-sepolia': { chainId: 84532, isNative: true, decimals: 18 },
       optimism: { chainId: 10, isNative: true, decimals: 18 },
       arbitrum: { chainId: 42161, isNative: true, decimals: 18 },
+    },
+  },
+  sol: {
+    name: 'Solana',
+    symbol: 'SOL',
+    defaultPolicy: defaultTokenPolicy('0.05', '1', '7'),
+    chains: {
+      'solana-mainnet': {
+        chainId: 900000001,
+        isNative: true,
+        decimals: 9,
+        defaultPolicy: defaultTokenPolicy('0.05', '1', '7'),
+      },
+      'solana-devnet': {
+        chainId: 900000002,
+        isNative: true,
+        decimals: 9,
+        defaultPolicy: defaultTokenPolicy('0.05', '1', '7'),
+      },
+      'solana-testnet': {
+        chainId: 900000003,
+        isNative: true,
+        decimals: 9,
+        defaultPolicy: defaultTokenPolicy('0.05', '1', '7'),
+      },
     },
   },
   usd: {
@@ -201,7 +274,7 @@ export const BUILTIN_TOKENS: Record<string, TokenProfile> = {
       tempo: {
         chainId: 4217,
         isNative: false,
-        address: "0x111111d2bf19e43C34263401e0CAd979eD1cdb61",
+        address: '0x111111d2bf19e43C34263401e0CAd979eD1cdb61',
         decimals: 18,
         defaultPolicy: defaultTokenPolicy('10', '100', '700'),
       },
@@ -249,6 +322,27 @@ export const BUILTIN_TOKENS: Record<string, TokenProfile> = {
       },
     },
   },
+  usdc: {
+    name: 'USDC',
+    symbol: 'USDC',
+    defaultPolicy: defaultTokenPolicy('10', '100', '700'),
+    chains: {
+      'solana-mainnet': {
+        chainId: 900000001,
+        isNative: false,
+        address: DEFAULT_SOLANA_USDC_MINT,
+        decimals: 6,
+        defaultPolicy: defaultTokenPolicy('10', '100', '700'),
+      },
+      'solana-devnet': {
+        chainId: 900000002,
+        isNative: false,
+        address: DEFAULT_SOLANA_DEVNET_USDC_MINT,
+        decimals: 6,
+        defaultPolicy: defaultTokenPolicy('10', '100', '700'),
+      },
+    },
+  },
 };
 
 function defaultTokenPolicy(
@@ -268,22 +362,44 @@ function defaultChainProfiles(): Record<string, ChainProfile> {
     eth: {
       chainId: 1,
       name: 'ETH',
+      family: 'evm',
       rpcUrl: DEFAULT_ETH_RPC_URL,
     },
     bsc: {
       chainId: 56,
       name: 'BSC',
+      family: 'evm',
       rpcUrl: DEFAULT_BSC_RPC_URL,
     },
     tempo: {
       chainId: 4217,
       name: 'Tempo',
+      family: 'evm',
       rpcUrl: DEFAULT_TEMPO_RPC_URL,
     },
     'tempo-testnet': {
       chainId: 42431,
       name: 'Tempo Testnet (Moderato)',
+      family: 'evm',
       rpcUrl: DEFAULT_TEMPO_TESTNET_RPC_URL,
+    },
+    'solana-mainnet': {
+      chainId: 900000001,
+      name: 'Solana',
+      family: 'solana',
+      rpcUrl: DEFAULT_SOLANA_MAINNET_RPC_URL,
+    },
+    'solana-devnet': {
+      chainId: 900000002,
+      name: 'Solana Devnet',
+      family: 'solana',
+      rpcUrl: DEFAULT_SOLANA_DEVNET_RPC_URL,
+    },
+    'solana-testnet': {
+      chainId: 900000003,
+      name: 'Solana Testnet',
+      family: 'solana',
+      rpcUrl: DEFAULT_SOLANA_TESTNET_RPC_URL,
     },
   };
 }
@@ -313,6 +429,29 @@ function defaultTokenProfiles(): Record<string, TokenProfile> {
           chainId: 1,
           isNative: true,
           decimals: 18,
+        },
+      },
+    },
+    sol: {
+      name: 'Solana',
+      symbol: 'SOL',
+      destinationOverrides: [],
+      manualApprovalPolicies: [],
+      chains: {
+        'solana-mainnet': {
+          chainId: 900000001,
+          isNative: true,
+          decimals: 9,
+        },
+        'solana-devnet': {
+          chainId: 900000002,
+          isNative: true,
+          decimals: 9,
+        },
+        'solana-testnet': {
+          chainId: 900000003,
+          isNative: true,
+          decimals: 9,
         },
       },
     },
@@ -385,6 +524,26 @@ function defaultTokenProfiles(): Record<string, TokenProfile> {
           chainId: 42431,
           isNative: false,
           address: DEFAULT_TEMPO_TESTNET_USDCE_ADDRESS,
+          decimals: 6,
+        },
+      },
+    },
+    usdc: {
+      name: 'USDC',
+      symbol: 'USDC',
+      destinationOverrides: [],
+      manualApprovalPolicies: [],
+      chains: {
+        'solana-mainnet': {
+          chainId: 900000001,
+          isNative: false,
+          address: DEFAULT_SOLANA_USDC_MINT,
+          decimals: 6,
+        },
+        'solana-devnet': {
+          chainId: 900000002,
+          isNative: false,
+          address: DEFAULT_SOLANA_DEVNET_USDC_MINT,
           decimals: 6,
         },
       },
@@ -513,6 +672,9 @@ function normalizeOptionalRpcUrl(
 }
 
 const ADDRESS_PATTERN = /^0x[a-f0-9]{40}$/iu;
+const SOLANA_ADDRESS_PATTERN = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/u;
+const SOLANA_PUBLIC_KEY_HEX_PATTERN = /^(?:0x)?[0-9a-f]{64}$/iu;
+const SOLANA_CHAIN_IDS = new Set([900000001, 900000002, 900000003]);
 
 function assertValidEvmAddress(value: string, label: string): string {
   const normalized = value.trim();
@@ -520,6 +682,63 @@ function assertValidEvmAddress(value: string, label: string): string {
     throw new Error(`${label} must be a valid EVM address`);
   }
   return normalized;
+}
+
+function assertOptionalSolanaPublicKeyHex(
+  value: string | null | undefined,
+  label: string,
+): string | undefined {
+  const normalized = assertOptionalTrimmedString(value, label);
+  if (!normalized) {
+    return undefined;
+  }
+  if (!SOLANA_PUBLIC_KEY_HEX_PATTERN.test(normalized)) {
+    throw new Error(`${label} must be a 32-byte hex public key`);
+  }
+  return normalized;
+}
+
+function assertOptionalSolanaAddress(
+  value: string | null | undefined,
+  label: string,
+): string | undefined {
+  const normalized = assertOptionalTrimmedString(value, label);
+  if (!normalized) {
+    return undefined;
+  }
+  if (!SOLANA_ADDRESS_PATTERN.test(normalized)) {
+    throw new Error(`${label} must be a valid Solana address`);
+  }
+  return normalized;
+}
+
+function assertValidSolanaAddress(value: string, label: string): string {
+  const normalized = value.trim();
+  if (!SOLANA_ADDRESS_PATTERN.test(normalized)) {
+    throw new Error(`${label} must be a valid Solana address`);
+  }
+  return normalized;
+}
+
+function assertValidEvmOrSolanaAddress(value: string, label: string): string {
+  const normalized = value.trim();
+  if (ADDRESS_PATTERN.test(normalized) || SOLANA_ADDRESS_PATTERN.test(normalized)) {
+    return normalized;
+  }
+  throw new Error(`${label} must be a valid EVM or Solana address`);
+}
+
+function normalizeChainFamily(
+  value: ChainProfile['family'] | undefined,
+  chainId: number,
+): ChainFamily {
+  if (value === 'evm' || value === 'solana') {
+    return value;
+  }
+  if (value !== undefined) {
+    throw new Error(`chain family must be one of: evm, solana`);
+  }
+  return SOLANA_CHAIN_IDS.has(chainId) ? 'solana' : 'evm';
 }
 
 function assertPositiveSafeInteger(value: number, label: string): number {
@@ -592,10 +811,22 @@ function normalizeWalletProfile(
     return undefined;
   }
 
+  const algorithm = normalizeWalletKeyAlgorithm(profile.algorithm);
+
   return {
     vaultKeyId: assertOptionalTrimmedString(profile.vaultKeyId, 'wallet.vaultKeyId'),
+    algorithm,
     vaultPublicKey: assertRequiredTrimmedString(profile.vaultPublicKey, 'wallet.vaultPublicKey'),
-    address: profile.address ? assertValidEvmAddress(profile.address, 'wallet.address') : undefined,
+    address: profile.address
+      ? algorithm === 'ed25519'
+        ? assertRequiredTrimmedString(profile.address, 'wallet.address')
+        : assertValidEvmAddress(profile.address, 'wallet.address')
+      : undefined,
+    solanaPublicKey: assertOptionalSolanaPublicKeyHex(
+      profile.solanaPublicKey,
+      'wallet.solanaPublicKey',
+    ),
+    solanaAddress: assertOptionalSolanaAddress(profile.solanaAddress, 'wallet.solanaAddress'),
     agentKeyId: assertOptionalTrimmedString(profile.agentKeyId, 'wallet.agentKeyId'),
     policyAttachment: assertRequiredTrimmedString(
       profile.policyAttachment,
@@ -610,6 +841,18 @@ function normalizeWalletProfile(
     assetScope: assertOptionalTrimmedString(profile.assetScope, 'wallet.assetScope'),
     recipientScope: assertOptionalTrimmedString(profile.recipientScope, 'wallet.recipientScope'),
   };
+}
+
+function normalizeWalletKeyAlgorithm(
+  value: WalletProfile['algorithm'] | undefined,
+): WalletKeyAlgorithm {
+  if (value === undefined) {
+    return 'secp256k1';
+  }
+  if (value === 'secp256k1' || value === 'ed25519') {
+    return value;
+  }
+  throw new Error(`wallet.algorithm must be one of: secp256k1, ed25519`);
 }
 
 function normalizeTokenPolicyProfile(
@@ -711,7 +954,10 @@ function normalizeTokenManualApprovalProfile(
             `token '${tokenKey}' manual approval priority`,
           ),
     recipient: profile.recipient
-      ? assertValidEvmAddress(profile.recipient, `token '${tokenKey}' manual approval recipient`)
+      ? assertValidEvmOrSolanaAddress(
+          profile.recipient,
+          `token '${tokenKey}' manual approval recipient`,
+        )
       : undefined,
     minAmount: assertOptionalTokenAmount(
       profile.minAmount,
@@ -770,10 +1016,10 @@ function normalizeTokenChainProfile(
       );
     }
   } else {
-    normalized.address = assertValidEvmAddress(
-      profile.address ?? '',
-      `token '${tokenKey}' chain '${normalizedChainKey}' address`,
-    );
+    const addressLabel = `token '${tokenKey}' chain '${normalizedChainKey}' address`;
+    normalized.address = SOLANA_CHAIN_IDS.has(normalized.chainId)
+      ? assertValidSolanaAddress(profile.address ?? '', addressLabel)
+      : assertValidEvmAddress(profile.address ?? '', addressLabel);
   }
 
   return normalized;
@@ -829,9 +1075,14 @@ function normalizeChainProfileEntry(
   }
 
   const name = profile.name?.trim() || normalizedKey;
+  const chainId = assertPositiveSafeInteger(
+    profile.chainId,
+    `chain profile '${normalizedKey}' chainId`,
+  );
   return {
-    chainId: assertPositiveSafeInteger(profile.chainId, `chain profile '${normalizedKey}' chainId`),
+    chainId,
     name,
+    family: normalizeChainFamily(profile.family, chainId),
     rpcUrl: normalizeOptionalRpcUrl(profile.rpcUrl, `chain profile '${normalizedKey}' rpcUrl`, {
       validate: options.validateRpcUrl,
     }),
@@ -1449,6 +1700,7 @@ export function resolveChainProfile(
     return {
       chainId: config.chainId,
       name: config.chainName ?? normalized,
+      family: normalizeChainFamily(undefined, config.chainId),
       rpcUrl: config.rpcUrl,
       source: 'active',
     };

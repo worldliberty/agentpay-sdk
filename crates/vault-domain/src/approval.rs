@@ -3,7 +3,7 @@ use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use uuid::Uuid;
 
-use crate::{AgentAction, AssetId, DomainError, EvmAddress};
+use crate::{AgentAction, AssetId, DomainError, RecipientId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -30,7 +30,7 @@ pub struct ManualApprovalRequest {
     pub action: AgentAction,
     pub chain_id: u64,
     pub asset: AssetId,
-    pub recipient: EvmAddress,
+    pub recipient: RecipientId,
     #[serde(with = "crate::u128_as_decimal_string")]
     pub amount_wei: u128,
     pub created_at: OffsetDateTime,

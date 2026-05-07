@@ -1,3 +1,4 @@
+import './lib/suppress-bigint-buffer-warning.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -59,6 +60,12 @@ import {
   completeAgentAuthRotation,
   type RotateAgentAuthTokenAdminOutput,
 } from './lib/agent-auth-rotate.js';
+import {
+  hasStoredAgentAuthToken as hasStoredAgentAuthTokenInLocalStore,
+  readStoredAgentAuthToken,
+  resolveAgentAuthStorageService,
+  storeStoredAgentAuthToken,
+} from './lib/agent-auth-storage.js';
 import { assertValidAgentAuthToken } from './lib/agent-auth-token.js';
 import {
   completeAssetBroadcast,
@@ -82,7 +89,6 @@ import {
   normalizeAgentAmountOutput,
   normalizePositiveDecimalInput,
   parseConfiguredAmount,
-  resolveConfiguredErc20Asset,
   resolveConfiguredNativeAsset,
   resolveErc20AssetWithRpcFallback,
   rewriteAmountPolicyErrorMessage,
@@ -94,29 +100,30 @@ import {
 } from './lib/config-mutation.js';
 import { assertTrustedDaemonSocketPath } from './lib/fs-trust.js';
 import {
-  describeAgentAuthStorage,
-  hasStoredAgentAuthToken as hasStoredAgentAuthTokenInLocalStore,
-  readStoredAgentAuthToken,
-  resolveAgentAuthStorageService,
-  storeStoredAgentAuthToken,
-} from './lib/agent-auth-storage.js';
+  closeGlobalFetchProxyDispatcherFromEnv,
+  installGlobalFetchProxyDispatcherFromEnv,
+} from './lib/http-proxy.js';
 import {
   withDynamicLocalAdminMutationAccess,
   withLocalAdminMutationAccess,
 } from './lib/local-admin-access.js';
 import {
   encodeMppAttributionMemo,
-  type MppReceipt,
-  parseMppChallengesFromHeaders,
-  parseMppChallengeFromHeaders,
-  parseMppReceiptFromHeaders,
   isTempoChain,
+  type MppReceipt,
+  type parseMppChallengeFromHeaders,
+  parseMppChallengesFromHeaders,
+  parseMppReceiptFromHeaders,
   resolveMppChainId,
   resolveMppEscrowContract,
   selectMppChallenge,
   serializeMppCredentialHeader,
 } from './lib/mpp.js';
-import { resolveCliNetworkProfile, resolveCliRpcUrl } from './lib/network-selection.js';
+import {
+  isSolanaChainProfile,
+  resolveCliNetworkProfile,
+  resolveCliRpcUrl,
+} from './lib/network-selection.js';
 import { assertRpcChainIdMatches } from './lib/rpc-guard.js';
 import {
   passthroughRustBinary,
@@ -124,15 +131,11 @@ import {
   runRustBinary,
   runRustBinaryJson,
 } from './lib/rust.js';
+import { applySharedConfigToExistingWallet } from './lib/shared-config-apply.js';
 import { assertSignedBroadcastTransactionMatchesRequest } from './lib/signed-tx.js';
 import { registerRepairCommand, registerStatusCommand } from './lib/status-repair-cli.js';
-import {
-  closeGlobalFetchProxyDispatcherFromEnv,
-  installGlobalFetchProxyDispatcherFromEnv,
-} from './lib/http-proxy.js';
 import { resolveWalletBackupPassword, verifyWalletBackupFile } from './lib/wallet-backup.js';
 import { exportEncryptedWalletBackup } from './lib/wallet-backup-admin.js';
-import { applySharedConfigToExistingWallet } from './lib/shared-config-apply.js';
 import {
   formatWalletProfileText,
   resolveWalletAddress,
@@ -140,6 +143,17 @@ import {
   walletProfileFromBootstrapSummary,
 } from './lib/wallet-profile.js';
 import { registerBuiltinCliPlugins } from './plugins/index.js';
+
+type SolanaTransferModule = typeof import('./lib/solana-transfer.js');
+type SolanaDurableNonceContext =
+  import('./lib/solana-transfer.js').SolanaDurableNonceContext;
+
+let solanaTransferModulePromise: Promise<SolanaTransferModule> | undefined;
+
+function loadSolanaTransferModule(): Promise<SolanaTransferModule> {
+  solanaTransferModulePromise ??= import('./lib/solana-transfer.js');
+  return solanaTransferModulePromise;
+}
 
 const configExports = (
   'default' in configPackage ? configPackage.default : configPackage
@@ -179,6 +193,8 @@ const {
   getLatestBlockNumber,
   getNativeBalance,
   getNonce,
+  getSolanaNativeBalance,
+  getSplTokenBalance,
   getTokenBalance,
   getTokenMetadata,
   getTransactionByHash,
@@ -197,11 +213,14 @@ interface RustBroadcastOutput {
   tx_type?: string;
   delegation_enabled?: boolean;
   signature_hex: string;
+  signature_base58?: string;
   r_hex?: string;
   s_hex?: string;
   v?: number;
   raw_tx_hex?: string;
   tx_hash_hex?: string;
+  raw_tx_base64?: string;
+  tx_id?: string;
 }
 
 interface RustManualApprovalRequiredOutput {
@@ -2356,6 +2375,8 @@ function formatWalletBackupVerifyOutput(input: {
 
 const ONCHAIN_RECEIPT_TIMEOUT_MS = 30_000;
 const ONCHAIN_RECEIPT_POLL_INTERVAL_MS = 2_000;
+const SOLANA_SOL_TRANSFER_COMPUTE_UNIT_LIMIT = 5_000;
+const SOLANA_SPL_TRANSFER_COMPUTE_UNIT_LIMIT = 20_000;
 const MANUAL_APPROVAL_POLL_INTERVAL_MS = 2_000;
 const BITREFILL_CHALLENGE_EXIT_CODE = 4;
 const BITREFILL_WAIT_TIMEOUT_EXIT_CODE = 5;
@@ -2447,6 +2468,68 @@ async function reportOnchainReceiptStatus(input: {
   }
 }
 
+async function reportSolanaSignatureStatus(input: {
+  rpcUrl: string;
+  signature: string;
+  asJson: boolean;
+}): Promise<void> {
+  if (input.asJson) {
+    console.error(
+      formatJson({
+        event: 'solanaSignaturePending',
+        signature: input.signature,
+        timeoutMs: ONCHAIN_RECEIPT_TIMEOUT_MS,
+      }),
+    );
+  } else {
+    console.error(
+      `Waiting up to ${ONCHAIN_RECEIPT_TIMEOUT_MS / 1000}s for Solana confirmation: ${input.signature}`,
+    );
+  }
+
+  const { waitForSolanaSignatureStatus } = await loadSolanaTransferModule();
+  const result = await waitForSolanaSignatureStatus({
+    rpcUrl: input.rpcUrl,
+    signature: input.signature,
+    timeoutMs: ONCHAIN_RECEIPT_TIMEOUT_MS,
+    intervalMs: ONCHAIN_RECEIPT_POLL_INTERVAL_MS,
+  });
+
+  if (result.timedOut) {
+    if (input.asJson) {
+      console.error(
+        formatJson({
+          event: 'solanaSignatureTimeout',
+          signature: input.signature,
+          timeoutMs: ONCHAIN_RECEIPT_TIMEOUT_MS,
+        }),
+      );
+    } else {
+      console.error(`Timed out waiting for Solana confirmation: ${input.signature}`);
+    }
+    return;
+  }
+
+  const summary = {
+    event: 'solanaSignatureStatus',
+    signature: input.signature,
+    confirmationStatus: result.confirmationStatus,
+    err: result.err,
+    slot: result.slot,
+  };
+  if (input.asJson) {
+    console.error(formatJson(summary));
+  } else if (result.err) {
+    console.error(
+      `Solana confirmation failed at slot ${result.slot}: ${JSON.stringify(result.err)}`,
+    );
+  } else {
+    console.error(
+      `Solana confirmation: ${result.confirmationStatus ?? 'processed'} slot ${result.slot}`,
+    );
+  }
+}
+
 function parseConfigValue(key: WritableConfigKey, value: string): WlfiConfig {
   if (key === 'chainId') {
     return { [key]: parsePositiveIntegerString(value, key) };
@@ -2488,6 +2571,17 @@ interface AgentCommandAuthOptions {
   daemonSocket?: string;
 }
 
+interface AgentCommandContext {
+  agentKeyId: string;
+  agentAuthToken: string;
+  daemonSocket: string;
+}
+
+const agentCommandContextCache = new WeakMap<
+  AgentCommandAuthOptions,
+  Promise<AgentCommandContext>
+>();
+
 function warnForAgentAuthTokenSource(source: string, agentKeyId: string) {
   if (source === 'argv') {
     console.error(
@@ -2515,7 +2609,26 @@ function warnForAgentAuthTokenSource(source: string, agentKeyId: string) {
 async function resolveAgentCommandContext(
   options: AgentCommandAuthOptions,
   config: WlfiConfig,
-): Promise<{ agentKeyId: string; agentAuthToken: string; daemonSocket: string }> {
+): Promise<AgentCommandContext> {
+  const cached = agentCommandContextCache.get(options);
+  if (cached) {
+    return cached;
+  }
+
+  const resolved = resolveAgentCommandContextUncached(options, config);
+  agentCommandContextCache.set(options, resolved);
+  try {
+    return await resolved;
+  } catch (error) {
+    agentCommandContextCache.delete(options);
+    throw error;
+  }
+}
+
+async function resolveAgentCommandContextUncached(
+  options: AgentCommandAuthOptions,
+  config: WlfiConfig,
+): Promise<AgentCommandContext> {
   const agentKeyId = assertAgentKeyId(
     options.agentKeyId ?? config.agentKeyId ?? process.env.AGENTPAY_AGENT_KEY_ID,
     'agentKeyId',
@@ -2591,7 +2704,7 @@ async function runAgentCommandJsonOnce<T>(input: {
 }
 
 async function runAgentCommandJson<T>(input: {
-  commandArgs: string[];
+  commandArgs: string[] | (() => Promise<string[]> | string[]);
   auth: AgentCommandAuthOptions;
   config: WlfiConfig;
   asJson: boolean;
@@ -2602,9 +2715,12 @@ async function runAgentCommandJson<T>(input: {
     input.config,
   );
 
-  const runOnce = () =>
+  const resolveCommandArgs = async () =>
+    typeof input.commandArgs === 'function' ? await input.commandArgs() : input.commandArgs;
+
+  const runOnce = async () =>
     runAgentCommandJsonOnce<T>({
-      commandArgs: input.commandArgs,
+      commandArgs: await resolveCommandArgs(),
       config: input.config,
       agentKeyId,
       agentAuthToken,
@@ -2646,6 +2762,130 @@ async function runAgentCommandJson<T>(input: {
       );
     }
   }
+}
+
+async function signAndCreateManagedSolanaNonceAccount(input: {
+  rpcUrl: string;
+  chainId: string | number;
+  recentBlockhash: string;
+  feePayer: string;
+  nonceAccount: string;
+  seed: string;
+  auth: AgentCommandAuthOptions;
+  config: WlfiConfig;
+  asJson: boolean;
+}): Promise<string> {
+  const {
+    broadcastSignedSolanaTransaction,
+    getSolanaNonceAccountRentLamports,
+    waitForSolanaSignatureStatus,
+  } = await loadSolanaTransferModule();
+  const rentLamports = await getSolanaNonceAccountRentLamports(input.rpcUrl);
+  const signed = await runAgentCommandJson<RustBroadcastOutput>({
+    commandArgs: [
+      'solana-nonce-account-create',
+      '--network',
+      String(input.chainId),
+      '--recent-blockhash',
+      input.recentBlockhash,
+      '--fee-payer',
+      input.feePayer,
+      '--nonce-account',
+      input.nonceAccount,
+      '--seed',
+      input.seed,
+      '--rent-lamports',
+      rentLamports,
+    ],
+    auth: input.auth,
+    config: input.config,
+    asJson: input.asJson,
+  });
+  if (!signed?.raw_tx_base64) {
+    throw new Error('Rust agent did not return raw_tx_base64 for Solana nonce account creation');
+  }
+
+  const networkTxId = await broadcastSignedSolanaTransaction(input.rpcUrl, signed.raw_tx_base64);
+  const status = await waitForSolanaSignatureStatus({
+    rpcUrl: input.rpcUrl,
+    signature: networkTxId,
+  });
+  if (status.err) {
+    throw new Error(
+      `Solana nonce account creation failed for ${networkTxId}: ${JSON.stringify(status.err)}`,
+    );
+  }
+  if (status.timedOut) {
+    throw new Error(`Timed out waiting for Solana nonce account creation: ${networkTxId}`);
+  }
+  return networkTxId;
+}
+
+async function resolveSolanaDurableNonceForBroadcast(input: {
+  rpcUrl: string;
+  chainId: string | number;
+  recentBlockhash: string;
+  feePayer: string;
+  explicitNonceAccount?: string;
+  auth: AgentCommandAuthOptions;
+  config: WlfiConfig;
+  asJson: boolean;
+}): Promise<SolanaDurableNonceContext> {
+  const {
+    deriveSolanaManagedNonceAccount,
+    resolveSolanaDurableNonceContext,
+    resolveSolanaDurableNonceContextIfExists,
+  } = await loadSolanaTransferModule();
+  if (input.explicitNonceAccount?.trim()) {
+    return resolveSolanaDurableNonceContext({
+      rpcUrl: input.rpcUrl,
+      nonceAccount: input.explicitNonceAccount,
+      expectedAuthority: input.feePayer,
+    });
+  }
+
+  const managed = await deriveSolanaManagedNonceAccount({
+    chainId: input.chainId,
+    feePayer: input.feePayer,
+  });
+  const existing = await resolveSolanaDurableNonceContextIfExists({
+    rpcUrl: input.rpcUrl,
+    nonceAccount: managed.nonceAccount,
+    expectedAuthority: input.feePayer,
+  });
+  if (existing) {
+    return existing;
+  }
+
+  try {
+    await signAndCreateManagedSolanaNonceAccount({
+      rpcUrl: input.rpcUrl,
+      chainId: input.chainId,
+      recentBlockhash: input.recentBlockhash,
+      feePayer: input.feePayer,
+      nonceAccount: managed.nonceAccount,
+      seed: managed.seed,
+      auth: input.auth,
+      config: input.config,
+      asJson: input.asJson,
+    });
+  } catch (error) {
+    const afterFailure = await resolveSolanaDurableNonceContextIfExists({
+      rpcUrl: input.rpcUrl,
+      nonceAccount: managed.nonceAccount,
+      expectedAuthority: input.feePayer,
+    });
+    if (afterFailure) {
+      return afterFailure;
+    }
+    throw error;
+  }
+
+  return resolveSolanaDurableNonceContext({
+    rpcUrl: input.rpcUrl,
+    nonceAccount: managed.nonceAccount,
+    expectedAuthority: input.feePayer,
+  });
 }
 
 function legacyAmountToDecimalString(value: number | undefined): string | undefined {
@@ -2926,7 +3166,11 @@ function buildAdminTokenCommand(): Command {
     .option('--daily <amount>', 'Default daily policy amount in token units')
     .option('--weekly <amount>', 'Default weekly policy amount in token units')
     .option('--daemon-socket <path>', 'Daemon unix socket path used when applying the saved policy')
-    .option('--vault-password-stdin', 'Read vault password from stdin when applying to the daemon', false)
+    .option(
+      '--vault-password-stdin',
+      'Read vault password from stdin when applying to the daemon',
+      false,
+    )
     .option('--non-interactive', 'Disable password prompts; requires --vault-password-stdin', false)
     .option('--json', 'Print JSON output', false)
     .action(
@@ -3528,7 +3772,9 @@ async function main() {
 
   agentAuthCommand
     .command('rotate')
-    .description('Rotate the agent auth token via Rust admin flow, then store it in local credential storage')
+    .description(
+      'Rotate the agent auth token via Rust admin flow, then store it in local credential storage',
+    )
     .option('--agent-key-id <uuid>', 'Agent key id (defaults to configured agentKeyId)')
     .option('--vault-password-stdin', 'Read vault password from stdin', false)
     .option('--non-interactive', 'Disable password prompts', false)
@@ -3655,6 +3901,8 @@ async function main() {
       const profile = await resolveWalletProfileWithBalances(config, {
         getNativeBalance,
         getTokenBalance,
+        getSplTokenBalance,
+        getSolanaNativeBalance,
       });
       print(options.json ? profile : formatWalletProfileText(profile), options.json);
     });
@@ -3790,6 +4038,330 @@ async function main() {
 
   addAgentCommandAuthOptions(
     program
+      .command('transfer-sol')
+      .description('Submit a native SOL transfer request through policy checks')
+      .requiredOption('--network <name>', 'Network name')
+      .requiredOption('--to <address>', 'Recipient Solana address')
+      .requiredOption('--amount <amount>', 'Transfer amount in SOL')
+      .option('--broadcast', 'Broadcast the signed transaction through RPC', false)
+      .option(
+        '--rpc-url <url>',
+        'Solana RPC URL override used only for blockhash lookup and broadcast',
+      )
+      .option(
+        '--fee-payer <address>',
+        'Fee payer override; defaults to the configured wallet ed25519 public key',
+      )
+      .addOption(
+        new Option(
+          '--durable-nonce-account <address>',
+          'Internal Solana nonce account override',
+        ).hideHelp(),
+      )
+      .option('--compute-unit-limit <units>', 'Optional compute unit limit override')
+      .option('--compute-unit-price-micro-lamports <price>', 'Optional compute unit price override')
+      .option('--no-wait', 'Do not wait up to 30s for signature confirmation after broadcast')
+      .option(
+        '--reveal-raw-tx',
+        'Include the signed raw transaction bytes in broadcast output',
+        false,
+      )
+      .addOption(new Option('--amount-wei <amount>').hideHelp()),
+  ).action(async (options) => {
+    const config = readConfig();
+    const networkProfile = resolveCliNetworkProfile(options.network, config);
+    if (!isSolanaChainProfile(networkProfile)) {
+      throw new Error(`network '${options.network}' is not a Solana network`);
+    }
+    const {
+      broadcastSignedSolanaTransaction,
+      resolveSolanaComputeBudget,
+      resolveSolanaSolTransferContext,
+      resolveSolanaWalletAddress,
+    } = await loadSolanaTransferModule();
+    const rpcUrl = resolveCliRpcUrl(options.rpcUrl, options.network, config);
+    const feePayer = options.feePayer
+      ? String(options.feePayer).trim()
+      : resolveSolanaWalletAddress(config);
+    const context = await resolveSolanaSolTransferContext({
+      rpcUrl,
+      feePayer,
+      recipient: options.to,
+    });
+    try {
+      const amountWei = options.amount
+        ? parseConfiguredAmount(options.amount, context.asset.decimals, 'amount')
+        : parseBigIntString(options.amountWei, 'amountWei');
+      const computeBudget = await resolveSolanaComputeBudget({
+        rpcUrl,
+        defaultComputeUnitLimit: SOLANA_SOL_TRANSFER_COMPUTE_UNIT_LIMIT,
+        computeUnitLimit: options.computeUnitLimit,
+        computeUnitPriceMicroLamports: options.computeUnitPriceMicroLamports,
+      });
+      const resolveDurableNonce = () =>
+        options.broadcast || options.durableNonceAccount
+          ? resolveSolanaDurableNonceForBroadcast({
+              rpcUrl,
+              chainId: networkProfile.chainId,
+              recentBlockhash: context.recentBlockhash,
+              feePayer: context.feePayer,
+              explicitNonceAccount: options.durableNonceAccount,
+              auth: options,
+              config,
+              asJson: options.json,
+            })
+          : Promise.resolve(null);
+
+      const signed = await runAgentCommandJson<RustBroadcastOutput>({
+        commandArgs: async () => {
+          const durableNonce = await resolveDurableNonce();
+          return [
+            'solana-sol-transfer',
+            '--network',
+            String(networkProfile.chainId),
+            '--recent-blockhash',
+            durableNonce?.nonce ?? context.recentBlockhash,
+            ...(durableNonce ? ['--durable-nonce-account', durableNonce.nonceAccount] : []),
+            '--fee-payer',
+            context.feePayer,
+            '--to',
+            context.recipient,
+            '--amount-wei',
+            amountWei.toString(),
+            ...(computeBudget.computeUnitLimit
+              ? ['--compute-unit-limit', computeBudget.computeUnitLimit]
+              : []),
+            ...(computeBudget.computeUnitPriceMicroLamports
+              ? ['--compute-unit-price-micro-lamports', computeBudget.computeUnitPriceMicroLamports]
+              : []),
+          ];
+        },
+        auth: options,
+        config,
+        asJson: options.json,
+        waitForManualApproval: options.broadcast,
+      });
+      if (!signed) {
+        return;
+      }
+
+      const normalized = normalizeAgentAmountOutput(signed, context.asset);
+      if (!options.broadcast) {
+        print(
+          {
+            ...normalized,
+            feePayer: context.feePayer,
+          },
+          options.json,
+        );
+        return;
+      }
+
+      if (!signed.raw_tx_base64) {
+        throw new Error('Rust agent did not return raw_tx_base64 for Solana transfer signing');
+      }
+
+      const networkTxId = await broadcastSignedSolanaTransaction(rpcUrl, signed.raw_tx_base64);
+      print(
+        {
+          ...normalized,
+          feePayer: context.feePayer,
+          tx_id: signed.tx_id ?? null,
+          network_tx_id: networkTxId,
+          raw_tx_base64: options.revealRawTx ? signed.raw_tx_base64 : undefined,
+        },
+        options.json,
+      );
+      if (options.wait) {
+        await reportSolanaSignatureStatus({
+          rpcUrl,
+          signature: networkTxId,
+          asJson: options.json,
+        });
+      }
+    } catch (error) {
+      throw rewriteAgentAmountError(error, context.asset);
+    }
+  });
+
+  addAgentCommandAuthOptions(
+    program
+      .command('transfer-spl')
+      .description('Submit a plain SPL or Token-2022 transfer request through policy checks')
+      .requiredOption('--network <name>', 'Network name')
+      .requiredOption('--mint <address>', 'SPL Token or Token-2022 mint address')
+      .requiredOption('--to <address>', 'Recipient owner address')
+      .requiredOption('--amount <amount>', 'Transfer amount in token units')
+      .option('--broadcast', 'Broadcast the signed transaction through RPC', false)
+      .option(
+        '--rpc-url <url>',
+        'Solana RPC URL override used only for blockhash lookup and broadcast',
+      )
+      .option(
+        '--fee-payer <address>',
+        'Fee payer override; defaults to the configured wallet ed25519 public key',
+      )
+      .addOption(
+        new Option(
+          '--durable-nonce-account <address>',
+          'Internal Solana nonce account override',
+        ).hideHelp(),
+      )
+      .option('--compute-unit-limit <units>', 'Optional compute unit limit override')
+      .option('--compute-unit-price-micro-lamports <price>', 'Optional compute unit price override')
+      .option('--no-wait', 'Do not wait up to 30s for signature confirmation after broadcast')
+      .option(
+        '--reveal-raw-tx',
+        'Include the signed raw transaction bytes in broadcast output',
+        false,
+      )
+      .addOption(new Option('--amount-wei <amount>').hideHelp()),
+  ).action(async (options) => {
+    const config = readConfig();
+    const networkProfile = resolveCliNetworkProfile(options.network, config);
+    if (!isSolanaChainProfile(networkProfile)) {
+      throw new Error(`network '${options.network}' is not a Solana network`);
+    }
+    const {
+      broadcastSignedSolanaTransaction,
+      resolveSolanaComputeBudget,
+      resolveSolanaTransferContext,
+      resolveSolanaTransferFee,
+      resolveSolanaWalletAddress,
+    } = await loadSolanaTransferModule();
+    const rpcUrl = resolveCliRpcUrl(options.rpcUrl, options.network, config);
+    const feePayer = options.feePayer
+      ? String(options.feePayer).trim()
+      : resolveSolanaWalletAddress(config);
+    const context = await resolveSolanaTransferContext({
+      rpcUrl,
+      feePayer,
+      mint: options.mint,
+      recipientOwner: options.to,
+    });
+    try {
+      const amountWei = options.amount
+        ? parseConfiguredAmount(options.amount, context.asset.decimals, 'amount')
+        : parseBigIntString(options.amountWei, 'amountWei');
+      const computeBudget = await resolveSolanaComputeBudget({
+        rpcUrl,
+        defaultComputeUnitLimit: SOLANA_SPL_TRANSFER_COMPUTE_UNIT_LIMIT,
+        computeUnitLimit: options.computeUnitLimit,
+        computeUnitPriceMicroLamports: options.computeUnitPriceMicroLamports,
+      });
+      const transferFee = await resolveSolanaTransferFee({
+        rpcUrl,
+        mint: context.mint,
+        tokenProgram: context.tokenProgram,
+        amountWei,
+      });
+      const resolveDurableNonce = () =>
+        options.broadcast || options.durableNonceAccount
+          ? resolveSolanaDurableNonceForBroadcast({
+              rpcUrl,
+              chainId: networkProfile.chainId,
+              recentBlockhash: context.recentBlockhash,
+              feePayer: context.feePayer,
+              explicitNonceAccount: options.durableNonceAccount,
+              auth: options,
+              config,
+              asJson: options.json,
+            })
+          : Promise.resolve(null);
+
+      const signed = await runAgentCommandJson<RustBroadcastOutput>({
+        commandArgs: async () => {
+          const durableNonce = await resolveDurableNonce();
+          return [
+            'solana-spl-transfer',
+            '--network',
+            String(networkProfile.chainId),
+            '--recent-blockhash',
+            durableNonce?.nonce ?? context.recentBlockhash,
+            ...(durableNonce ? ['--durable-nonce-account', durableNonce.nonceAccount] : []),
+            '--fee-payer',
+            context.feePayer,
+            '--mint',
+            context.mint,
+            '--recipient-owner',
+            context.recipientOwner,
+            '--amount-wei',
+            amountWei.toString(),
+            '--decimals',
+            String(context.asset.decimals),
+            '--token-program',
+            context.tokenProgram,
+            ...(transferFee.transferFeeWei
+              ? ['--transfer-fee-wei', transferFee.transferFeeWei]
+              : []),
+            ...(computeBudget.computeUnitLimit
+              ? ['--compute-unit-limit', computeBudget.computeUnitLimit]
+              : []),
+            ...(computeBudget.computeUnitPriceMicroLamports
+              ? ['--compute-unit-price-micro-lamports', computeBudget.computeUnitPriceMicroLamports]
+              : []),
+          ];
+        },
+        auth: options,
+        config,
+        asJson: options.json,
+        waitForManualApproval: options.broadcast,
+      });
+      if (!signed) {
+        return;
+      }
+
+      const normalized = normalizeAgentAmountOutput(signed, context.asset);
+      if (!options.broadcast) {
+        print(
+          {
+            ...normalized,
+            feePayer: context.feePayer,
+            sourceAta: context.sourceAta,
+            destinationAta: context.destinationAta,
+            tokenProgram: context.tokenProgram,
+            transferInstruction: transferFee.transferInstruction,
+            transferFeeWei: transferFee.transferFeeWei,
+          },
+          options.json,
+        );
+        return;
+      }
+
+      if (!signed.raw_tx_base64) {
+        throw new Error('Rust agent did not return raw_tx_base64 for Solana transfer signing');
+      }
+
+      const networkTxId = await broadcastSignedSolanaTransaction(rpcUrl, signed.raw_tx_base64);
+      print(
+        {
+          ...normalized,
+          feePayer: context.feePayer,
+          sourceAta: context.sourceAta,
+          destinationAta: context.destinationAta,
+          tokenProgram: context.tokenProgram,
+          transferInstruction: transferFee.transferInstruction,
+          transferFeeWei: transferFee.transferFeeWei,
+          tx_id: signed.tx_id ?? null,
+          network_tx_id: networkTxId,
+          raw_tx_base64: options.revealRawTx ? signed.raw_tx_base64 : undefined,
+        },
+        options.json,
+      );
+      if (options.wait) {
+        await reportSolanaSignatureStatus({
+          rpcUrl,
+          signature: networkTxId,
+          asJson: options.json,
+        });
+      }
+    } catch (error) {
+      throw rewriteAgentAmountError(error, context.asset);
+    }
+  });
+
+  addAgentCommandAuthOptions(
+    program
       .command('transfer')
       .description('Submit an ERC-20 transfer request through policy checks')
       .requiredOption('--network <name>', 'Network name')
@@ -3822,7 +4394,11 @@ async function main() {
     const recipient = assertAddress(options.to, 'to');
     const rpcUrl = resolveCliRpcUrl(options.rpcUrl, options.network, config);
     const asset = await resolveErc20AssetWithRpcFallback(
-      config, network, token, rpcUrl, getTokenMetadata,
+      config,
+      network,
+      token,
+      rpcUrl,
+      getTokenMetadata,
     );
     const amountWei = options.amount
       ? parseConfiguredAmount(options.amount, asset.decimals, 'amount')
@@ -4117,7 +4693,11 @@ async function main() {
     const spender = assertAddress(options.spender, 'spender');
     const rpcUrl = resolveCliRpcUrl(options.rpcUrl, options.network, config);
     const asset = await resolveErc20AssetWithRpcFallback(
-      config, network, token, rpcUrl, getTokenMetadata,
+      config,
+      network,
+      token,
+      rpcUrl,
+      getTokenMetadata,
     );
     const amountWei = options.amount
       ? parseConfiguredAmount(options.amount, asset.decimals, 'amount')
@@ -4461,7 +5041,10 @@ async function main() {
       .command('mpp')
       .description('Fetch an MPP-protected URL using Tempo charge/session payment flows')
       .argument('<url>', 'Absolute MPP-protected URL')
-      .option('--amount <amount>', 'Expected payment amount in token units; omit to accept the server challenge amount')
+      .option(
+        '--amount <amount>',
+        'Expected payment amount in token units; omit to accept the server challenge amount',
+      )
       .option(
         '--deposit <amount>',
         'Tempo session deposit amount in token units; defaults to the challenge amount',
