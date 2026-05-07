@@ -6,20 +6,24 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 
 use crate::u128_as_decimal_string;
-use crate::{DomainError, EntityScope, EvmAddress};
+use crate::{DomainError, EntityScope, EvmAddress, RecipientId, SolanaAddress};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum AssetId {
     NativeEth,
+    NativeSol,
     Erc20(EvmAddress),
+    SplToken(SolanaAddress),
 }
 
 impl Display for AssetId {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NativeEth => f.write_str("native_eth"),
+            Self::NativeSol => f.write_str("native_sol"),
             Self::Erc20(token) => write!(f, "erc20:{token}"),
+            Self::SplToken(mint) => write!(f, "spl:{mint}"),
         }
     }
 }
@@ -58,7 +62,7 @@ pub struct SpendingPolicy {
     pub max_priority_fee_per_gas_wei: Option<u128>,
     pub max_calldata_bytes: Option<u128>,
     pub max_gas_spend_wei: Option<u128>,
-    pub recipients: EntityScope<EvmAddress>,
+    pub recipients: EntityScope<RecipientId>,
     pub assets: EntityScope<AssetId>,
     pub networks: EntityScope<u64>,
     pub approval_type: Option<ApprovalType>,
@@ -112,7 +116,7 @@ struct SpendingPolicyWire {
         with = "crate::u128_as_decimal_string::option"
     )]
     max_gas_spend_wei: Option<u128>,
-    recipients: EntityScope<EvmAddress>,
+    recipients: EntityScope<RecipientId>,
     assets: EntityScope<AssetId>,
     networks: EntityScope<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -265,27 +269,63 @@ impl SpendingPolicy {
         assets: EntityScope<AssetId>,
         networks: EntityScope<u64>,
     ) -> Result<Self, DomainError> {
+        Self::new_with_recipient_scope(
+            priority,
+            policy_type,
+            max_amount_wei,
+            map_evm_recipient_scope(recipients),
+            assets,
+            networks,
+        )
+    }
+
+    pub fn new_with_recipient_scope(
+        priority: u32,
+        policy_type: PolicyType,
+        max_amount_wei: u128,
+        recipients: EntityScope<RecipientId>,
+        assets: EntityScope<AssetId>,
+        networks: EntityScope<u64>,
+    ) -> Result<Self, DomainError> {
         match policy_type {
-            PolicyType::DailyMaxTxCount => {
-                Self::new_tx_count_limit(priority, max_amount_wei, recipients, assets, networks)
-            }
-            PolicyType::PerTxMaxFeePerGas => {
-                Self::new_fee_per_gas_limit(priority, max_amount_wei, recipients, assets, networks)
-            }
-            PolicyType::PerTxMaxPriorityFeePerGas => Self::new_priority_fee_per_gas_limit(
+            PolicyType::DailyMaxTxCount => Self::new_tx_count_limit_with_recipient_scope(
                 priority,
                 max_amount_wei,
                 recipients,
                 assets,
                 networks,
             ),
-            PolicyType::PerTxMaxCalldataBytes => {
-                Self::new_calldata_limit(priority, max_amount_wei, recipients, assets, networks)
+            PolicyType::PerTxMaxFeePerGas => Self::new_fee_per_gas_limit_with_recipient_scope(
+                priority,
+                max_amount_wei,
+                recipients,
+                assets,
+                networks,
+            ),
+            PolicyType::PerTxMaxPriorityFeePerGas => {
+                Self::new_priority_fee_per_gas_limit_with_recipient_scope(
+                    priority,
+                    max_amount_wei,
+                    recipients,
+                    assets,
+                    networks,
+                )
             }
-            PolicyType::PerChainMaxGasSpend => {
-                Self::new_gas_spend_limit(priority, max_amount_wei, recipients, assets, networks)
-            }
-            _ => Self::new_with_range(
+            PolicyType::PerTxMaxCalldataBytes => Self::new_calldata_limit_with_recipient_scope(
+                priority,
+                max_amount_wei,
+                recipients,
+                assets,
+                networks,
+            ),
+            PolicyType::PerChainMaxGasSpend => Self::new_gas_spend_limit_with_recipient_scope(
+                priority,
+                max_amount_wei,
+                recipients,
+                assets,
+                networks,
+            ),
+            _ => Self::new_with_range_and_recipient_scope(
                 priority,
                 policy_type,
                 None,
@@ -305,7 +345,25 @@ impl SpendingPolicy {
         assets: EntityScope<AssetId>,
         networks: EntityScope<u64>,
     ) -> Result<Self, DomainError> {
-        Self::new_with_range(
+        Self::new_manual_approval_with_recipient_scope(
+            priority,
+            min_amount_wei,
+            max_amount_wei,
+            map_evm_recipient_scope(recipients),
+            assets,
+            networks,
+        )
+    }
+
+    pub fn new_manual_approval_with_recipient_scope(
+        priority: u32,
+        min_amount_wei: u128,
+        max_amount_wei: u128,
+        recipients: EntityScope<RecipientId>,
+        assets: EntityScope<AssetId>,
+        networks: EntityScope<u64>,
+    ) -> Result<Self, DomainError> {
+        Self::new_with_range_and_recipient_scope(
             priority,
             PolicyType::ManualApproval,
             Some(min_amount_wei),
@@ -349,6 +407,22 @@ impl SpendingPolicy {
         assets: EntityScope<AssetId>,
         networks: EntityScope<u64>,
     ) -> Result<Self, DomainError> {
+        Self::new_calldata_limit_with_recipient_scope(
+            priority,
+            max_calldata_bytes,
+            map_evm_recipient_scope(recipients),
+            assets,
+            networks,
+        )
+    }
+
+    pub fn new_calldata_limit_with_recipient_scope(
+        priority: u32,
+        max_calldata_bytes: u128,
+        recipients: EntityScope<RecipientId>,
+        assets: EntityScope<AssetId>,
+        networks: EntityScope<u64>,
+    ) -> Result<Self, DomainError> {
         Self::new_specialized_limit(
             priority,
             PolicyType::PerTxMaxCalldataBytes,
@@ -363,6 +437,22 @@ impl SpendingPolicy {
         priority: u32,
         max_tx_count: u128,
         recipients: EntityScope<EvmAddress>,
+        assets: EntityScope<AssetId>,
+        networks: EntityScope<u64>,
+    ) -> Result<Self, DomainError> {
+        Self::new_tx_count_limit_with_recipient_scope(
+            priority,
+            max_tx_count,
+            map_evm_recipient_scope(recipients),
+            assets,
+            networks,
+        )
+    }
+
+    pub fn new_tx_count_limit_with_recipient_scope(
+        priority: u32,
+        max_tx_count: u128,
+        recipients: EntityScope<RecipientId>,
         assets: EntityScope<AssetId>,
         networks: EntityScope<u64>,
     ) -> Result<Self, DomainError> {
@@ -383,6 +473,22 @@ impl SpendingPolicy {
         assets: EntityScope<AssetId>,
         networks: EntityScope<u64>,
     ) -> Result<Self, DomainError> {
+        Self::new_fee_per_gas_limit_with_recipient_scope(
+            priority,
+            max_fee_per_gas_wei,
+            map_evm_recipient_scope(recipients),
+            assets,
+            networks,
+        )
+    }
+
+    pub fn new_fee_per_gas_limit_with_recipient_scope(
+        priority: u32,
+        max_fee_per_gas_wei: u128,
+        recipients: EntityScope<RecipientId>,
+        assets: EntityScope<AssetId>,
+        networks: EntityScope<u64>,
+    ) -> Result<Self, DomainError> {
         Self::new_specialized_limit(
             priority,
             PolicyType::PerTxMaxFeePerGas,
@@ -400,6 +506,22 @@ impl SpendingPolicy {
         assets: EntityScope<AssetId>,
         networks: EntityScope<u64>,
     ) -> Result<Self, DomainError> {
+        Self::new_priority_fee_per_gas_limit_with_recipient_scope(
+            priority,
+            max_priority_fee_per_gas_wei,
+            map_evm_recipient_scope(recipients),
+            assets,
+            networks,
+        )
+    }
+
+    pub fn new_priority_fee_per_gas_limit_with_recipient_scope(
+        priority: u32,
+        max_priority_fee_per_gas_wei: u128,
+        recipients: EntityScope<RecipientId>,
+        assets: EntityScope<AssetId>,
+        networks: EntityScope<u64>,
+    ) -> Result<Self, DomainError> {
         Self::new_specialized_limit(
             priority,
             PolicyType::PerTxMaxPriorityFeePerGas,
@@ -414,6 +536,22 @@ impl SpendingPolicy {
         priority: u32,
         max_gas_spend_wei: u128,
         recipients: EntityScope<EvmAddress>,
+        assets: EntityScope<AssetId>,
+        networks: EntityScope<u64>,
+    ) -> Result<Self, DomainError> {
+        Self::new_gas_spend_limit_with_recipient_scope(
+            priority,
+            max_gas_spend_wei,
+            map_evm_recipient_scope(recipients),
+            assets,
+            networks,
+        )
+    }
+
+    pub fn new_gas_spend_limit_with_recipient_scope(
+        priority: u32,
+        max_gas_spend_wei: u128,
+        recipients: EntityScope<RecipientId>,
         assets: EntityScope<AssetId>,
         networks: EntityScope<u64>,
     ) -> Result<Self, DomainError> {
@@ -436,11 +574,31 @@ impl SpendingPolicy {
         assets: EntityScope<AssetId>,
         networks: EntityScope<u64>,
     ) -> Result<Self, DomainError> {
+        Self::new_with_range_and_recipient_scope(
+            priority,
+            policy_type,
+            min_amount_wei,
+            max_amount_wei,
+            map_evm_recipient_scope(recipients),
+            assets,
+            networks,
+        )
+    }
+
+    pub fn new_with_range_and_recipient_scope(
+        priority: u32,
+        policy_type: PolicyType,
+        min_amount_wei: Option<u128>,
+        max_amount_wei: u128,
+        recipients: EntityScope<RecipientId>,
+        assets: EntityScope<AssetId>,
+        networks: EntityScope<u64>,
+    ) -> Result<Self, DomainError> {
         if Self::uses_dedicated_limit_field(policy_type) {
             if min_amount_wei.is_some() {
                 return Err(DomainError::InvalidAmount);
             }
-            return Self::new(
+            return Self::new_with_recipient_scope(
                 priority,
                 policy_type,
                 max_amount_wei,
@@ -642,7 +800,7 @@ impl SpendingPolicy {
         priority: u32,
         policy_type: PolicyType,
         limit: u128,
-        recipients: EntityScope<EvmAddress>,
+        recipients: EntityScope<RecipientId>,
         assets: EntityScope<AssetId>,
         networks: EntityScope<u64>,
     ) -> Result<Self, DomainError> {
@@ -736,8 +894,17 @@ pub struct SpendEvent {
     pub agent_key_id: Uuid,
     pub chain_id: u64,
     pub asset: AssetId,
-    pub recipient: EvmAddress,
+    pub recipient: RecipientId,
     #[serde(with = "u128_as_decimal_string")]
     pub amount_wei: u128,
     pub at: OffsetDateTime,
+}
+
+fn map_evm_recipient_scope(scope: EntityScope<EvmAddress>) -> EntityScope<RecipientId> {
+    match scope {
+        EntityScope::All => EntityScope::All,
+        EntityScope::Set(values) => {
+            EntityScope::Set(values.into_iter().map(RecipientId::Evm).collect())
+        }
+    }
 }

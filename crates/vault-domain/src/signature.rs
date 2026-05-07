@@ -5,6 +5,9 @@ use serde::{Deserialize, Serialize};
 pub struct Signature {
     /// Signature bytes in ECDSA ASN.1 DER (`X9.62`) encoding.
     pub bytes: Vec<u8>,
+    /// Optional base58-encoded Ed25519 signature.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signature_base58: Option<String>,
     /// Optional 32-byte `r` scalar as `0x`-prefixed hex.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub r_hex: Option<String>,
@@ -20,6 +23,12 @@ pub struct Signature {
     /// Optional transaction hash as `0x`-prefixed hex.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tx_hash_hex: Option<String>,
+    /// Optional signed serialized transaction encoded as base64.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_tx_base64: Option<String>,
+    /// Optional chain-native transaction identifier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_id: Option<String>,
 }
 
 impl Signature {

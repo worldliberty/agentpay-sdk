@@ -19,10 +19,10 @@ use thiserror::Error;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 use vault_domain::{
-    manual_approval_capability_token, AdminSession, AgentAction, AgentCredentials, AgentKey, Lease,
-    ManualApprovalDecision, ManualApprovalRequest, ManualApprovalStatus, NonceReleaseRequest,
-    NonceReservation, NonceReservationRequest, PolicyAttachment, RelayConfig, SignRequest,
-    Signature, SpendEvent, SpendingPolicy, VaultKey,
+    manual_approval_capability_token, AdminSession, AgentAction, AgentCredentials, AgentKey,
+    KeyAlgorithm, Lease, ManualApprovalDecision, ManualApprovalRequest, ManualApprovalStatus,
+    NonceReleaseRequest, NonceReservation, NonceReservationRequest, PolicyAttachment, RelayConfig,
+    SignRequest, Signature, SpendEvent, SpendingPolicy, VaultKey,
 };
 use vault_policy::{
     PolicyDecision, PolicyEngine, PolicyError, PolicyEvaluation, PolicyExplanation,

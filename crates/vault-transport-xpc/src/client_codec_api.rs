@@ -377,6 +377,22 @@ impl KeyManagerDaemonApi for XpcDaemonClient {
         }
     }
 
+    async fn list_policy_summaries(
+        &self,
+        session: &AdminSession,
+    ) -> Result<Vec<PolicySummary>, DaemonError> {
+        match self.call_rpc(DaemonRpcRequest::ListPolicySummaries {
+            session: session.clone(),
+        }) {
+            Ok(DaemonRpcResponse::PolicySummaries(summaries)) => Ok(summaries),
+            Ok(_) => Err(DaemonError::Transport(
+                "unexpected response type".to_string(),
+            )),
+            Err(XpcTransportError::Daemon(err)) => Err(err),
+            Err(err) => Err(DaemonError::Transport(err.to_string())),
+        }
+    }
+
     async fn disable_policy(
         &self,
         session: &AdminSession,
@@ -465,6 +481,24 @@ impl KeyManagerDaemonApi for XpcDaemonClient {
             vault_key_id,
         }) {
             Ok(DaemonRpcResponse::PrivateKey(private_key)) => Ok(private_key),
+            Ok(_) => Err(DaemonError::Transport(
+                "unexpected response type".to_string(),
+            )),
+            Err(XpcTransportError::Daemon(err)) => Err(err),
+            Err(err) => Err(DaemonError::Transport(err.to_string())),
+        }
+    }
+
+    async fn solana_public_key_hex(
+        &self,
+        session: &AdminSession,
+        vault_key_id: Uuid,
+    ) -> Result<String, DaemonError> {
+        match self.call_rpc(DaemonRpcRequest::SolanaPublicKey {
+            session: session.clone(),
+            vault_key_id,
+        }) {
+            Ok(DaemonRpcResponse::PublicKey(public_key)) => Ok(public_key),
             Ok(_) => Err(DaemonError::Transport(
                 "unexpected response type".to_string(),
             )),

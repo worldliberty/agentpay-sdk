@@ -19,11 +19,14 @@ export interface RustAmountOutputShape {
   tx_type?: string;
   delegation_enabled?: boolean;
   signature_hex: string;
+  signature_base58?: string;
   r_hex?: string;
   s_hex?: string;
   v?: number;
   raw_tx_hex?: string;
   tx_hash_hex?: string;
+  raw_tx_base64?: string;
+  tx_id?: string;
 }
 
 function normalizeAddress(value: string): string {
@@ -132,11 +135,7 @@ export function resolveConfiguredNativeAsset(
   );
 }
 
-export function parseConfiguredAmount(
-  value: string,
-  decimals: number,
-  label = 'amount',
-): bigint {
+export function parseConfiguredAmount(value: string, decimals: number, label = 'amount'): bigint {
   const normalized = value.trim();
   if (!normalized) {
     throw new Error(`${label} is required`);
@@ -188,11 +187,14 @@ export function normalizeAgentAmountOutput(
     tx_type: output.tx_type,
     delegation_enabled: output.delegation_enabled,
     signature_hex: output.signature_hex,
+    signature_base58: output.signature_base58,
     r_hex: output.r_hex,
     s_hex: output.s_hex,
     v: output.v,
     raw_tx_hex: output.raw_tx_hex,
     tx_hash_hex: output.tx_hash_hex,
+    raw_tx_base64: output.raw_tx_base64,
+    tx_id: output.tx_id,
   };
 }
 
@@ -204,6 +206,11 @@ export function rewriteAmountPolicyErrorMessage(
     `${formatConfiguredAmount(value, asset.decimals)} ${asset.symbol}`;
 
   return message
+    .replace(
+      /amount max (\d+) < requested (\d+)/gu,
+      (_match, maxAmountWei: string, requestedAmountWei: string) =>
+        `amount max ${formatAmount(maxAmountWei)} < requested ${formatAmount(requestedAmountWei)}`,
+    )
     .replace(
       /per transaction max (\d+) < requested (\d+)/gu,
       (_match, maxAmountWei: string, requestedAmountWei: string) =>

@@ -897,6 +897,9 @@ fn action_name(action: &AgentAction) -> &'static str {
     match action {
         AgentAction::Approve { .. } => "approve",
         AgentAction::Transfer { .. } => "transfer",
+        AgentAction::SolanaSplTransfer { .. } => "transfer",
+        AgentAction::SolanaSolTransfer { .. } => "transfer_native",
+        AgentAction::SolanaNonceAccountCreate { .. } => "solana_nonce_account_create",
         AgentAction::TransferNative { .. } => "transfer_native",
         AgentAction::Permit2Permit { .. } => "permit2_permit",
         AgentAction::Eip3009TransferWithAuthorization { .. } => {
@@ -913,8 +916,9 @@ fn action_name(action: &AgentAction) -> &'static str {
 
 fn asset_token_address(asset: &AssetId) -> Option<String> {
     match asset {
-        AssetId::NativeEth => None,
+        AssetId::NativeEth | AssetId::NativeSol => None,
         AssetId::Erc20(token) => Some(token.to_string()),
+        AssetId::SplToken(mint) => Some(mint.to_string()),
     }
 }
 
@@ -1193,7 +1197,7 @@ mod tests {
             },
             chain_id: 56,
             asset: AssetId::NativeEth,
-            recipient: sample_address("0x2222222222222222222222222222222222222222"),
+            recipient: sample_address("0x2222222222222222222222222222222222222222").into(),
             amount_wei: 1,
             created_at: OffsetDateTime::UNIX_EPOCH,
             updated_at: OffsetDateTime::UNIX_EPOCH,
@@ -1756,7 +1760,7 @@ mod tests {
             },
             chain_id: 56,
             asset: AssetId::NativeEth,
-            recipient: sample_address("0x2222222222222222222222222222222222222222"),
+            recipient: sample_address("0x2222222222222222222222222222222222222222").into(),
             amount_wei: 1,
             created_at: OffsetDateTime::UNIX_EPOCH,
             updated_at: OffsetDateTime::UNIX_EPOCH,

@@ -19,21 +19,22 @@ import {
   resolveAdminAccess,
 } from './admin-guard.js';
 import {
+  resolveAgentAuthStorageMetadata,
+  storeStoredAgentAuthToken,
+} from './agent-auth-storage.js';
+import {
   assertBootstrapSetupSummaryLeaseIsActive,
   type BootstrapSetupSummary,
   cleanupBootstrapAgentCredentialsFile,
   readBootstrapSetupFile,
 } from './bootstrap-credentials.js';
+import { canonicalPolicyChainId } from './network-selection.js';
 import {
   assertPrivateFileStats,
   assertTrustedAdminDaemonSocketPath,
   assertTrustedDirectoryPath,
   assertTrustedOwner,
 } from './fs-trust.js';
-import {
-  resolveAgentAuthStorageMetadata,
-  storeStoredAgentAuthToken,
-} from './agent-auth-storage.js';
 import { walletProfileFromBootstrapSummary } from './wallet-profile.js';
 
 const PRIVATE_DIR_MODE = 0o700;
@@ -801,7 +802,9 @@ function normalizeOptionalPositiveIntegerString(
 }
 
 function expectedWalletSetupNetworkScope(network: number | undefined): string {
-  return network === undefined ? 'all networks' : String(assertPositiveChainId(network));
+  return network === undefined
+    ? 'all networks'
+    : String(canonicalPolicyChainId(assertPositiveChainId(network)));
 }
 
 function expectedWalletSetupAssetScope(
@@ -966,7 +969,10 @@ function assertWalletSetupSummaryMatchesRequest(
     summary.assetScope !== null ||
     summary.recipientScope !== null;
 
-  if (usesLegacyBootstrap && summary.networkScope !== expectedWalletSetupNetworkScope(options.network)) {
+  if (
+    usesLegacyBootstrap &&
+    summary.networkScope !== expectedWalletSetupNetworkScope(options.network)
+  ) {
     throw new Error(
       'bootstrap summary network_scope does not match the requested wallet setup scope',
     );
@@ -974,14 +980,18 @@ function assertWalletSetupSummaryMatchesRequest(
 
   if (
     usesLegacyBootstrap &&
-    summary.assetScope !== expectedWalletSetupAssetScope(options.token, Boolean(options.allowNativeEth))
+    summary.assetScope !==
+      expectedWalletSetupAssetScope(options.token, Boolean(options.allowNativeEth))
   ) {
     throw new Error(
       'bootstrap summary asset_scope does not match the requested wallet setup scope',
     );
   }
 
-  if (usesLegacyBootstrap && summary.recipientScope !== expectedWalletSetupRecipientScope(options.recipient)) {
+  if (
+    usesLegacyBootstrap &&
+    summary.recipientScope !== expectedWalletSetupRecipientScope(options.recipient)
+  ) {
     throw new Error(
       'bootstrap summary recipient_scope does not match the requested wallet setup scope',
     );
@@ -1516,9 +1526,10 @@ export function completeWalletSetup(
 
     assertWalletSetupSummaryMatchesRequest(summary, options);
 
+    const walletProfile = walletProfileFromBootstrapSummary(summary);
     const nextConfig: WlfiConfig = {
       agentKeyId: credentials.agentKeyId,
-      wallet: walletProfileFromBootstrapSummary(summary),
+      wallet: walletProfile,
     };
 
     const daemonSocket = presentString(options.daemonSocket);
@@ -1546,6 +1557,7 @@ export function completeWalletSetup(
 
     result = {
       ...summary,
+      solanaAddress: summary.solanaAddress ?? walletProfile.solanaAddress ?? null,
       agentAuthToken: credentials.agentAuthToken,
       sourceCleanup: options.cleanupAction,
       keychain: {
@@ -1560,7 +1572,7 @@ export function completeWalletSetup(
   } finally {
     const cleanupResult = cleanupBootstrapAgentCredentialsFile(
       options.bootstrapOutputPath,
-      options.cleanupAction
+      options.cleanupAction,
     );
     if (cleanupResult.action === 'failed') {
       sourceCleanupWarning = cleanupResult.error;

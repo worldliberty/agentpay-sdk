@@ -16,6 +16,18 @@ pub enum KeySource {
     Imported,
 }
 
+/// Signing algorithm bound to a vault key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyAlgorithm {
+    Secp256k1,
+    Ed25519,
+}
+
+fn default_key_algorithm() -> KeyAlgorithm {
+    KeyAlgorithm::Secp256k1
+}
+
 /// Public metadata for a vault signing key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultKey {
@@ -23,6 +35,9 @@ pub struct VaultKey {
     pub id: Uuid,
     /// How key was created.
     pub source: KeySource,
+    /// Signing algorithm used by the key.
+    #[serde(default = "default_key_algorithm")]
+    pub algorithm: KeyAlgorithm,
     /// Uncompressed SEC1 public key bytes encoded as lowercase hex.
     pub public_key_hex: String,
     /// Creation timestamp.

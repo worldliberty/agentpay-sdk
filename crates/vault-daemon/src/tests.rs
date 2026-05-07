@@ -7,11 +7,13 @@ use alloy_primitives::keccak256;
 use async_trait::async_trait;
 use k256::ecdsa::{RecoveryId, Signature as K256Signature, VerifyingKey};
 use serde_json::to_vec;
+use solana_sdk::bs58;
 use uuid::Uuid;
 use vault_domain::{
-    AgentAction, AgentCredentials, AssetId, BroadcastTx, EntityScope, EvmAddress, KeySource, Lease,
-    ManualApprovalDecision, ManualApprovalStatus, NonceReleaseRequest, NonceReservation,
-    NonceReservationRequest, PolicyAttachment, PolicyType, RelayConfig, SignRequest, Signature,
+    AgentAction, AgentCredentials, AssetId, BroadcastTx, EntityScope, EvmAddress, KeyAlgorithm,
+    KeySource, Lease, ManualApprovalDecision, ManualApprovalStatus, NonceReleaseRequest,
+    NonceReservation, NonceReservationRequest, PolicyAttachment, PolicyType, RelayConfig,
+    SignRequest, Signature, SolanaNonceAccountCreate, SolanaSolTransfer, SolanaSplTransfer,
     SpendingPolicy, VaultKey,
 };
 use vault_policy::{PolicyDecision, PolicyEvaluation, PolicyExplanation};
@@ -25,7 +27,7 @@ use super::{
     validate_admin_password, validate_config, validate_loaded_state, validate_policy, AdminSession,
     DaemonConfig, DaemonError, DaemonRpcRequest, DaemonRpcResponse, EncryptedStateStore,
     InMemoryDaemon, KeyCreateRequest, KeyManagerDaemonApi, PersistedDaemonState,
-    PersistentStoreConfig, PolicyError,
+    PersistentStoreConfig, PolicyError, PolicySummary,
 };
 
 fn policy_all_per_tx(max: u128) -> SpendingPolicy {
@@ -62,6 +64,76 @@ fn sign_request(credentials: &AgentCredentials, action: AgentAction) -> SignRequ
         action,
         requested_at: now,
         expires_at: now + time::Duration::minutes(2),
+    }
+}
+
+fn sample_solana_spl_transfer_action(fee_payer: &VaultKey) -> AgentAction {
+    let fee_payer_bytes =
+        hex::decode(&fee_payer.public_key_hex).expect("ed25519 public key hex must decode");
+    let fee_payer = bs58::encode(fee_payer_bytes).into_string();
+    let mint = bs58::encode([7u8; 32]).into_string();
+    let recipient_owner = bs58::encode([9u8; 32]).into_string();
+    AgentAction::SolanaSplTransfer {
+        transfer: SolanaSplTransfer {
+            chain_id: 900_000_002,
+            recent_blockhash: bs58::encode([1u8; 32]).into_string(),
+            durable_nonce_account: None,
+            fee_payer: fee_payer.parse().expect("fee payer address"),
+            mint: mint.parse().expect("mint address"),
+            recipient_owner: recipient_owner.parse().expect("recipient owner address"),
+            amount_wei: 1,
+            decimals: 6,
+            token_program: vault_domain::SolanaTokenProgram::Token,
+            transfer_fee_wei: None,
+            compute_unit_limit: None,
+            compute_unit_price_micro_lamports: None,
+        },
+    }
+}
+
+fn sample_solana_sol_transfer_action(fee_payer: &VaultKey) -> AgentAction {
+    let fee_payer_bytes =
+        hex::decode(&fee_payer.public_key_hex).expect("ed25519 public key hex must decode");
+    let fee_payer = bs58::encode(fee_payer_bytes).into_string();
+    let to = bs58::encode([8u8; 32]).into_string();
+    AgentAction::SolanaSolTransfer {
+        transfer: SolanaSolTransfer {
+            chain_id: 900_000_002,
+            recent_blockhash: bs58::encode([1u8; 32]).into_string(),
+            durable_nonce_account: None,
+            fee_payer: fee_payer.parse().expect("fee payer address"),
+            to: to.parse().expect("recipient address"),
+            amount_wei: 1,
+            compute_unit_limit: None,
+            compute_unit_price_micro_lamports: None,
+        },
+    }
+}
+
+fn sample_solana_nonce_account_create_action(fee_payer: &VaultKey) -> AgentAction {
+    let fee_payer_bytes =
+        hex::decode(&fee_payer.public_key_hex).expect("ed25519 public key hex must decode");
+    let fee_payer_pubkey = solana_sdk::pubkey::Pubkey::new_from_array(
+        <[u8; 32]>::try_from(fee_payer_bytes.as_slice()).expect("ed25519 public key"),
+    );
+    let seed = "agentpay-900000002-nonce";
+    let nonce_account = solana_sdk::pubkey::Pubkey::create_with_seed(
+        &fee_payer_pubkey,
+        seed,
+        &"11111111111111111111111111111111"
+            .parse()
+            .expect("system program id"),
+    )
+    .expect("derive nonce account");
+    AgentAction::SolanaNonceAccountCreate {
+        create: SolanaNonceAccountCreate {
+            chain_id: 900_000_002,
+            recent_blockhash: bs58::encode([1u8; 32]).into_string(),
+            fee_payer: fee_payer_pubkey.to_string().parse().expect("fee payer"),
+            nonce_account: nonce_account.to_string().parse().expect("nonce account"),
+            seed: seed.to_string(),
+            rent_lamports: 1_500_000,
+        },
     }
 }
 
@@ -208,9 +280,31 @@ impl VaultSignerBackend for CleanupTrackingSignerBackend {
     }
 
     async fn create_vault_key(&self, request: KeyCreateRequest) -> Result<VaultKey, SignerError> {
-        let source = match request {
-            KeyCreateRequest::Generate => KeySource::Generated,
-            KeyCreateRequest::Import { .. } => KeySource::Imported,
+        let (source, algorithm, public_key_hex) = match request {
+            KeyCreateRequest::Generate => (
+                KeySource::Generated,
+                KeyAlgorithm::Secp256k1,
+                "11".repeat(33),
+            ),
+            KeyCreateRequest::GenerateWithAlgorithm { algorithm } => {
+                let public_key_hex = match algorithm {
+                    KeyAlgorithm::Secp256k1 => "11".repeat(33),
+                    KeyAlgorithm::Ed25519 => "11".repeat(32),
+                };
+                (KeySource::Generated, algorithm, public_key_hex)
+            }
+            KeyCreateRequest::Import { .. } => (
+                KeySource::Imported,
+                KeyAlgorithm::Secp256k1,
+                "11".repeat(33),
+            ),
+            KeyCreateRequest::ImportWithAlgorithm { algorithm, .. } => {
+                let public_key_hex = match algorithm {
+                    KeyAlgorithm::Secp256k1 => "11".repeat(33),
+                    KeyAlgorithm::Ed25519 => "11".repeat(32),
+                };
+                (KeySource::Imported, algorithm, public_key_hex)
+            }
         };
         let key_id = Uuid::new_v4();
         self.live_key_ids
@@ -220,7 +314,8 @@ impl VaultSignerBackend for CleanupTrackingSignerBackend {
         Ok(VaultKey {
             id: key_id,
             source,
-            public_key_hex: "11".repeat(33),
+            algorithm,
+            public_key_hex,
             created_at: time::OffsetDateTime::now_utc(),
         })
     }
@@ -273,7 +368,10 @@ impl VaultSignerBackend for TrackingNonExportableSignerBackend {
 
     async fn create_vault_key(&self, request: KeyCreateRequest) -> Result<VaultKey, SignerError> {
         match request {
-            KeyCreateRequest::Generate => {
+            KeyCreateRequest::Generate
+            | KeyCreateRequest::GenerateWithAlgorithm {
+                algorithm: KeyAlgorithm::Secp256k1,
+            } => {
                 let key_id = Uuid::new_v4();
                 self.created_key_ids
                     .write()
@@ -282,13 +380,30 @@ impl VaultSignerBackend for TrackingNonExportableSignerBackend {
                 Ok(VaultKey {
                     id: key_id,
                     source: KeySource::Generated,
+                    algorithm: KeyAlgorithm::Secp256k1,
                     public_key_hex: "04".to_string() + &"11".repeat(64),
                     created_at: time::OffsetDateTime::now_utc(),
                 })
             }
-            KeyCreateRequest::Import { .. } => Err(SignerError::Unsupported(
-                "imports not supported in test backend".to_string(),
-            )),
+            KeyCreateRequest::GenerateWithAlgorithm {
+                algorithm: KeyAlgorithm::Ed25519,
+            } => {
+                let key_id = Uuid::new_v4();
+                self.created_key_ids
+                    .write()
+                    .map_err(|_| SignerError::Internal("poisoned lock".into()))?
+                    .insert(key_id);
+                Ok(VaultKey {
+                    id: key_id,
+                    source: KeySource::Generated,
+                    algorithm: KeyAlgorithm::Ed25519,
+                    public_key_hex: "11".repeat(32),
+                    created_at: time::OffsetDateTime::now_utc(),
+                })
+            }
+            KeyCreateRequest::Import { .. } | KeyCreateRequest::ImportWithAlgorithm { .. } => Err(
+                SignerError::Unsupported("imports not supported in test backend".to_string()),
+            ),
         }
     }
 
@@ -364,6 +479,7 @@ fn sample_vault_key() -> VaultKey {
     VaultKey {
         id: Uuid::new_v4(),
         source: KeySource::Generated,
+        algorithm: KeyAlgorithm::Secp256k1,
         public_key_hex: "11".repeat(33),
         created_at: time::OffsetDateTime::now_utc(),
     }
@@ -620,6 +736,9 @@ fn daemon_rpc_request_debug_covers_all_variants() {
         DaemonRpcRequest::ListPolicies {
             session: session.clone(),
         },
+        DaemonRpcRequest::ListPolicySummaries {
+            session: session.clone(),
+        },
         DaemonRpcRequest::DisablePolicy {
             session: session.clone(),
             policy_id: Uuid::new_v4(),
@@ -758,6 +877,10 @@ fn daemon_rpc_response_debug_and_zeroize_cover_remaining_variants() {
         DaemonRpcResponse::Unit,
         DaemonRpcResponse::Lease(lease),
         DaemonRpcResponse::Policies(vec![policy_all_per_tx(100)]),
+        DaemonRpcResponse::PolicySummaries(vec![PolicySummary {
+            id: Uuid::new_v4(),
+            enabled: true,
+        }]),
         DaemonRpcResponse::PolicyEvaluation(sample_policy_evaluation()),
         DaemonRpcResponse::PolicyExplanation(sample_policy_explanation()),
         DaemonRpcResponse::VaultKey(sample_vault_key()),

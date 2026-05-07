@@ -19,6 +19,7 @@ use tokio::runtime::Handle;
 use uuid::Uuid;
 use vault_daemon::{
     DaemonError, DaemonRpcRequest, DaemonRpcResponse, InMemoryDaemon, KeyManagerDaemonApi,
+    PolicySummary,
 };
 use vault_domain::{
     AdminSession, AgentCredentials, Lease, ManualApprovalDecision, ManualApprovalRequest,

@@ -827,6 +827,7 @@ mod tests {
         let vault_key = VaultKey {
             id: Uuid::new_v4(),
             source: vault_domain::KeySource::Generated,
+            algorithm: vault_domain::KeyAlgorithm::Secp256k1,
             public_key_hex: hex::encode(
                 signing_key
                     .verifying_key()

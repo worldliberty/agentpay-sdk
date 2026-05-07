@@ -8,7 +8,8 @@ use uuid::Uuid;
 use vault_daemon::{DaemonError, KeyManagerDaemonApi};
 use vault_domain::{
     AgentAction, BroadcastTx, Eip3009Transfer, Eip712TypedData, EvmAddress, Signature,
-    TempoSessionOpenTransaction, TempoSessionTopUpTransaction, TempoSessionVoucher,
+    SolanaAddress, SolanaTokenProgram, TempoSessionOpenTransaction, TempoSessionTopUpTransaction,
+    TempoSessionVoucher,
 };
 use vault_sdk_agent::{AgentOperations, AgentSdk, AgentSdkError};
 use vault_transport_unix::{assert_root_owned_daemon_socket_path, UnixDaemonClient};
@@ -133,6 +134,69 @@ enum Commands {
         to: EvmAddress,
         #[arg(long, value_parser = parse_positive_u128)]
         amount_wei: u128,
+    },
+    #[command(about = "Submit a native SOL transfer request through policy checks")]
+    SolanaSolTransfer {
+        #[arg(long, value_parser = parse_positive_u64)]
+        network: u64,
+        #[arg(long)]
+        recent_blockhash: String,
+        #[arg(long)]
+        durable_nonce_account: Option<SolanaAddress>,
+        #[arg(long)]
+        fee_payer: SolanaAddress,
+        #[arg(long)]
+        to: SolanaAddress,
+        #[arg(long, value_parser = parse_positive_u128)]
+        amount_wei: u128,
+        #[arg(long, value_parser = parse_positive_u32)]
+        compute_unit_limit: Option<u32>,
+        #[arg(long, value_parser = parse_positive_u64)]
+        compute_unit_price_micro_lamports: Option<u64>,
+    },
+    #[command(
+        about = "Submit a plain SPL/Token-2022 token transfer request through policy checks"
+    )]
+    SolanaSplTransfer {
+        #[arg(long, value_parser = parse_positive_u64)]
+        network: u64,
+        #[arg(long)]
+        recent_blockhash: String,
+        #[arg(long)]
+        durable_nonce_account: Option<SolanaAddress>,
+        #[arg(long)]
+        fee_payer: SolanaAddress,
+        #[arg(long)]
+        mint: SolanaAddress,
+        #[arg(long)]
+        recipient_owner: SolanaAddress,
+        #[arg(long, value_parser = parse_positive_u128)]
+        amount_wei: u128,
+        #[arg(long)]
+        decimals: u8,
+        #[arg(long, value_parser = parse_solana_token_program, default_value = "token")]
+        token_program: SolanaTokenProgram,
+        #[arg(long, value_parser = parse_positive_u128)]
+        transfer_fee_wei: Option<u128>,
+        #[arg(long, value_parser = parse_positive_u32)]
+        compute_unit_limit: Option<u32>,
+        #[arg(long, value_parser = parse_positive_u64)]
+        compute_unit_price_micro_lamports: Option<u64>,
+    },
+    #[command(about = "Create an internal Solana durable nonce account")]
+    SolanaNonceAccountCreate {
+        #[arg(long, value_parser = parse_positive_u64)]
+        network: u64,
+        #[arg(long)]
+        recent_blockhash: String,
+        #[arg(long)]
+        fee_payer: SolanaAddress,
+        #[arg(long)]
+        nonce_account: SolanaAddress,
+        #[arg(long)]
+        seed: String,
+        #[arg(long, value_parser = parse_positive_u128)]
+        rent_lamports: u128,
     },
     #[command(about = "Submit an ERC-20 approve request through policy checks")]
     Approve {
@@ -299,6 +363,8 @@ struct AgentCommandOutput {
     delegation_enabled: Option<bool>,
     signature_hex: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    signature_base58: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     r_hex: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     s_hex: Option<String>,
@@ -308,6 +374,10 @@ struct AgentCommandOutput {
     raw_tx_hex: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tx_hash_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    raw_tx_base64: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tx_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -438,11 +508,14 @@ where
                 tx_type: None,
                 delegation_enabled: None,
                 signature_hex,
+                signature_base58: None,
                 r_hex,
                 s_hex,
                 v,
                 raw_tx_hex: None,
                 tx_hash_hex: None,
+                raw_tx_base64: None,
+                tx_id: None,
             };
             print_status("transfer request signed", output_format, quiet);
             print_agent_output(&output, output_format, output_target)?;
@@ -477,13 +550,188 @@ where
                 tx_type: None,
                 delegation_enabled: None,
                 signature_hex,
+                signature_base58: None,
                 r_hex,
                 s_hex,
                 v,
                 raw_tx_hex: None,
                 tx_hash_hex: None,
+                raw_tx_base64: None,
+                tx_id: None,
             };
             print_status("native transfer request signed", output_format, quiet);
+            print_agent_output(&output, output_format, output_target)?;
+        }
+        Commands::SolanaSplTransfer {
+            network,
+            recent_blockhash,
+            durable_nonce_account,
+            fee_payer,
+            mint,
+            recipient_owner,
+            amount_wei,
+            decimals,
+            token_program,
+            transfer_fee_wei,
+            compute_unit_limit,
+            compute_unit_price_micro_lamports,
+        } => {
+            let mint_str = mint.to_string();
+            let recipient_owner_str = recipient_owner.to_string();
+            print_status("submitting spl transfer request", output_format, quiet);
+            let signature = match await_signature_or_handle_manual_approval(
+                "solana-spl-transfer",
+                daemon_socket,
+                output_format,
+                output_target,
+                sdk.solana_spl_transfer(
+                    network,
+                    recent_blockhash,
+                    durable_nonce_account,
+                    fee_payer,
+                    mint,
+                    recipient_owner,
+                    amount_wei,
+                    decimals,
+                    token_program,
+                    transfer_fee_wei,
+                    compute_unit_limit,
+                    compute_unit_price_micro_lamports,
+                ),
+            )
+            .await?
+            {
+                Some(signature) => signature,
+                None => return Ok(CommandRunOutcome::ManualApprovalRequired),
+            };
+            let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);
+            let output = AgentCommandOutput {
+                command: "solana-spl-transfer".to_string(),
+                network: network.to_string(),
+                asset: format!("spl:{mint_str}"),
+                counterparty: recipient_owner_str,
+                amount_wei: amount_wei.to_string(),
+                estimated_max_gas_spend_wei: None,
+                tx_type: None,
+                delegation_enabled: None,
+                signature_hex,
+                signature_base58: signature.signature_base58.clone(),
+                r_hex,
+                s_hex,
+                v,
+                raw_tx_hex: None,
+                tx_hash_hex: None,
+                raw_tx_base64: signature.raw_tx_base64.clone(),
+                tx_id: signature.tx_id.clone(),
+            };
+            print_status("spl transfer request signed", output_format, quiet);
+            print_agent_output(&output, output_format, output_target)?;
+        }
+        Commands::SolanaSolTransfer {
+            network,
+            recent_blockhash,
+            durable_nonce_account,
+            fee_payer,
+            to,
+            amount_wei,
+            compute_unit_limit,
+            compute_unit_price_micro_lamports,
+        } => {
+            let to_str = to.to_string();
+            print_status("submitting sol transfer request", output_format, quiet);
+            let signature = match await_signature_or_handle_manual_approval(
+                "solana-sol-transfer",
+                daemon_socket,
+                output_format,
+                output_target,
+                sdk.solana_sol_transfer(
+                    network,
+                    recent_blockhash,
+                    durable_nonce_account,
+                    fee_payer,
+                    to,
+                    amount_wei,
+                    compute_unit_limit,
+                    compute_unit_price_micro_lamports,
+                ),
+            )
+            .await?
+            {
+                Some(signature) => signature,
+                None => return Ok(CommandRunOutcome::ManualApprovalRequired),
+            };
+            let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);
+            let output = AgentCommandOutput {
+                command: "solana-sol-transfer".to_string(),
+                network: network.to_string(),
+                asset: "native_sol".to_string(),
+                counterparty: to_str,
+                amount_wei: amount_wei.to_string(),
+                estimated_max_gas_spend_wei: None,
+                tx_type: None,
+                delegation_enabled: None,
+                signature_hex,
+                signature_base58: signature.signature_base58.clone(),
+                r_hex,
+                s_hex,
+                v,
+                raw_tx_hex: None,
+                tx_hash_hex: None,
+                raw_tx_base64: signature.raw_tx_base64.clone(),
+                tx_id: signature.tx_id.clone(),
+            };
+            print_status("sol transfer request signed", output_format, quiet);
+            print_agent_output(&output, output_format, output_target)?;
+        }
+        Commands::SolanaNonceAccountCreate {
+            network,
+            recent_blockhash,
+            fee_payer,
+            nonce_account,
+            seed,
+            rent_lamports,
+        } => {
+            let nonce_account_str = nonce_account.to_string();
+            print_status(
+                "creating solana durable nonce account",
+                output_format,
+                quiet,
+            );
+            let signature = sdk
+                .solana_nonce_account_create(
+                    network,
+                    recent_blockhash,
+                    fee_payer,
+                    nonce_account,
+                    seed,
+                    rent_lamports,
+                )
+                .await?;
+            let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);
+            let output = AgentCommandOutput {
+                command: "solana-nonce-account-create".to_string(),
+                network: network.to_string(),
+                asset: "native_sol".to_string(),
+                counterparty: nonce_account_str,
+                amount_wei: rent_lamports.to_string(),
+                estimated_max_gas_spend_wei: None,
+                tx_type: None,
+                delegation_enabled: None,
+                signature_hex,
+                signature_base58: signature.signature_base58.clone(),
+                r_hex,
+                s_hex,
+                v,
+                raw_tx_hex: None,
+                tx_hash_hex: None,
+                raw_tx_base64: signature.raw_tx_base64.clone(),
+                tx_id: signature.tx_id.clone(),
+            };
+            print_status(
+                "solana durable nonce account transaction signed",
+                output_format,
+                quiet,
+            );
             print_agent_output(&output, output_format, output_target)?;
         }
         Commands::Approve {
@@ -518,11 +766,14 @@ where
                 tx_type: None,
                 delegation_enabled: None,
                 signature_hex,
+                signature_base58: None,
                 r_hex,
                 s_hex,
                 v,
                 raw_tx_hex: None,
                 tx_hash_hex: None,
+                raw_tx_base64: None,
+                tx_id: None,
             };
             print_status("approve request signed", output_format, quiet);
             print_agent_output(&output, output_format, output_target)?;
@@ -581,11 +832,14 @@ where
                 tx_type: None,
                 delegation_enabled: None,
                 signature_hex,
+                signature_base58: None,
                 r_hex,
                 s_hex,
                 v,
                 raw_tx_hex: None,
                 tx_hash_hex: None,
+                raw_tx_base64: None,
+                tx_id: None,
             };
             print_status(
                 "eip3009 transferWithAuthorization request signed",
@@ -648,11 +902,14 @@ where
                 tx_type: None,
                 delegation_enabled: None,
                 signature_hex,
+                signature_base58: None,
                 r_hex,
                 s_hex,
                 v,
                 raw_tx_hex: None,
                 tx_hash_hex: None,
+                raw_tx_base64: None,
+                tx_id: None,
             };
             print_status(
                 "eip3009 receiveWithAuthorization request signed",
@@ -707,11 +964,14 @@ where
                 tx_type: None,
                 delegation_enabled: None,
                 signature_hex,
+                signature_base58: None,
                 r_hex,
                 s_hex,
                 v,
                 raw_tx_hex: None,
                 tx_hash_hex: None,
+                raw_tx_base64: None,
+                tx_id: None,
             };
             print_status(
                 "tempo session open transaction signature request signed",
@@ -766,11 +1026,14 @@ where
                 tx_type: None,
                 delegation_enabled: None,
                 signature_hex,
+                signature_base58: None,
                 r_hex,
                 s_hex,
                 v,
                 raw_tx_hex: None,
                 tx_hash_hex: None,
+                raw_tx_base64: None,
+                tx_id: None,
             };
             print_status(
                 "tempo session topUp transaction signature request signed",
@@ -829,11 +1092,14 @@ where
                 tx_type: None,
                 delegation_enabled: None,
                 signature_hex,
+                signature_base58: None,
                 r_hex,
                 s_hex,
                 v,
                 raw_tx_hex: None,
                 tx_hash_hex: None,
+                raw_tx_base64: None,
+                tx_id: None,
             };
             print_status(
                 "tempo session voucher signature request signed",
@@ -884,11 +1150,14 @@ where
                 tx_type: None,
                 delegation_enabled: None,
                 signature_hex,
+                signature_base58: None,
                 r_hex,
                 s_hex,
                 v,
                 raw_tx_hex: None,
                 tx_hash_hex: None,
+                raw_tx_base64: None,
+                tx_id: None,
             };
             print_status(
                 "eip712 typed-data signature request signed",
@@ -952,11 +1221,14 @@ where
                 tx_type: Some(format!("0x{tx_type:02x}")),
                 delegation_enabled: Some(delegation_enabled),
                 signature_hex: format!("0x{}", hex::encode(&signature.bytes)),
+                signature_base58: signature.signature_base58,
                 r_hex: signature.r_hex,
                 s_hex: signature.s_hex,
                 v: signature.v,
                 raw_tx_hex: signature.raw_tx_hex,
                 tx_hash_hex: signature.tx_hash_hex,
+                raw_tx_base64: signature.raw_tx_base64,
+                tx_id: signature.tx_id,
             };
             print_status("broadcast request signed", output_format, quiet);
             print_agent_output(&output, output_format, output_target)?;
@@ -1106,6 +1378,22 @@ fn parse_positive_u64(input: &str) -> Result<u64, String> {
     Ok(parsed)
 }
 
+fn parse_positive_u32(input: &str) -> Result<u32, String> {
+    let parsed = input
+        .parse::<u32>()
+        .map_err(|_| "must be a valid unsigned integer".to_string())?;
+    if parsed == 0 {
+        return Err("must be greater than zero".to_string());
+    }
+    Ok(parsed)
+}
+
+fn parse_solana_token_program(input: &str) -> Result<SolanaTokenProgram, String> {
+    input
+        .parse::<SolanaTokenProgram>()
+        .map_err(|err| err.to_string())
+}
+
 fn parse_non_negative_u64(input: &str) -> Result<u64, String> {
     input
         .parse::<u64>()
@@ -1131,8 +1419,8 @@ mod tests {
     use uuid::Uuid;
     use vault_daemon::DaemonError;
     use vault_domain::{
-        BroadcastTx, Eip712TypedData, EvmAddress, Signature, TempoSessionOpenTransaction,
-        TempoSessionTopUpTransaction, TempoSessionVoucher,
+        BroadcastTx, Eip712TypedData, EvmAddress, Signature, SolanaAddress, SolanaTokenProgram,
+        TempoSessionOpenTransaction, TempoSessionTopUpTransaction, TempoSessionVoucher,
     };
     use vault_policy::PolicyError;
     use vault_sdk_agent::{AgentOperations, AgentSdkError};
@@ -1264,6 +1552,50 @@ mod tests {
             self.result()
         }
 
+        async fn solana_spl_transfer(
+            &self,
+            _chain_id: u64,
+            _recent_blockhash: String,
+            _durable_nonce_account: Option<SolanaAddress>,
+            _fee_payer: SolanaAddress,
+            _mint: SolanaAddress,
+            _recipient_owner: SolanaAddress,
+            _amount_wei: u128,
+            _decimals: u8,
+            _token_program: SolanaTokenProgram,
+            _transfer_fee_wei: Option<u128>,
+            _compute_unit_limit: Option<u32>,
+            _compute_unit_price_micro_lamports: Option<u64>,
+        ) -> Result<Signature, AgentSdkError> {
+            panic!("unused in test");
+        }
+
+        async fn solana_sol_transfer(
+            &self,
+            _chain_id: u64,
+            _recent_blockhash: String,
+            _durable_nonce_account: Option<SolanaAddress>,
+            _fee_payer: SolanaAddress,
+            _to: SolanaAddress,
+            _amount_wei: u128,
+            _compute_unit_limit: Option<u32>,
+            _compute_unit_price_micro_lamports: Option<u64>,
+        ) -> Result<Signature, AgentSdkError> {
+            panic!("unused in test");
+        }
+
+        async fn solana_nonce_account_create(
+            &self,
+            _chain_id: u64,
+            _recent_blockhash: String,
+            _fee_payer: SolanaAddress,
+            _nonce_account: SolanaAddress,
+            _seed: String,
+            _rent_lamports: u128,
+        ) -> Result<Signature, AgentSdkError> {
+            panic!("unused in test");
+        }
+
         async fn permit2_permit(
             &self,
             _permit: vault_domain::Permit2Permit,
@@ -1380,11 +1712,14 @@ mod tests {
     fn sample_signature() -> Signature {
         Signature {
             bytes: vec![0xaa, 0xbb, 0xcc],
+            signature_base58: None,
             r_hex: Some("0x01".to_string()),
             s_hex: Some("0x02".to_string()),
             v: Some(1),
             raw_tx_hex: Some("0x1234".to_string()),
             tx_hash_hex: Some("0xabcd".to_string()),
+            raw_tx_base64: None,
+            tx_id: None,
         }
     }
 
@@ -1392,11 +1727,14 @@ mod tests {
     fn signature_output_parts_prefers_compact_recoverable_signature_hex() {
         let signature = Signature {
             bytes: vec![0xaa, 0xbb, 0xcc],
+            signature_base58: None,
             r_hex: Some(format!("0x{}", "11".repeat(32))),
             s_hex: Some(format!("0x{}", "22".repeat(32))),
             v: Some(1),
             raw_tx_hex: None,
             tx_hash_hex: None,
+            raw_tx_base64: None,
+            tx_id: None,
         };
 
         let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);

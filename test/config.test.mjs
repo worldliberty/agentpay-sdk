@@ -350,7 +350,7 @@ test('builtin tokens expose default chain coverage', async () => {
 
   const builtin = config.listBuiltinTokens();
   const keys = builtin.map((entry) => entry.key);
-  assert.deepEqual(keys, ['bnb', 'eth', 'pathusd', 'usd', 'usd1', 'usdc.e']);
+  assert.deepEqual(keys, ['bnb', 'eth', 'pathusd', 'sol', 'usd', 'usd1', 'usdc', 'usdc.e']);
 
   const bnb = builtin.find((entry) => entry.key === 'bnb');
   assert.ok(bnb);
@@ -362,6 +362,20 @@ test('builtin tokens expose default chain coverage', async () => {
   assert.ok(eth);
   assert.ok(
     eth.chains.some((chain) => chain.key === 'ethereum' && chain.isNative && chain.decimals === 18),
+  );
+
+  const sol = builtin.find((entry) => entry.key === 'sol');
+  assert.ok(sol);
+  assert.equal(sol.symbol, 'SOL');
+  assert.ok(
+    sol.chains.some(
+      (chain) => chain.key === 'solana-mainnet' && chain.isNative && chain.decimals === 9,
+    ),
+  );
+  assert.ok(
+    sol.chains.some(
+      (chain) => chain.key === 'solana-devnet' && chain.isNative && chain.decimals === 9,
+    ),
   );
 
   const usd = builtin.find((entry) => entry.key === 'usd');
@@ -428,9 +442,24 @@ test('builtin tokens expose default chain coverage', async () => {
         chain.decimals === 6,
     ),
   );
-  assert.equal(
-    builtin.find((entry) => entry.key === 'usdc'),
-    undefined,
+  const usdc = builtin.find((entry) => entry.key === 'usdc');
+  assert.ok(usdc);
+  assert.equal(usdc.symbol, 'USDC');
+  assert.ok(
+    usdc.chains.some(
+      (chain) =>
+        chain.key === 'solana-mainnet' &&
+        chain.address === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' &&
+        chain.decimals === 6,
+    ),
+  );
+  assert.ok(
+    usdc.chains.some(
+      (chain) =>
+        chain.key === 'solana-devnet' &&
+        chain.address === '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU' &&
+        chain.decimals === 6,
+    ),
   );
 });
 
@@ -473,6 +502,15 @@ test('default config seeds eth, bsc, tempo, unrestricted builtin payment assets'
     assert.equal(parsed.chains?.tempo?.rpcUrl, 'https://rpc.presto.tempo.xyz');
     assert.equal(parsed.chains?.['tempo-testnet']?.chainId, 42431);
     assert.equal(parsed.chains?.['tempo-testnet']?.rpcUrl, 'https://rpc.moderato.tempo.xyz');
+    assert.equal(parsed.chains?.['solana-mainnet']?.chainId, 900000001);
+    assert.equal(parsed.chains?.['solana-mainnet']?.family, 'solana');
+    assert.equal(parsed.chains?.['solana-mainnet']?.rpcUrl, 'https://api.mainnet-beta.solana.com');
+    assert.equal(parsed.chains?.['solana-devnet']?.chainId, 900000002);
+    assert.equal(parsed.chains?.['solana-devnet']?.family, 'solana');
+    assert.equal(parsed.chains?.['solana-devnet']?.rpcUrl, 'https://api.devnet.solana.com');
+    assert.equal(parsed.chains?.['solana-testnet']?.chainId, 900000003);
+    assert.equal(parsed.chains?.['solana-testnet']?.family, 'solana');
+    assert.equal(parsed.chains?.['solana-testnet']?.rpcUrl, 'https://api.testnet.solana.com');
 
     assert.equal(parsed.tokens?.bnb?.symbol, 'BNB');
     assert.equal(parsed.tokens?.bnb?.defaultPolicy, undefined);
@@ -485,6 +523,13 @@ test('default config seeds eth, bsc, tempo, unrestricted builtin payment assets'
     assert.equal(parsed.tokens?.eth?.chains?.eth?.isNative, true);
     assert.equal(parsed.tokens?.eth?.chains?.eth?.decimals, 18);
     assert.equal(parsed.tokens?.eth?.chains?.eth?.address, undefined);
+
+    assert.equal(parsed.tokens?.sol?.symbol, 'SOL');
+    assert.equal(parsed.tokens?.sol?.defaultPolicy, undefined);
+    assert.equal(parsed.tokens?.sol?.chains?.['solana-mainnet']?.isNative, true);
+    assert.equal(parsed.tokens?.sol?.chains?.['solana-mainnet']?.decimals, 9);
+    assert.equal(parsed.tokens?.sol?.chains?.['solana-devnet']?.isNative, true);
+    assert.equal(parsed.tokens?.sol?.chains?.['solana-devnet']?.decimals, 9);
 
     assert.equal(parsed.tokens?.usd?.symbol, 'USD');
     assert.equal(parsed.tokens?.usd?.defaultPolicy, undefined);
@@ -529,12 +574,26 @@ test('default config seeds eth, bsc, tempo, unrestricted builtin payment assets'
     );
     assert.equal(parsed.tokens?.['usdc.e']?.chains?.['tempo-testnet']?.decimals, 6);
 
+    assert.equal(parsed.tokens?.usdc?.symbol, 'USDC');
+    assert.equal(
+      parsed.tokens?.usdc?.chains?.['solana-mainnet']?.address,
+      'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    );
+    assert.equal(parsed.tokens?.usdc?.chains?.['solana-mainnet']?.decimals, 6);
+    assert.equal(
+      parsed.tokens?.usdc?.chains?.['solana-devnet']?.address,
+      '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+    );
+    assert.equal(parsed.tokens?.usdc?.chains?.['solana-devnet']?.decimals, 6);
+
     assert.deepEqual(Object.keys(parsed.tokens ?? {}).sort(), [
       'bnb',
       'eth',
       'pathusd',
+      'sol',
       'usd',
       'usd1',
+      'usdc',
       'usdc.e',
     ]);
   } finally {
@@ -600,8 +659,10 @@ test('readConfig reseeds defaults for legacy empty chains and tokens', async () 
       'bnb',
       'eth',
       'pathusd',
+      'sol',
       'usd',
       'usd1',
+      'usdc',
       'usdc.e',
     ]);
   } finally {
@@ -1023,6 +1084,66 @@ test('writeConfig normalizes chain and token profile keys', async () => {
     assert.equal(Object.keys(written.tokens ?? {}).join(','), 'treasuryusd');
     assert.equal(Object.keys(written.tokens?.treasuryusd?.chains ?? {}).join(','), 'ethereum');
     assert.equal(written.tokens?.treasuryusd?.chains?.ethereum?.defaultPolicy?.perTxAmount, 25);
+  } finally {
+    delete process.env.AGENTPAY_HOME;
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('writeConfig accepts Solana recipients for token manual approval policies', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-config-test-'));
+  const agentpayHome = path.join(tempRoot, 'home');
+  process.env.AGENTPAY_HOME = agentpayHome;
+
+  try {
+    const config = await import(
+      modulePath.href + `?case=${Date.now()}-solana-manual-recipient`
+    );
+    const solanaRecipient = '11111111111111111111111111111111';
+    const written = config.writeConfig({
+      tokens: {
+        sol: {
+          symbol: 'SOL',
+          manualApprovalPolicies: [
+            {
+              priority: 100,
+              recipient: solanaRecipient,
+              minAmountWei: '2000000',
+              maxAmountWei: '2900000',
+            },
+          ],
+          chains: {
+            'solana-devnet': {
+              chainId: 900000002,
+              isNative: true,
+              decimals: 9,
+            },
+          },
+        },
+      },
+    });
+
+    assert.equal(written.tokens?.sol?.manualApprovalPolicies?.[0]?.recipient, solanaRecipient);
+
+    assert.throws(
+      () =>
+        config.writeConfig({
+          tokens: {
+            sol: {
+              symbol: 'SOL',
+              manualApprovalPolicies: [{ priority: 100, recipient: 'not-an-address' }],
+              chains: {
+                'solana-devnet': {
+                  chainId: 900000002,
+                  isNative: true,
+                  decimals: 9,
+                },
+              },
+            },
+          },
+        }),
+      /manual approval recipient must be a valid EVM or Solana address/,
+    );
   } finally {
     delete process.env.AGENTPAY_HOME;
     fs.rmSync(tempRoot, { recursive: true, force: true });

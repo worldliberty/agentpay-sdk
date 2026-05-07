@@ -1,7 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { WalletKeyAlgorithm } from '../../packages/config/src/index.js';
 import { assertValidAgentAuthToken } from './agent-auth-token.js';
-import { assertPrivateFileStats, assertTrustedDirectoryPath, readUtf8FileSecure } from './fs-trust.js';
+import {
+  assertPrivateFileStats,
+  assertTrustedDirectoryPath,
+  readUtf8FileSecure,
+} from './fs-trust.js';
 import { assertValidAgentKeyId } from './keychain.js';
 
 const PRIVATE_FILE_MODE = 0o600;
@@ -18,7 +23,8 @@ export interface BootstrapCredentialsCleanupResult {
   sourcePath: string;
 }
 
-export interface BootstrapCredentialsCleanupFailureResult extends BootstrapCredentialsCleanupResult {
+export interface BootstrapCredentialsCleanupFailureResult
+  extends BootstrapCredentialsCleanupResult {
   action: 'failed';
   error: string;
 }
@@ -138,7 +144,10 @@ export interface BootstrapSetupSummary {
   perTxMaxCalldataBytes: string | null;
   perTxMaxCalldataBytesPolicyId: string | null;
   vaultKeyId: string;
+  vaultKeyAlgorithm: WalletKeyAlgorithm;
   vaultPublicKey: string;
+  solanaPublicKey: string | null;
+  solanaAddress: string | null;
   vaultPrivateKey: string | null;
   agentKeyId: string;
   networkScope: string | null;
@@ -181,7 +190,7 @@ function readRequiredString(
   payload: Record<string, unknown>,
   fieldNames: string[],
   label: string,
-  options: { trim?: boolean } = {}
+  options: { trim?: boolean } = {},
 ): string {
   for (const fieldName of fieldNames) {
     const value = payload[fieldName];
@@ -199,7 +208,10 @@ function readRequiredString(
   throw new Error(`${label} is required in bootstrap credentials file`);
 }
 
-function readOptionalBoolean(payload: Record<string, unknown>, fieldNames: string[]): boolean | null {
+function readOptionalBoolean(
+  payload: Record<string, unknown>,
+  fieldNames: string[],
+): boolean | null {
   for (const fieldName of fieldNames) {
     const value = payload[fieldName];
     if (value === undefined) {
@@ -240,14 +252,11 @@ function readOptionalStringArray(payload: Record<string, unknown>, fieldNames: s
       throw new Error(`${fieldName} must be an array of strings in bootstrap credentials file`);
     }
 
-    return value
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0);
+    return value.map((entry) => entry.trim()).filter((entry) => entry.length > 0);
   }
 
   return [];
 }
-
 
 function readOptionalNumber(payload: Record<string, unknown>, fieldNames: string[]): number | null {
   for (const fieldName of fieldNames) {
@@ -266,7 +275,7 @@ function readOptionalNumber(payload: Record<string, unknown>, fieldNames: string
 function readRequiredNumber(
   payload: Record<string, unknown>,
   fieldNames: string[],
-  label: string
+  label: string,
 ): number {
   const value = readOptionalNumber(payload, fieldNames);
   if (value === null) {
@@ -277,7 +286,7 @@ function readRequiredNumber(
 
 function readOptionalRecordArray(
   payload: Record<string, unknown>,
-  fieldNames: string[]
+  fieldNames: string[],
 ): Record<string, unknown>[] {
   for (const fieldName of fieldNames) {
     const value = payload[fieldName];
@@ -294,56 +303,77 @@ function readOptionalRecordArray(
 
 function readDestinationOverrideSummary(
   payload: Record<string, unknown>,
-  label: string
+  label: string,
 ): BootstrapDestinationOverrideSummary {
   return {
     recipient: readRequiredString(payload, ['recipient'], `${label}.recipient`),
-    perTxPolicyId: readRequiredString(payload, ['per_tx_policy_id', 'perTxPolicyId'], `${label}.per_tx_policy_id`),
-    dailyPolicyId: readRequiredString(payload, ['daily_policy_id', 'dailyPolicyId'], `${label}.daily_policy_id`),
-    weeklyPolicyId: readRequiredString(payload, ['weekly_policy_id', 'weeklyPolicyId'], `${label}.weekly_policy_id`),
+    perTxPolicyId: readRequiredString(
+      payload,
+      ['per_tx_policy_id', 'perTxPolicyId'],
+      `${label}.per_tx_policy_id`,
+    ),
+    dailyPolicyId: readRequiredString(
+      payload,
+      ['daily_policy_id', 'dailyPolicyId'],
+      `${label}.daily_policy_id`,
+    ),
+    weeklyPolicyId: readRequiredString(
+      payload,
+      ['weekly_policy_id', 'weeklyPolicyId'],
+      `${label}.weekly_policy_id`,
+    ),
     gasPolicyId: readOptionalString(payload, ['gas_policy_id', 'gasPolicyId']),
-    perTxMaxWei: readRequiredString(payload, ['per_tx_max_wei', 'perTxMaxWei'], `${label}.per_tx_max_wei`),
-    dailyMaxWei: readRequiredString(payload, ['daily_max_wei', 'dailyMaxWei'], `${label}.daily_max_wei`),
-    weeklyMaxWei: readRequiredString(payload, ['weekly_max_wei', 'weeklyMaxWei'], `${label}.weekly_max_wei`),
+    perTxMaxWei: readRequiredString(
+      payload,
+      ['per_tx_max_wei', 'perTxMaxWei'],
+      `${label}.per_tx_max_wei`,
+    ),
+    dailyMaxWei: readRequiredString(
+      payload,
+      ['daily_max_wei', 'dailyMaxWei'],
+      `${label}.daily_max_wei`,
+    ),
+    weeklyMaxWei: readRequiredString(
+      payload,
+      ['weekly_max_wei', 'weeklyMaxWei'],
+      `${label}.weekly_max_wei`,
+    ),
     maxGasPerChainWei: readOptionalString(payload, ['max_gas_per_chain_wei', 'maxGasPerChainWei']),
     dailyMaxTxCount: readOptionalString(payload, ['daily_max_tx_count', 'dailyMaxTxCount']),
-    dailyTxCountPolicyId: readOptionalString(
-      payload,
-      ['daily_tx_count_policy_id', 'dailyTxCountPolicyId']
-    ),
-    perTxMaxFeePerGasWei: readOptionalString(
-      payload,
-      ['per_tx_max_fee_per_gas_wei', 'perTxMaxFeePerGasWei']
-    ),
-    perTxMaxFeePerGasPolicyId: readOptionalString(
-      payload,
-      ['per_tx_max_fee_per_gas_policy_id', 'perTxMaxFeePerGasPolicyId']
-    ),
-    perTxMaxPriorityFeePerGasWei: readOptionalString(
-      payload,
-      ['per_tx_max_priority_fee_per_gas_wei', 'perTxMaxPriorityFeePerGasWei']
-    ),
-    perTxMaxPriorityFeePerGasPolicyId: readOptionalString(
-      payload,
-      [
-        'per_tx_max_priority_fee_per_gas_policy_id',
-        'perTxMaxPriorityFeePerGasPolicyId'
-      ]
-    ),
-    perTxMaxCalldataBytes: readOptionalString(
-      payload,
-      ['per_tx_max_calldata_bytes', 'perTxMaxCalldataBytes']
-    ),
-    perTxMaxCalldataBytesPolicyId: readOptionalString(
-      payload,
-      ['per_tx_max_calldata_bytes_policy_id', 'perTxMaxCalldataBytesPolicyId']
-    )
+    dailyTxCountPolicyId: readOptionalString(payload, [
+      'daily_tx_count_policy_id',
+      'dailyTxCountPolicyId',
+    ]),
+    perTxMaxFeePerGasWei: readOptionalString(payload, [
+      'per_tx_max_fee_per_gas_wei',
+      'perTxMaxFeePerGasWei',
+    ]),
+    perTxMaxFeePerGasPolicyId: readOptionalString(payload, [
+      'per_tx_max_fee_per_gas_policy_id',
+      'perTxMaxFeePerGasPolicyId',
+    ]),
+    perTxMaxPriorityFeePerGasWei: readOptionalString(payload, [
+      'per_tx_max_priority_fee_per_gas_wei',
+      'perTxMaxPriorityFeePerGasWei',
+    ]),
+    perTxMaxPriorityFeePerGasPolicyId: readOptionalString(payload, [
+      'per_tx_max_priority_fee_per_gas_policy_id',
+      'perTxMaxPriorityFeePerGasPolicyId',
+    ]),
+    perTxMaxCalldataBytes: readOptionalString(payload, [
+      'per_tx_max_calldata_bytes',
+      'perTxMaxCalldataBytes',
+    ]),
+    perTxMaxCalldataBytesPolicyId: readOptionalString(payload, [
+      'per_tx_max_calldata_bytes_policy_id',
+      'perTxMaxCalldataBytesPolicyId',
+    ]),
   };
 }
 
 function readTokenPolicySummary(
   payload: Record<string, unknown>,
-  label: string
+  label: string,
 ): BootstrapTokenPolicySummary {
   return {
     tokenKey: readRequiredString(payload, ['token_key', 'tokenKey'], `${label}.token_key`),
@@ -354,54 +384,75 @@ function readTokenPolicySummary(
     recipientScope: readRequiredString(
       payload,
       ['recipient_scope', 'recipientScope'],
-      `${label}.recipient_scope`
+      `${label}.recipient_scope`,
     ),
-    perTxPolicyId: readRequiredString(payload, ['per_tx_policy_id', 'perTxPolicyId'], `${label}.per_tx_policy_id`),
-    dailyPolicyId: readRequiredString(payload, ['daily_policy_id', 'dailyPolicyId'], `${label}.daily_policy_id`),
-    weeklyPolicyId: readRequiredString(payload, ['weekly_policy_id', 'weeklyPolicyId'], `${label}.weekly_policy_id`),
+    perTxPolicyId: readRequiredString(
+      payload,
+      ['per_tx_policy_id', 'perTxPolicyId'],
+      `${label}.per_tx_policy_id`,
+    ),
+    dailyPolicyId: readRequiredString(
+      payload,
+      ['daily_policy_id', 'dailyPolicyId'],
+      `${label}.daily_policy_id`,
+    ),
+    weeklyPolicyId: readRequiredString(
+      payload,
+      ['weekly_policy_id', 'weeklyPolicyId'],
+      `${label}.weekly_policy_id`,
+    ),
     gasPolicyId: readOptionalString(payload, ['gas_policy_id', 'gasPolicyId']),
-    perTxMaxWei: readRequiredString(payload, ['per_tx_max_wei', 'perTxMaxWei'], `${label}.per_tx_max_wei`),
-    dailyMaxWei: readRequiredString(payload, ['daily_max_wei', 'dailyMaxWei'], `${label}.daily_max_wei`),
-    weeklyMaxWei: readRequiredString(payload, ['weekly_max_wei', 'weeklyMaxWei'], `${label}.weekly_max_wei`),
+    perTxMaxWei: readRequiredString(
+      payload,
+      ['per_tx_max_wei', 'perTxMaxWei'],
+      `${label}.per_tx_max_wei`,
+    ),
+    dailyMaxWei: readRequiredString(
+      payload,
+      ['daily_max_wei', 'dailyMaxWei'],
+      `${label}.daily_max_wei`,
+    ),
+    weeklyMaxWei: readRequiredString(
+      payload,
+      ['weekly_max_wei', 'weeklyMaxWei'],
+      `${label}.weekly_max_wei`,
+    ),
     maxGasPerChainWei: readOptionalString(payload, ['max_gas_per_chain_wei', 'maxGasPerChainWei']),
     dailyMaxTxCount: readOptionalString(payload, ['daily_max_tx_count', 'dailyMaxTxCount']),
-    dailyTxCountPolicyId: readOptionalString(
-      payload,
-      ['daily_tx_count_policy_id', 'dailyTxCountPolicyId']
-    ),
-    perTxMaxFeePerGasWei: readOptionalString(
-      payload,
-      ['per_tx_max_fee_per_gas_wei', 'perTxMaxFeePerGasWei']
-    ),
-    perTxMaxFeePerGasPolicyId: readOptionalString(
-      payload,
-      ['per_tx_max_fee_per_gas_policy_id', 'perTxMaxFeePerGasPolicyId']
-    ),
-    perTxMaxPriorityFeePerGasWei: readOptionalString(
-      payload,
-      ['per_tx_max_priority_fee_per_gas_wei', 'perTxMaxPriorityFeePerGasWei']
-    ),
-    perTxMaxPriorityFeePerGasPolicyId: readOptionalString(
-      payload,
-      [
-        'per_tx_max_priority_fee_per_gas_policy_id',
-        'perTxMaxPriorityFeePerGasPolicyId'
-      ]
-    ),
-    perTxMaxCalldataBytes: readOptionalString(
-      payload,
-      ['per_tx_max_calldata_bytes', 'perTxMaxCalldataBytes']
-    ),
-    perTxMaxCalldataBytesPolicyId: readOptionalString(
-      payload,
-      ['per_tx_max_calldata_bytes_policy_id', 'perTxMaxCalldataBytesPolicyId']
-    )
+    dailyTxCountPolicyId: readOptionalString(payload, [
+      'daily_tx_count_policy_id',
+      'dailyTxCountPolicyId',
+    ]),
+    perTxMaxFeePerGasWei: readOptionalString(payload, [
+      'per_tx_max_fee_per_gas_wei',
+      'perTxMaxFeePerGasWei',
+    ]),
+    perTxMaxFeePerGasPolicyId: readOptionalString(payload, [
+      'per_tx_max_fee_per_gas_policy_id',
+      'perTxMaxFeePerGasPolicyId',
+    ]),
+    perTxMaxPriorityFeePerGasWei: readOptionalString(payload, [
+      'per_tx_max_priority_fee_per_gas_wei',
+      'perTxMaxPriorityFeePerGasWei',
+    ]),
+    perTxMaxPriorityFeePerGasPolicyId: readOptionalString(payload, [
+      'per_tx_max_priority_fee_per_gas_policy_id',
+      'perTxMaxPriorityFeePerGasPolicyId',
+    ]),
+    perTxMaxCalldataBytes: readOptionalString(payload, [
+      'per_tx_max_calldata_bytes',
+      'perTxMaxCalldataBytes',
+    ]),
+    perTxMaxCalldataBytesPolicyId: readOptionalString(payload, [
+      'per_tx_max_calldata_bytes_policy_id',
+      'perTxMaxCalldataBytesPolicyId',
+    ]),
   };
 }
 
 function readTokenDestinationOverrideSummary(
   payload: Record<string, unknown>,
-  label: string
+  label: string,
 ): BootstrapTokenDestinationOverrideSummary {
   return {
     tokenKey: readRequiredString(payload, ['token_key', 'tokenKey'], `${label}.token_key`),
@@ -410,52 +461,73 @@ function readTokenDestinationOverrideSummary(
     chainId: readRequiredNumber(payload, ['chain_id', 'chainId'], `${label}.chain_id`),
     recipient: readRequiredString(payload, ['recipient'], `${label}.recipient`),
     assetScope: readRequiredString(payload, ['asset_scope', 'assetScope'], `${label}.asset_scope`),
-    perTxPolicyId: readRequiredString(payload, ['per_tx_policy_id', 'perTxPolicyId'], `${label}.per_tx_policy_id`),
-    dailyPolicyId: readRequiredString(payload, ['daily_policy_id', 'dailyPolicyId'], `${label}.daily_policy_id`),
-    weeklyPolicyId: readRequiredString(payload, ['weekly_policy_id', 'weeklyPolicyId'], `${label}.weekly_policy_id`),
+    perTxPolicyId: readRequiredString(
+      payload,
+      ['per_tx_policy_id', 'perTxPolicyId'],
+      `${label}.per_tx_policy_id`,
+    ),
+    dailyPolicyId: readRequiredString(
+      payload,
+      ['daily_policy_id', 'dailyPolicyId'],
+      `${label}.daily_policy_id`,
+    ),
+    weeklyPolicyId: readRequiredString(
+      payload,
+      ['weekly_policy_id', 'weeklyPolicyId'],
+      `${label}.weekly_policy_id`,
+    ),
     gasPolicyId: readOptionalString(payload, ['gas_policy_id', 'gasPolicyId']),
-    perTxMaxWei: readRequiredString(payload, ['per_tx_max_wei', 'perTxMaxWei'], `${label}.per_tx_max_wei`),
-    dailyMaxWei: readRequiredString(payload, ['daily_max_wei', 'dailyMaxWei'], `${label}.daily_max_wei`),
-    weeklyMaxWei: readRequiredString(payload, ['weekly_max_wei', 'weeklyMaxWei'], `${label}.weekly_max_wei`),
+    perTxMaxWei: readRequiredString(
+      payload,
+      ['per_tx_max_wei', 'perTxMaxWei'],
+      `${label}.per_tx_max_wei`,
+    ),
+    dailyMaxWei: readRequiredString(
+      payload,
+      ['daily_max_wei', 'dailyMaxWei'],
+      `${label}.daily_max_wei`,
+    ),
+    weeklyMaxWei: readRequiredString(
+      payload,
+      ['weekly_max_wei', 'weeklyMaxWei'],
+      `${label}.weekly_max_wei`,
+    ),
     maxGasPerChainWei: readOptionalString(payload, ['max_gas_per_chain_wei', 'maxGasPerChainWei']),
     dailyMaxTxCount: readOptionalString(payload, ['daily_max_tx_count', 'dailyMaxTxCount']),
-    dailyTxCountPolicyId: readOptionalString(
-      payload,
-      ['daily_tx_count_policy_id', 'dailyTxCountPolicyId']
-    ),
-    perTxMaxFeePerGasWei: readOptionalString(
-      payload,
-      ['per_tx_max_fee_per_gas_wei', 'perTxMaxFeePerGasWei']
-    ),
-    perTxMaxFeePerGasPolicyId: readOptionalString(
-      payload,
-      ['per_tx_max_fee_per_gas_policy_id', 'perTxMaxFeePerGasPolicyId']
-    ),
-    perTxMaxPriorityFeePerGasWei: readOptionalString(
-      payload,
-      ['per_tx_max_priority_fee_per_gas_wei', 'perTxMaxPriorityFeePerGasWei']
-    ),
-    perTxMaxPriorityFeePerGasPolicyId: readOptionalString(
-      payload,
-      [
-        'per_tx_max_priority_fee_per_gas_policy_id',
-        'perTxMaxPriorityFeePerGasPolicyId'
-      ]
-    ),
-    perTxMaxCalldataBytes: readOptionalString(
-      payload,
-      ['per_tx_max_calldata_bytes', 'perTxMaxCalldataBytes']
-    ),
-    perTxMaxCalldataBytesPolicyId: readOptionalString(
-      payload,
-      ['per_tx_max_calldata_bytes_policy_id', 'perTxMaxCalldataBytesPolicyId']
-    )
+    dailyTxCountPolicyId: readOptionalString(payload, [
+      'daily_tx_count_policy_id',
+      'dailyTxCountPolicyId',
+    ]),
+    perTxMaxFeePerGasWei: readOptionalString(payload, [
+      'per_tx_max_fee_per_gas_wei',
+      'perTxMaxFeePerGasWei',
+    ]),
+    perTxMaxFeePerGasPolicyId: readOptionalString(payload, [
+      'per_tx_max_fee_per_gas_policy_id',
+      'perTxMaxFeePerGasPolicyId',
+    ]),
+    perTxMaxPriorityFeePerGasWei: readOptionalString(payload, [
+      'per_tx_max_priority_fee_per_gas_wei',
+      'perTxMaxPriorityFeePerGasWei',
+    ]),
+    perTxMaxPriorityFeePerGasPolicyId: readOptionalString(payload, [
+      'per_tx_max_priority_fee_per_gas_policy_id',
+      'perTxMaxPriorityFeePerGasPolicyId',
+    ]),
+    perTxMaxCalldataBytes: readOptionalString(payload, [
+      'per_tx_max_calldata_bytes',
+      'perTxMaxCalldataBytes',
+    ]),
+    perTxMaxCalldataBytesPolicyId: readOptionalString(payload, [
+      'per_tx_max_calldata_bytes_policy_id',
+      'perTxMaxCalldataBytesPolicyId',
+    ]),
   };
 }
 
 function readTokenManualApprovalPolicySummary(
   payload: Record<string, unknown>,
-  label: string
+  label: string,
 ): BootstrapTokenManualApprovalPolicySummary {
   return {
     tokenKey: readRequiredString(payload, ['token_key', 'tokenKey'], `${label}.token_key`),
@@ -463,15 +535,23 @@ function readTokenManualApprovalPolicySummary(
     chainKey: readRequiredString(payload, ['chain_key', 'chainKey'], `${label}.chain_key`),
     chainId: readRequiredNumber(payload, ['chain_id', 'chainId'], `${label}.chain_id`),
     priority: readRequiredNumber(payload, ['priority'], `${label}.priority`),
-    minAmountWei: readRequiredString(payload, ['min_amount_wei', 'minAmountWei'], `${label}.min_amount_wei`),
-    maxAmountWei: readRequiredString(payload, ['max_amount_wei', 'maxAmountWei'], `${label}.max_amount_wei`),
+    minAmountWei: readRequiredString(
+      payload,
+      ['min_amount_wei', 'minAmountWei'],
+      `${label}.min_amount_wei`,
+    ),
+    maxAmountWei: readRequiredString(
+      payload,
+      ['max_amount_wei', 'maxAmountWei'],
+      `${label}.max_amount_wei`,
+    ),
     assetScope: readRequiredString(payload, ['asset_scope', 'assetScope'], `${label}.asset_scope`),
     recipientScope: readRequiredString(
       payload,
       ['recipient_scope', 'recipientScope'],
-      `${label}.recipient_scope`
+      `${label}.recipient_scope`,
     ),
-    policyId: readRequiredString(payload, ['policy_id', 'policyId'], `${label}.policy_id`)
+    policyId: readRequiredString(payload, ['policy_id', 'policyId'], `${label}.policy_id`),
   };
 }
 
@@ -485,10 +565,10 @@ function readBootstrapPayload(resolvedPath: string): Record<string, unknown> {
       readUtf8FileSecure(
         resolvedPath,
         `bootstrap credentials file '${resolvedPath}'`,
-        MAX_BOOTSTRAP_FILE_BYTES
-      )
+        MAX_BOOTSTRAP_FILE_BYTES,
+      ),
     ),
-    `bootstrap credentials file '${resolvedPath}'`
+    `bootstrap credentials file '${resolvedPath}'`,
   );
 }
 
@@ -508,14 +588,14 @@ function writePrivateBootstrapFile(resolvedPath: string, payload: Record<string,
   const directoryPath = path.dirname(resolvedPath);
   const tempPath = path.join(
     directoryPath,
-    `.${path.basename(resolvedPath)}.tmp-${process.pid}-${Date.now()}`
+    `.${path.basename(resolvedPath)}.tmp-${process.pid}-${Date.now()}`,
   );
 
   try {
     fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2) + '\n', {
       encoding: 'utf8',
       mode: PRIVATE_FILE_MODE,
-      flag: 'wx'
+      flag: 'wx',
     });
     fs.chmodSync(tempPath, PRIVATE_FILE_MODE);
     fs.renameSync(tempPath, resolvedPath);
@@ -582,31 +662,31 @@ function applyRedactedSecretFields(payload: Record<string, unknown>): Record<str
 
 function parseBootstrapAgentCredentialsPayload(
   payload: Record<string, unknown>,
-  sourcePath: string
+  sourcePath: string,
 ): BootstrapAgentCredentials {
   const redacted = readOptionalBoolean(payload, [
     'agent_auth_token_redacted',
-    'agentAuthTokenRedacted'
+    'agentAuthTokenRedacted',
   ]);
   if (redacted === true) {
     throw new Error(
-      'bootstrap credentials file contains a redacted agent auth token; rerun `agentpay admin setup --print-agent-auth-token`'
+      'bootstrap credentials file contains a redacted agent auth token; rerun `agentpay admin setup --print-agent-auth-token`',
     );
   }
 
   const agentKeyId = assertValidAgentKeyId(
-    readRequiredString(payload, ['agent_key_id', 'agentKeyId'], 'agent_key_id')
+    readRequiredString(payload, ['agent_key_id', 'agentKeyId'], 'agent_key_id'),
   );
   const rawAgentAuthToken = readRequiredString(
     payload,
     ['agent_auth_token', 'agentAuthToken'],
     'agent_auth_token',
-    { trim: false }
+    { trim: false },
   );
 
   if (rawAgentAuthToken === '<redacted>') {
     throw new Error(
-      'bootstrap credentials file contains a redacted agent auth token; rerun `agentpay admin setup --print-agent-auth-token`'
+      'bootstrap credentials file contains a redacted agent auth token; rerun `agentpay admin setup --print-agent-auth-token`',
     );
   }
   const agentAuthToken = assertValidAgentAuthToken(rawAgentAuthToken, 'agent_auth_token');
@@ -620,25 +700,23 @@ function parseBootstrapAgentCredentialsPayload(
 
 function parseBootstrapSetupSummaryPayload(
   payload: Record<string, unknown>,
-  sourcePath: string
+  sourcePath: string,
 ): BootstrapSetupSummary {
-  const vaultPrivateKey = readOptionalString(
-    payload,
-    ['vault_private_key', 'vaultPrivateKey']
+  const vaultPrivateKey = readOptionalString(payload, ['vault_private_key', 'vaultPrivateKey']);
+  const tokenPolicies = readOptionalRecordArray(payload, ['token_policies', 'tokenPolicies']).map(
+    (entry, index) => readTokenPolicySummary(entry, `token_policies[${index}]`),
   );
-  const tokenPolicies = readOptionalRecordArray(payload, ['token_policies', 'tokenPolicies'])
-    .map((entry, index) => readTokenPolicySummary(entry, `token_policies[${index}]`));
-  const tokenDestinationOverrides = readOptionalRecordArray(
-    payload,
-    ['token_destination_overrides', 'tokenDestinationOverrides']
-  ).map((entry, index) =>
-    readTokenDestinationOverrideSummary(entry, `token_destination_overrides[${index}]`)
+  const tokenDestinationOverrides = readOptionalRecordArray(payload, [
+    'token_destination_overrides',
+    'tokenDestinationOverrides',
+  ]).map((entry, index) =>
+    readTokenDestinationOverrideSummary(entry, `token_destination_overrides[${index}]`),
   );
-  const tokenManualApprovalPolicies = readOptionalRecordArray(
-    payload,
-    ['token_manual_approval_policies', 'tokenManualApprovalPolicies']
-  ).map((entry, index) =>
-    readTokenManualApprovalPolicySummary(entry, `token_manual_approval_policies[${index}]`)
+  const tokenManualApprovalPolicies = readOptionalRecordArray(payload, [
+    'token_manual_approval_policies',
+    'tokenManualApprovalPolicies',
+  ]).map((entry, index) =>
+    readTokenManualApprovalPolicySummary(entry, `token_manual_approval_policies[${index}]`),
   );
   const perTxPolicyId = readOptionalString(payload, ['per_tx_policy_id', 'perTxPolicyId']);
   const dailyPolicyId = readOptionalString(payload, ['daily_policy_id', 'dailyPolicyId']);
@@ -649,21 +727,28 @@ function parseBootstrapSetupSummaryPayload(
   const policyAttachment = readRequiredString(
     payload,
     ['policy_attachment', 'policyAttachment'],
-    'policy_attachment'
+    'policy_attachment',
   );
-  const attachedPolicyIds = readOptionalStringArray(payload, ['attached_policy_ids', 'attachedPolicyIds']);
+  const attachedPolicyIds = readOptionalStringArray(payload, [
+    'attached_policy_ids',
+    'attachedPolicyIds',
+  ]);
   const hasLegacyPolicyIds = Boolean(perTxPolicyId || dailyPolicyId || weeklyPolicyId);
 
   if (tokenPolicies.length === 0) {
     if (hasLegacyPolicyIds) {
       if (!perTxPolicyId || !dailyPolicyId || !weeklyPolicyId) {
-        throw new Error('per-token bootstrap summary is missing token_policies and legacy policy ids');
+        throw new Error(
+          'per-token bootstrap summary is missing token_policies and legacy policy ids',
+        );
       }
       if (!networkScope || !assetScope || !recipientScope) {
         throw new Error('legacy bootstrap summary is missing policy scope fields');
       }
     } else if (policyAttachment !== 'all_policies' && attachedPolicyIds.length === 0) {
-      throw new Error('per-token bootstrap summary is missing token_policies and legacy policy ids');
+      throw new Error(
+        'per-token bootstrap summary is missing token_policies and legacy policy ids',
+      );
     }
   }
 
@@ -673,7 +758,7 @@ function parseBootstrapSetupSummaryPayload(
     leaseExpiresAt: readRequiredString(
       payload,
       ['lease_expires_at', 'leaseExpiresAt'],
-      'lease_expires_at'
+      'lease_expires_at',
     ),
     perTxPolicyId,
     dailyPolicyId,
@@ -682,53 +767,50 @@ function parseBootstrapSetupSummaryPayload(
     perTxMaxWei: readOptionalString(payload, ['per_tx_max_wei', 'perTxMaxWei']),
     dailyMaxWei: readOptionalString(payload, ['daily_max_wei', 'dailyMaxWei']),
     weeklyMaxWei: readOptionalString(payload, ['weekly_max_wei', 'weeklyMaxWei']),
-    maxGasPerChainWei: readOptionalString(
-      payload,
-      ['max_gas_per_chain_wei', 'maxGasPerChainWei']
-    ),
+    maxGasPerChainWei: readOptionalString(payload, ['max_gas_per_chain_wei', 'maxGasPerChainWei']),
     dailyMaxTxCount: readOptionalString(payload, ['daily_max_tx_count', 'dailyMaxTxCount']),
-    dailyTxCountPolicyId: readOptionalString(
-      payload,
-      ['daily_tx_count_policy_id', 'dailyTxCountPolicyId']
-    ),
-    perTxMaxFeePerGasWei: readOptionalString(
-      payload,
-      ['per_tx_max_fee_per_gas_wei', 'perTxMaxFeePerGasWei']
-    ),
-    perTxMaxFeePerGasPolicyId: readOptionalString(
-      payload,
-      ['per_tx_max_fee_per_gas_policy_id', 'perTxMaxFeePerGasPolicyId']
-    ),
-    perTxMaxPriorityFeePerGasWei: readOptionalString(
-      payload,
-      [
-        'per_tx_max_priority_fee_per_gas_wei',
-        'perTxMaxPriorityFeePerGasWei'
-      ]
-    ),
-    perTxMaxPriorityFeePerGasPolicyId: readOptionalString(
-      payload,
-      [
-        'per_tx_max_priority_fee_per_gas_policy_id',
-        'perTxMaxPriorityFeePerGasPolicyId'
-      ]
-    ),
-    perTxMaxCalldataBytes: readOptionalString(
-      payload,
-      ['per_tx_max_calldata_bytes', 'perTxMaxCalldataBytes']
-    ),
-    perTxMaxCalldataBytesPolicyId: readOptionalString(
-      payload,
-      ['per_tx_max_calldata_bytes_policy_id', 'perTxMaxCalldataBytesPolicyId']
-    ),
+    dailyTxCountPolicyId: readOptionalString(payload, [
+      'daily_tx_count_policy_id',
+      'dailyTxCountPolicyId',
+    ]),
+    perTxMaxFeePerGasWei: readOptionalString(payload, [
+      'per_tx_max_fee_per_gas_wei',
+      'perTxMaxFeePerGasWei',
+    ]),
+    perTxMaxFeePerGasPolicyId: readOptionalString(payload, [
+      'per_tx_max_fee_per_gas_policy_id',
+      'perTxMaxFeePerGasPolicyId',
+    ]),
+    perTxMaxPriorityFeePerGasWei: readOptionalString(payload, [
+      'per_tx_max_priority_fee_per_gas_wei',
+      'perTxMaxPriorityFeePerGasWei',
+    ]),
+    perTxMaxPriorityFeePerGasPolicyId: readOptionalString(payload, [
+      'per_tx_max_priority_fee_per_gas_policy_id',
+      'perTxMaxPriorityFeePerGasPolicyId',
+    ]),
+    perTxMaxCalldataBytes: readOptionalString(payload, [
+      'per_tx_max_calldata_bytes',
+      'perTxMaxCalldataBytes',
+    ]),
+    perTxMaxCalldataBytesPolicyId: readOptionalString(payload, [
+      'per_tx_max_calldata_bytes_policy_id',
+      'perTxMaxCalldataBytesPolicyId',
+    ]),
     vaultKeyId: readRequiredString(payload, ['vault_key_id', 'vaultKeyId'], 'vault_key_id'),
+    vaultKeyAlgorithm: readWalletKeyAlgorithm(
+      payload,
+      ['vault_key_algorithm', 'vaultKeyAlgorithm'],
+      'vault_key_algorithm',
+    ),
     vaultPublicKey: readRequiredString(
       payload,
       ['vault_public_key', 'vaultPublicKey'],
-      'vault_public_key'
+      'vault_public_key',
     ),
-    vaultPrivateKey:
-      vaultPrivateKey === REDACTED_SECRET_PLACEHOLDER ? null : vaultPrivateKey,
+    solanaPublicKey: readOptionalString(payload, ['solana_public_key', 'solanaPublicKey']),
+    solanaAddress: readOptionalString(payload, ['solana_address', 'solanaAddress']),
+    vaultPrivateKey: vaultPrivateKey === REDACTED_SECRET_PLACEHOLDER ? null : vaultPrivateKey,
     agentKeyId: readRequiredString(payload, ['agent_key_id', 'agentKeyId'], 'agent_key_id'),
     networkScope,
     assetScope,
@@ -737,15 +819,32 @@ function parseBootstrapSetupSummaryPayload(
       readOptionalNumber(payload, ['destination_override_count', 'destinationOverrideCount']) ?? 0,
     destinationOverrides: readOptionalRecordArray(payload, [
       'destination_overrides',
-      'destinationOverrides'
-    ]).map((entry, index) => readDestinationOverrideSummary(entry, `destination_overrides[${index}]`)),
+      'destinationOverrides',
+    ]).map((entry, index) =>
+      readDestinationOverrideSummary(entry, `destination_overrides[${index}]`),
+    ),
     tokenPolicies,
     tokenDestinationOverrides,
     tokenManualApprovalPolicies,
     policyAttachment,
     attachedPolicyIds,
-    policyNote: readRequiredString(payload, ['policy_note', 'policyNote'], 'policy_note')
+    policyNote: readRequiredString(payload, ['policy_note', 'policyNote'], 'policy_note'),
   };
+}
+
+function readWalletKeyAlgorithm(
+  payload: Record<string, unknown>,
+  fieldNames: string[],
+  label: string,
+): WalletKeyAlgorithm {
+  const value = readOptionalString(payload, fieldNames);
+  if (value == null) {
+    return 'secp256k1';
+  }
+  if (value === 'secp256k1' || value === 'ed25519') {
+    return value;
+  }
+  throw new Error(`${label} must be secp256k1 or ed25519 in bootstrap credentials file`);
 }
 
 export function readBootstrapSetupFile(inputPath: string): BootstrapSetupFileContents {
@@ -773,7 +872,7 @@ export function readBootstrapSetupSummaryFile(inputPath: string): BootstrapSetup
 
 export function assertBootstrapSetupSummaryLeaseIsActive(
   summary: Pick<BootstrapSetupSummary, 'leaseExpiresAt'>,
-  deps: BootstrapLeaseValidationDeps = {}
+  deps: BootstrapLeaseValidationDeps = {},
 ): void {
   const now = deps.now ?? (() => Date.now());
   const leaseExpiry = Date.parse(summary.leaseExpiresAt);
@@ -784,13 +883,13 @@ export function assertBootstrapSetupSummaryLeaseIsActive(
 
   if (leaseExpiry <= now()) {
     throw new Error(
-      'bootstrap summary lease has expired; rerun `agentpay admin setup --print-agent-auth-token`'
+      'bootstrap summary lease has expired; rerun `agentpay admin setup --print-agent-auth-token`',
     );
   }
 }
 
 export function redactBootstrapAgentCredentialsFile(
-  inputPath: string
+  inputPath: string,
 ): BootstrapCredentialsCleanupResult {
   const resolvedPath = resolveInputPath(inputPath);
   assertWritableBootstrapFile(resolvedPath);
@@ -800,7 +899,7 @@ export function redactBootstrapAgentCredentialsFile(
 }
 
 export function deleteBootstrapAgentCredentialsFile(
-  inputPath: string
+  inputPath: string,
 ): BootstrapCredentialsCleanupResult {
   const resolvedPath = resolveInputPath(inputPath);
   assertWritableBootstrapFile(resolvedPath);
@@ -810,7 +909,7 @@ export function deleteBootstrapAgentCredentialsFile(
 
 export function cleanupBootstrapAgentCredentialsFile(
   inputPath: string,
-  action: 'deleted' | 'redacted'
+  action: 'deleted' | 'redacted',
 ): BootstrapCredentialsBestEffortCleanupResult {
   const resolvedPath = resolveInputPath(inputPath);
 
@@ -820,7 +919,7 @@ export function cleanupBootstrapAgentCredentialsFile(
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
       return {
         sourcePath: resolvedPath,
-        action: 'missing'
+        action: 'missing',
       };
     }
     throw error;
@@ -830,7 +929,7 @@ export function cleanupBootstrapAgentCredentialsFile(
     deleteBootstrapAgentCredentialsFile(resolvedPath);
     return {
       sourcePath: resolvedPath,
-      action: 'deleted'
+      action: 'deleted',
     };
   }
 
@@ -838,14 +937,14 @@ export function cleanupBootstrapAgentCredentialsFile(
     redactBootstrapAgentCredentialsFile(resolvedPath);
     return {
       sourcePath: resolvedPath,
-      action: 'redacted'
+      action: 'redacted',
     };
   } catch (redactError) {
     try {
       deleteBootstrapAgentCredentialsFile(resolvedPath);
       return {
         sourcePath: resolvedPath,
-        action: 'deleted'
+        action: 'deleted',
       };
     } catch (deleteError) {
       return {
@@ -853,7 +952,7 @@ export function cleanupBootstrapAgentCredentialsFile(
         action: 'failed',
         error:
           `bootstrap credentials file '${resolvedPath}' redaction failed: ${renderError(redactError)}; ` +
-          `fallback delete also failed: ${renderError(deleteError)}`
+          `fallback delete also failed: ${renderError(deleteError)}`,
       };
     }
   }

@@ -118,7 +118,11 @@ pub(super) fn is_allowed_input_char(field: Field, ch: char) -> bool {
         Field::NetworkAddress
         | Field::OverrideRecipientAddress
         | Field::ManualApprovalRecipientAddress => {
-            ch.is_ascii_hexdigit() || matches!(ch, 'x' | 'X')
+            // EVM hex addresses use 0-9, a-f, plus 'x' for the 0x prefix.
+            // Solana base58 addresses use 1-9, A-H, J-N, P-Z, a-k, m-z (no 0/O/I/l).
+            // Accept ASCII alphanumerics so both encodings can be typed; the
+            // parser still rejects malformed values when the field is committed.
+            ch.is_ascii_alphanumeric()
         }
         _ => true,
     }
@@ -219,7 +223,11 @@ mod tests {
 
         assert!(is_allowed_input_char(Field::NetworkAddress, 'a'));
         assert!(is_allowed_input_char(Field::NetworkAddress, 'X'));
-        assert!(!is_allowed_input_char(Field::NetworkAddress, 'g'));
+        // Solana base58 mints use letters outside the EVM hex alphabet such
+        // as 'g' and 'P'; the parser still rejects malformed values on commit.
+        assert!(is_allowed_input_char(Field::NetworkAddress, 'g'));
+        assert!(is_allowed_input_char(Field::NetworkAddress, 'P'));
+        assert!(!is_allowed_input_char(Field::NetworkAddress, '!'));
 
         assert!(is_allowed_input_char(Field::TokenName, '!'));
     }

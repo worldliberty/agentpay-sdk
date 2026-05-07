@@ -18,6 +18,11 @@ const PRIVATE_FILE_MODE: u32 = 0o600;
 const DEFAULT_ETH_RPC_URL: &str = "https://eth.llamarpc.com";
 const DEFAULT_BSC_RPC_URL: &str = "https://bsc.drpc.org";
 const DEFAULT_USD1_ADDRESS: &str = "0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d";
+const DEFAULT_SOLANA_MAINNET_RPC_URL: &str = "https://api.mainnet-beta.solana.com";
+const DEFAULT_SOLANA_DEVNET_RPC_URL: &str = "https://api.devnet.solana.com";
+const DEFAULT_SOLANA_TESTNET_RPC_URL: &str = "https://api.testnet.solana.com";
+const DEFAULT_SOLANA_USDC_MINT: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const DEFAULT_SOLANA_DEVNET_USDC_MINT: &str = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -173,6 +178,33 @@ fn default_chain_profiles() -> BTreeMap<String, ChainProfile> {
                 extra: BTreeMap::new(),
             },
         ),
+        (
+            "solana-mainnet".to_string(),
+            ChainProfile {
+                chain_id: 900_000_001,
+                name: "Solana".to_string(),
+                rpc_url: Some(DEFAULT_SOLANA_MAINNET_RPC_URL.to_string()),
+                extra: BTreeMap::new(),
+            },
+        ),
+        (
+            "solana-devnet".to_string(),
+            ChainProfile {
+                chain_id: 900_000_002,
+                name: "Solana Devnet".to_string(),
+                rpc_url: Some(DEFAULT_SOLANA_DEVNET_RPC_URL.to_string()),
+                extra: BTreeMap::new(),
+            },
+        ),
+        (
+            "solana-testnet".to_string(),
+            ChainProfile {
+                chain_id: 900_000_003,
+                name: "Solana Testnet".to_string(),
+                rpc_url: Some(DEFAULT_SOLANA_TESTNET_RPC_URL.to_string()),
+                extra: BTreeMap::new(),
+            },
+        ),
     ])
 }
 
@@ -223,6 +255,52 @@ fn default_token_profiles() -> BTreeMap<String, TokenProfile> {
             },
         ),
         (
+            "sol".to_string(),
+            TokenProfile {
+                name: Some("Solana".to_string()),
+                symbol: "SOL".to_string(),
+                default_policy: None,
+                destination_overrides: Vec::new(),
+                manual_approval_policies: Vec::new(),
+                chains: BTreeMap::from([
+                    (
+                        "solana-mainnet".to_string(),
+                        TokenChainProfile {
+                            chain_id: 900_000_001,
+                            is_native: true,
+                            address: None,
+                            decimals: 9,
+                            default_policy: None,
+                            extra: BTreeMap::new(),
+                        },
+                    ),
+                    (
+                        "solana-devnet".to_string(),
+                        TokenChainProfile {
+                            chain_id: 900_000_002,
+                            is_native: true,
+                            address: None,
+                            decimals: 9,
+                            default_policy: None,
+                            extra: BTreeMap::new(),
+                        },
+                    ),
+                    (
+                        "solana-testnet".to_string(),
+                        TokenChainProfile {
+                            chain_id: 900_000_003,
+                            is_native: true,
+                            address: None,
+                            decimals: 9,
+                            default_policy: None,
+                            extra: BTreeMap::new(),
+                        },
+                    ),
+                ]),
+                extra: BTreeMap::new(),
+            },
+        ),
+        (
             "usd1".to_string(),
             TokenProfile {
                 name: Some("USD1".to_string()),
@@ -249,6 +327,41 @@ fn default_token_profiles() -> BTreeMap<String, TokenProfile> {
                             is_native: false,
                             address: Some(DEFAULT_USD1_ADDRESS.to_string()),
                             decimals: 18,
+                            default_policy: None,
+                            extra: BTreeMap::new(),
+                        },
+                    ),
+                ]),
+                extra: BTreeMap::new(),
+            },
+        ),
+        (
+            "usdc".to_string(),
+            TokenProfile {
+                name: Some("USDC".to_string()),
+                symbol: "USDC".to_string(),
+                default_policy: None,
+                destination_overrides: Vec::new(),
+                manual_approval_policies: Vec::new(),
+                chains: BTreeMap::from([
+                    (
+                        "solana-mainnet".to_string(),
+                        TokenChainProfile {
+                            chain_id: 900_000_001,
+                            is_native: false,
+                            address: Some(DEFAULT_SOLANA_USDC_MINT.to_string()),
+                            decimals: 6,
+                            default_policy: None,
+                            extra: BTreeMap::new(),
+                        },
+                    ),
+                    (
+                        "solana-devnet".to_string(),
+                        TokenChainProfile {
+                            chain_id: 900_000_002,
+                            is_native: false,
+                            address: Some(DEFAULT_SOLANA_DEVNET_USDC_MINT.to_string()),
+                            decimals: 6,
                             default_policy: None,
                             extra: BTreeMap::new(),
                         },
@@ -401,10 +514,15 @@ mod tests {
         let config = WlfiConfig::read_from_path(&path).expect("read config");
         assert!(config.chains.contains_key("eth"));
         assert!(config.chains.contains_key("bsc"));
+        assert!(config.chains.contains_key("solana-mainnet"));
+        assert!(config.chains.contains_key("solana-devnet"));
+        assert!(config.chains.contains_key("solana-testnet"));
         assert!(config.tokens.contains_key("bnb"));
         assert!(config.tokens.contains_key("eth"));
+        assert!(config.tokens.contains_key("sol"));
         assert!(config.tokens.contains_key("usd1"));
-        assert_eq!(config.tokens.len(), 3);
+        assert!(config.tokens.contains_key("usdc"));
+        assert_eq!(config.tokens.len(), 5);
         assert_eq!(config.chain_id, Some(56));
         assert_eq!(config.chain_name.as_deref(), Some("bsc"));
         assert_eq!(config.rpc_url.as_deref(), Some("https://rpc.bsc.example"));
@@ -426,6 +544,13 @@ mod tests {
             config.chains["bsc"].rpc_url.as_deref(),
             Some("https://bsc.drpc.org")
         );
+        assert_eq!(config.chains["solana-mainnet"].chain_id, 900_000_001);
+        assert_eq!(
+            config.chains["solana-mainnet"].rpc_url.as_deref(),
+            Some("https://api.mainnet-beta.solana.com")
+        );
+        assert_eq!(config.chains["solana-devnet"].chain_id, 900_000_002);
+        assert_eq!(config.chains["solana-testnet"].chain_id, 900_000_003);
 
         let bnb = config.tokens.get("bnb").expect("bnb default");
         assert_eq!(bnb.symbol, "BNB");
@@ -443,6 +568,16 @@ mod tests {
         assert!(eth.chains["eth"].address.is_none());
         assert_eq!(eth.chains["eth"].decimals, 18);
 
+        let sol = config.tokens.get("sol").expect("sol default");
+        assert_eq!(sol.symbol, "SOL");
+        assert!(sol.default_policy.is_none());
+        assert_eq!(sol.chains["solana-mainnet"].chain_id, 900_000_001);
+        assert!(sol.chains["solana-mainnet"].is_native);
+        assert!(sol.chains["solana-mainnet"].address.is_none());
+        assert_eq!(sol.chains["solana-mainnet"].decimals, 9);
+        assert_eq!(sol.chains["solana-devnet"].chain_id, 900_000_002);
+        assert_eq!(sol.chains["solana-testnet"].chain_id, 900_000_003);
+
         let usd1 = config.tokens.get("usd1").expect("usd1 default");
         assert_eq!(usd1.symbol, "USD1");
         assert!(usd1.default_policy.is_none());
@@ -456,7 +591,20 @@ mod tests {
         );
         assert!(usd1.chains["eth"].default_policy.is_none());
         assert!(usd1.chains["bsc"].default_policy.is_none());
-        assert_eq!(config.tokens.len(), 3);
+
+        let usdc = config.tokens.get("usdc").expect("usdc default");
+        assert_eq!(usdc.symbol, "USDC");
+        assert_eq!(
+            usdc.chains["solana-mainnet"].address.as_deref(),
+            Some("EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+        );
+        assert_eq!(usdc.chains["solana-mainnet"].decimals, 6);
+        assert_eq!(
+            usdc.chains["solana-devnet"].address.as_deref(),
+            Some("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU")
+        );
+        assert_eq!(usdc.chains["solana-devnet"].decimals, 6);
+        assert_eq!(config.tokens.len(), 5);
     }
 
     #[test]

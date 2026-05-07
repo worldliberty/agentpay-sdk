@@ -2,10 +2,12 @@ use alloy_dyn_abi::eip712::TypedData;
 use alloy_primitives::{aliases::U48, Address, U160, U256};
 use alloy_sol_types::{eip712_domain, sol, Eip712Domain, SolCall, SolStruct};
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 use time::OffsetDateTime;
 
+use crate::constants::{canonical_policy_chain_id, is_solana_chain_id};
 use crate::u128_as_decimal_string;
-use crate::{AssetId, DomainError, EvmAddress};
+use crate::{AssetId, DomainError, EvmAddress, RecipientId, SolanaAddress};
 
 sol! {
     function approve(address spender, uint256 value);
@@ -606,6 +608,212 @@ impl BroadcastTx {
     }
 }
 
+/// Supported Solana token program variants for constrained token transfers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SolanaTokenProgram {
+    /// Original SPL Token program.
+    Token,
+    /// Token-2022 program.
+    Token2022,
+}
+
+impl Default for SolanaTokenProgram {
+    fn default() -> Self {
+        Self::Token
+    }
+}
+
+impl std::fmt::Display for SolanaTokenProgram {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Token => f.write_str("token"),
+            Self::Token2022 => f.write_str("token_2022"),
+        }
+    }
+}
+
+impl FromStr for SolanaTokenProgram {
+    type Err = DomainError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "token" | "spl-token" | "spl_token" => Ok(Self::Token),
+            "token_2022" | "token-2022" | "spl-token-2022" | "spl_token_2022" => {
+                Ok(Self::Token2022)
+            }
+            _ => Err(DomainError::InvalidSolanaTokenProgram),
+        }
+    }
+}
+
+/// Constrained native SOL transfer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SolanaSolTransfer {
+    /// Internal Solana network id.
+    pub chain_id: u64,
+    /// Recent blockhash as base58.
+    ///
+    /// When `durable_nonce_account` is set, this must be the durable nonce value
+    /// currently stored in that nonce account.
+    pub recent_blockhash: String,
+    /// Durable nonce account to advance as the first transaction instruction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub durable_nonce_account: Option<SolanaAddress>,
+    /// Fee payer and signing authority pubkey.
+    pub fee_payer: SolanaAddress,
+    /// Recipient wallet pubkey.
+    pub to: SolanaAddress,
+    /// Transfer amount in lamports.
+    #[serde(with = "u128_as_decimal_string")]
+    pub amount_wei: u128,
+    /// Optional compute unit limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compute_unit_limit: Option<u32>,
+    /// Optional compute unit price in micro-lamports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compute_unit_price_micro_lamports: Option<u64>,
+}
+
+impl SolanaSolTransfer {
+    pub fn validate(&self) -> Result<(), DomainError> {
+        if !is_solana_chain_id(self.chain_id) {
+            return Err(DomainError::InvalidChainId);
+        }
+        if self.amount_wei == 0 {
+            return Err(DomainError::InvalidAmount);
+        }
+        if self.amount_wei > u128::from(u64::MAX) {
+            return Err(DomainError::AmountOutOfRange);
+        }
+        if let Some(nonce_account) = &self.durable_nonce_account {
+            let _ = nonce_account.to_bytes()?;
+        }
+        let _ = self.fee_payer.to_bytes()?;
+        let _ = self.to.to_bytes()?;
+        decode_base58_32(&self.recent_blockhash)?;
+        validate_solana_compute_budget(
+            self.compute_unit_limit,
+            self.compute_unit_price_micro_lamports,
+        )
+    }
+}
+
+/// Constrained Solana SPL token transfer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SolanaSplTransfer {
+    /// Internal Solana network id.
+    pub chain_id: u64,
+    /// Recent blockhash as base58.
+    ///
+    /// When `durable_nonce_account` is set, this must be the durable nonce value
+    /// currently stored in that nonce account.
+    pub recent_blockhash: String,
+    /// Durable nonce account to advance as the first transaction instruction.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub durable_nonce_account: Option<SolanaAddress>,
+    /// Fee payer and signing authority pubkey.
+    pub fee_payer: SolanaAddress,
+    /// SPL mint pubkey under the original token program.
+    pub mint: SolanaAddress,
+    /// Recipient wallet owner pubkey.
+    pub recipient_owner: SolanaAddress,
+    /// Transfer amount in token base units.
+    #[serde(with = "u128_as_decimal_string")]
+    pub amount_wei: u128,
+    /// Mint decimals enforced by `TransferChecked`.
+    pub decimals: u8,
+    /// Token program that owns the mint.
+    #[serde(default)]
+    pub token_program: SolanaTokenProgram,
+    /// Optional expected transfer fee for Token-2022 fee mints.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "crate::u128_as_decimal_string::option"
+    )]
+    pub transfer_fee_wei: Option<u128>,
+    /// Optional compute unit limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compute_unit_limit: Option<u32>,
+    /// Optional compute unit price in micro-lamports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compute_unit_price_micro_lamports: Option<u64>,
+}
+
+impl SolanaSplTransfer {
+    pub fn validate(&self) -> Result<(), DomainError> {
+        if !is_solana_chain_id(self.chain_id) {
+            return Err(DomainError::InvalidChainId);
+        }
+        if self.amount_wei == 0 {
+            return Err(DomainError::InvalidAmount);
+        }
+        if self.amount_wei > u128::from(u64::MAX) {
+            return Err(DomainError::AmountOutOfRange);
+        }
+        if let Some(nonce_account) = &self.durable_nonce_account {
+            let _ = nonce_account.to_bytes()?;
+        }
+        let _ = self.fee_payer.to_bytes()?;
+        let _ = self.mint.to_bytes()?;
+        let _ = self.recipient_owner.to_bytes()?;
+        decode_base58_32(&self.recent_blockhash)?;
+        if let Some(fee) = self.transfer_fee_wei {
+            if self.token_program != SolanaTokenProgram::Token2022 {
+                return Err(DomainError::InvalidSolanaTokenProgram);
+            }
+            if fee > u128::from(u64::MAX) {
+                return Err(DomainError::AmountOutOfRange);
+            }
+        }
+        validate_solana_compute_budget(
+            self.compute_unit_limit,
+            self.compute_unit_price_micro_lamports,
+        )
+    }
+}
+
+/// Internal Solana durable nonce account creation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SolanaNonceAccountCreate {
+    /// Internal Solana network id.
+    pub chain_id: u64,
+    /// Recent blockhash as base58.
+    pub recent_blockhash: String,
+    /// Fee payer and nonce authority pubkey.
+    pub fee_payer: SolanaAddress,
+    /// Derived nonce account pubkey.
+    pub nonce_account: SolanaAddress,
+    /// Seed used with `fee_payer` and the system program to derive `nonce_account`.
+    pub seed: String,
+    /// Rent-exempt lamports to fund the nonce account.
+    #[serde(with = "u128_as_decimal_string")]
+    pub rent_lamports: u128,
+}
+
+impl SolanaNonceAccountCreate {
+    pub fn validate(&self) -> Result<(), DomainError> {
+        if !is_solana_chain_id(self.chain_id) {
+            return Err(DomainError::InvalidChainId);
+        }
+        if self.rent_lamports == 0 {
+            return Err(DomainError::InvalidAmount);
+        }
+        if self.rent_lamports > u128::from(u64::MAX) {
+            return Err(DomainError::AmountOutOfRange);
+        }
+        let seed = self.seed.as_bytes();
+        if seed.is_empty() || seed.len() > 32 || !seed.is_ascii() {
+            return Err(DomainError::InvalidSolanaNonceSeed);
+        }
+        let _ = self.fee_payer.to_bytes()?;
+        let _ = self.nonce_account.to_bytes()?;
+        decode_base58_32(&self.recent_blockhash)?;
+        Ok(())
+    }
+}
+
 /// Actions an agent can request the daemon to sign.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind")]
@@ -684,6 +892,12 @@ pub enum AgentAction {
         /// Unsinged tx fields to authorize and sign.
         tx: BroadcastTx,
     },
+    /// Constrained native SOL transfer request.
+    SolanaSolTransfer { transfer: SolanaSolTransfer },
+    /// Constrained Solana SPL token transfer request.
+    SolanaSplTransfer { transfer: SolanaSplTransfer },
+    /// Internal durable nonce account creation request.
+    SolanaNonceAccountCreate { create: SolanaNonceAccountCreate },
 }
 
 impl AgentAction {
@@ -704,6 +918,9 @@ impl AgentAction {
             Self::TempoSessionVoucher { authorization } => authorization.amount_wei,
             Self::Eip712TypedData { .. } => 0,
             Self::BroadcastTx { tx } => self.broadcast_effective_amount_wei(tx),
+            Self::SolanaSolTransfer { transfer } => transfer.amount_wei,
+            Self::SolanaSplTransfer { transfer } => transfer.amount_wei,
+            Self::SolanaNonceAccountCreate { create } => create.rent_lamports,
         }
     }
 
@@ -722,6 +939,9 @@ impl AgentAction {
             Self::TempoSessionVoucher { authorization } => authorization.chain_id,
             Self::Eip712TypedData { typed_data } => typed_data.chain_id().unwrap_or_default(),
             Self::BroadcastTx { tx } => tx.chain_id,
+            Self::SolanaSolTransfer { transfer } => canonical_policy_chain_id(transfer.chain_id),
+            Self::SolanaSplTransfer { transfer } => canonical_policy_chain_id(transfer.chain_id),
+            Self::SolanaNonceAccountCreate { create } => canonical_policy_chain_id(create.chain_id),
         }
     }
 
@@ -749,27 +969,49 @@ impl AgentAction {
             }
             Self::Eip712TypedData { .. } => AssetId::NativeEth,
             Self::BroadcastTx { tx } => self.broadcast_effective_asset(tx),
+            Self::SolanaSolTransfer { .. } => AssetId::NativeSol,
+            Self::SolanaSplTransfer { transfer } => AssetId::SplToken(transfer.mint.clone()),
+            Self::SolanaNonceAccountCreate { .. } => AssetId::NativeSol,
         }
     }
 
     /// Returns recipient/spender address used for policy scope matching.
     #[must_use]
-    pub fn recipient(&self) -> EvmAddress {
+    pub fn recipient(&self) -> RecipientId {
         match self {
-            Self::Approve { spender, .. } => spender.clone(),
-            Self::Transfer { to, .. } | Self::TransferNative { to, .. } => to.clone(),
-            Self::Permit2Permit { permit } => permit.spender.clone(),
+            Self::Approve { spender, .. } => RecipientId::Evm(spender.clone()),
+            Self::Transfer { to, .. } | Self::TransferNative { to, .. } => {
+                RecipientId::Evm(to.clone())
+            }
+            Self::Permit2Permit { permit } => RecipientId::Evm(permit.spender.clone()),
             Self::Eip3009TransferWithAuthorization { authorization }
-            | Self::Eip3009ReceiveWithAuthorization { authorization } => authorization.to.clone(),
-            Self::TempoSessionOpenTransaction { authorization } => authorization.recipient.clone(),
-            Self::TempoSessionTopUpTransaction { authorization } => authorization.recipient.clone(),
-            Self::TempoSessionVoucher { authorization } => authorization.recipient.clone(),
-            Self::Eip712TypedData { typed_data } => typed_data
-                .verifying_contract()
-                .ok()
-                .flatten()
-                .unwrap_or_else(zero_evm_address),
+            | Self::Eip3009ReceiveWithAuthorization { authorization } => {
+                RecipientId::Evm(authorization.to.clone())
+            }
+            Self::TempoSessionOpenTransaction { authorization } => {
+                RecipientId::Evm(authorization.recipient.clone())
+            }
+            Self::TempoSessionTopUpTransaction { authorization } => {
+                RecipientId::Evm(authorization.recipient.clone())
+            }
+            Self::TempoSessionVoucher { authorization } => {
+                RecipientId::Evm(authorization.recipient.clone())
+            }
+            Self::Eip712TypedData { typed_data } => RecipientId::Evm(
+                typed_data
+                    .verifying_contract()
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(zero_evm_address),
+            ),
             Self::BroadcastTx { tx } => self.broadcast_effective_recipient(tx),
+            Self::SolanaSolTransfer { transfer } => RecipientId::Solana(transfer.to.clone()),
+            Self::SolanaSplTransfer { transfer } => {
+                RecipientId::Solana(transfer.recipient_owner.clone())
+            }
+            Self::SolanaNonceAccountCreate { create } => {
+                RecipientId::Solana(create.nonce_account.clone())
+            }
         }
     }
 
@@ -833,7 +1075,15 @@ impl AgentAction {
 
     #[must_use]
     pub fn records_spend_event(&self) -> bool {
-        !matches!(self, Self::Eip712TypedData { .. })
+        !matches!(
+            self,
+            Self::Eip712TypedData { .. } | Self::SolanaNonceAccountCreate { .. }
+        )
+    }
+
+    #[must_use]
+    pub fn is_wallet_maintenance(&self) -> bool {
+        matches!(self, Self::SolanaNonceAccountCreate { .. })
     }
 
     #[must_use]
@@ -873,6 +1123,9 @@ impl AgentAction {
             Self::TempoSessionTopUpTransaction { authorization } => authorization.validate(),
             Self::TempoSessionVoucher { authorization } => authorization.validate(),
             Self::Eip712TypedData { typed_data } => typed_data.validate(),
+            Self::SolanaSolTransfer { transfer } => transfer.validate(),
+            Self::SolanaSplTransfer { transfer } => transfer.validate(),
+            Self::SolanaNonceAccountCreate { create } => create.validate(),
             _ => {
                 if self.amount_wei() == 0 {
                     return Err(DomainError::InvalidAmount);
@@ -892,11 +1145,11 @@ impl AgentAction {
         AssetId::NativeEth
     }
 
-    fn broadcast_effective_recipient(&self, tx: &BroadcastTx) -> EvmAddress {
+    fn broadcast_effective_recipient(&self, tx: &BroadcastTx) -> RecipientId {
         if let Some(projection) = self.broadcast_policy_projection(tx) {
             return projection.recipient;
         }
-        tx.to.clone()
+        RecipientId::Evm(tx.to.clone())
     }
 
     fn broadcast_effective_amount_wei(&self, tx: &BroadcastTx) -> u128 {
@@ -912,10 +1165,21 @@ impl AgentAction {
     }
 }
 
+fn validate_solana_compute_budget(
+    compute_unit_limit: Option<u32>,
+    compute_unit_price_micro_lamports: Option<u64>,
+) -> Result<(), DomainError> {
+    if matches!(compute_unit_limit, Some(0)) || matches!(compute_unit_price_micro_lamports, Some(0))
+    {
+        return Err(DomainError::InvalidSolanaComputeBudget);
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BroadcastPolicyProjection {
     asset: AssetId,
-    recipient: EvmAddress,
+    recipient: RecipientId,
     amount_wei: u128,
 }
 
@@ -1032,12 +1296,12 @@ fn parse_broadcast_policy_call(
                     amount_wei,
                 } => BroadcastPolicyProjection {
                     asset,
-                    recipient: spender,
+                    recipient: RecipientId::Evm(spender),
                     amount_wei,
                 },
                 Erc20Call::Transfer { to, amount_wei } => BroadcastPolicyProjection {
                     asset,
-                    recipient: to,
+                    recipient: RecipientId::Evm(to),
                     amount_wei,
                 },
             });
@@ -1048,7 +1312,7 @@ fn parse_broadcast_policy_call(
         if let Ok(decoded) = permitCall::abi_decode(calldata, true) {
             return Ok(BroadcastPolicyProjection {
                 asset: AssetId::Erc20(alloy_address_to_evm(decoded.permitSingle.details.token)?),
-                recipient: alloy_address_to_evm(decoded.permitSingle.spender)?,
+                recipient: RecipientId::Evm(alloy_address_to_evm(decoded.permitSingle.spender)?),
                 amount_wei: u160_to_u128(decoded.permitSingle.details.amount)?,
             });
         }
@@ -1056,7 +1320,7 @@ fn parse_broadcast_policy_call(
         if let Ok(decoded) = transferWithAuthorizationCall::abi_decode(calldata, true) {
             return Ok(BroadcastPolicyProjection {
                 asset: AssetId::Erc20(tx.to.clone()),
-                recipient: alloy_address_to_evm(decoded.to)?,
+                recipient: RecipientId::Evm(alloy_address_to_evm(decoded.to)?),
                 amount_wei: u256_to_u128(decoded.value)?,
             });
         }
@@ -1064,7 +1328,7 @@ fn parse_broadcast_policy_call(
         if let Ok(decoded) = receiveWithAuthorizationCall::abi_decode(calldata, true) {
             return Ok(BroadcastPolicyProjection {
                 asset: AssetId::Erc20(tx.to.clone()),
-                recipient: alloy_address_to_evm(decoded.to)?,
+                recipient: RecipientId::Evm(alloy_address_to_evm(decoded.to)?),
                 amount_wei: u256_to_u128(decoded.value)?,
             });
         }
@@ -1084,6 +1348,13 @@ fn evm_to_alloy_address(address: &EvmAddress) -> Result<Address, DomainError> {
 fn alloy_address_to_evm(address: alloy_primitives::Address) -> Result<EvmAddress, DomainError> {
     let value = format!("0x{}", hex::encode(address.as_slice()));
     value.parse::<EvmAddress>()
+}
+
+fn decode_base58_32(value: &str) -> Result<[u8; 32], DomainError> {
+    let decoded = bs58::decode(value.trim())
+        .into_vec()
+        .map_err(|_| DomainError::InvalidSolanaRecentBlockhash)?;
+    <[u8; 32]>::try_from(decoded.as_slice()).map_err(|_| DomainError::InvalidSolanaRecentBlockhash)
 }
 
 fn zero_evm_address() -> EvmAddress {

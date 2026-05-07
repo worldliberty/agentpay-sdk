@@ -358,11 +358,14 @@ mod tests {
             tx_type: Some("0x02".to_string()),
             delegation_enabled: Some(false),
             signature_hex: "0xdead".to_string(),
+            signature_base58: None,
             r_hex: Some("0x01".to_string()),
             s_hex: Some("0x02".to_string()),
             v: Some(1),
             raw_tx_hex: Some("0xbeef".to_string()),
             tx_hash_hex: Some("0xcafe".to_string()),
+            raw_tx_base64: None,
+            tx_id: None,
         };
 
         print_agent_output(
@@ -721,6 +724,11 @@ pub(crate) fn print_agent_output(
                 .unwrap_or_default(),
             format!("Signature: {}", output.signature_hex),
             output
+                .signature_base58
+                .as_ref()
+                .map(|value| format!("Signature (base58): {value}"))
+                .unwrap_or_default(),
+            output
                 .r_hex
                 .as_ref()
                 .map(|value| format!("r: {value}"))
@@ -744,6 +752,16 @@ pub(crate) fn print_agent_output(
                 .tx_hash_hex
                 .as_ref()
                 .map(|value| format!("Tx Hash: {value}"))
+                .unwrap_or_default(),
+            output
+                .raw_tx_base64
+                .as_ref()
+                .map(|value| format!("Raw Tx (base64): {value}"))
+                .unwrap_or_default(),
+            output
+                .tx_id
+                .as_ref()
+                .map(|value| format!("Tx ID: {value}"))
                 .unwrap_or_default(),
         ]
         .into_iter()
