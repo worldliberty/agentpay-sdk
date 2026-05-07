@@ -68,7 +68,7 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: 1.87.0
+          toolchain: 1.89.0
 
       - name: Validate installer scripts
         run: |
