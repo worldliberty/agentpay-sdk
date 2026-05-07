@@ -900,6 +900,7 @@ fn action_name(action: &AgentAction) -> &'static str {
         AgentAction::SolanaSplTransfer { .. } => "transfer",
         AgentAction::SolanaSolTransfer { .. } => "transfer_native",
         AgentAction::SolanaNonceAccountCreate { .. } => "solana_nonce_account_create",
+        AgentAction::SolanaMessageSigning { .. } => "solana_message_sign",
         AgentAction::TransferNative { .. } => "transfer_native",
         AgentAction::Permit2Permit { .. } => "permit2_permit",
         AgentAction::Eip3009TransferWithAuthorization { .. } => {

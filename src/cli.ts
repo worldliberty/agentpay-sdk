@@ -145,8 +145,7 @@ import {
 import { registerBuiltinCliPlugins } from './plugins/index.js';
 
 type SolanaTransferModule = typeof import('./lib/solana-transfer.js');
-type SolanaDurableNonceContext =
-  import('./lib/solana-transfer.js').SolanaDurableNonceContext;
+type SolanaDurableNonceContext = import('./lib/solana-transfer.js').SolanaDurableNonceContext;
 
 let solanaTransferModulePromise: Promise<SolanaTransferModule> | undefined;
 
@@ -4977,6 +4976,42 @@ async function main() {
       },
       formatOutput: formatBroadcastedAssetOutput,
       reportOnchainReceiptStatus,
+    },
+    solana: {
+      resolveWalletAddress: async (config) => {
+        const { resolveSolanaWalletAddress } = await loadSolanaTransferModule();
+        return resolveSolanaWalletAddress(config);
+      },
+      resolveSolTransferContext: async (input) => {
+        const { resolveSolanaSolTransferContext } = await loadSolanaTransferModule();
+        return resolveSolanaSolTransferContext(input);
+      },
+      resolveSplTransferContext: async (input) => {
+        const { resolveSolanaTransferContext } = await loadSolanaTransferModule();
+        return resolveSolanaTransferContext(input);
+      },
+      resolveTransferFee: async (input) => {
+        const { resolveSolanaTransferFee } = await loadSolanaTransferModule();
+        return resolveSolanaTransferFee(input);
+      },
+      resolveComputeBudget: async (input) => {
+        const { resolveSolanaComputeBudget } = await loadSolanaTransferModule();
+        return resolveSolanaComputeBudget(input);
+      },
+      resolveDurableNonceForBroadcast: (input) =>
+        resolveSolanaDurableNonceForBroadcast({
+          ...input,
+          auth: input.auth as AgentCommandAuthOptions,
+        }),
+      broadcastSignedTransaction: async (rpcUrl, signedTransactionBase64) => {
+        const { broadcastSignedSolanaTransaction } = await loadSolanaTransferModule();
+        return broadcastSignedSolanaTransaction(rpcUrl, signedTransactionBase64);
+      },
+      reportSignatureStatus: reportSolanaSignatureStatus,
+      defaults: {
+        solTransferComputeUnitLimit: SOLANA_SOL_TRANSFER_COMPUTE_UNIT_LIMIT,
+        splTransferComputeUnitLimit: SOLANA_SPL_TRANSFER_COMPUTE_UNIT_LIMIT,
+      },
     },
     exitCodes: {
       challengeRequired: BITREFILL_CHALLENGE_EXIT_CODE,

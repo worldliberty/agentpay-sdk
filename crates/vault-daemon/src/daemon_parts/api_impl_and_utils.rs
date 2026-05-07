@@ -175,7 +175,10 @@ where
                 vault_keys.insert(vault_key.id, vault_key.clone());
             })
         {
-            if let Err(cleanup_err) = self.signer_backend.delete_vault_key_if_present(vault_key.id) {
+            if let Err(cleanup_err) = self
+                .signer_backend
+                .delete_vault_key_if_present(vault_key.id)
+            {
                 return Err(DaemonError::Signer(SignerError::Internal(format!(
                     "create_vault_key cleanup failed after error `{err}`: {cleanup_err}"
                 ))));
@@ -183,7 +186,10 @@ where
             return Err(err);
         }
         if let Err(err) = self.persist_or_revert(backup) {
-            if let Err(cleanup_err) = self.signer_backend.delete_vault_key_if_present(vault_key.id) {
+            if let Err(cleanup_err) = self
+                .signer_backend
+                .delete_vault_key_if_present(vault_key.id)
+            {
                 return Err(DaemonError::Signer(SignerError::Internal(format!(
                     "create_vault_key cleanup failed after error `{err}`: {cleanup_err}"
                 ))));
@@ -840,14 +846,14 @@ where
                                 &relay_private_key_hex,
                                 approval_request_id,
                             )
-                                .ok()
-                                .and_then(|approval_capability| {
-                                    manual_approval_frontend_url(
-                                        &relay_config,
-                                        approval_request_id,
-                                        &approval_capability,
-                                    )
-                                });
+                            .ok()
+                            .and_then(|approval_capability| {
+                                manual_approval_frontend_url(
+                                    &relay_config,
+                                    approval_request_id,
+                                    &approval_capability,
+                                )
+                            });
                             self.persist_or_revert(backup)?;
                             return Err(DaemonError::ManualApprovalRequired {
                                 approval_request_id,
@@ -890,14 +896,14 @@ where
                                 &relay_private_key_hex,
                                 approval_request_id,
                             )
-                                .ok()
-                                .and_then(|approval_capability| {
-                                    manual_approval_frontend_url(
-                                        &relay_config,
-                                        approval_request_id,
-                                        &approval_capability,
-                                    )
-                                });
+                            .ok()
+                            .and_then(|approval_capability| {
+                                manual_approval_frontend_url(
+                                    &relay_config,
+                                    approval_request_id,
+                                    &approval_capability,
+                                )
+                            });
                             self.persist_or_revert(backup)?;
                             return Err(DaemonError::ManualApprovalRequired {
                                 approval_request_id,
@@ -907,7 +913,10 @@ where
                         }
                     }
                 }
-                PolicyDecision::Deny(PolicyError::Eip712ManualApprovalRequired { policy_id, .. }) => {
+                PolicyDecision::Deny(PolicyError::Eip712ManualApprovalRequired {
+                    policy_id,
+                    ..
+                }) => {
                     ensure_action_supports_manual_approval(&payload_action)?;
                     let payload_hash = payload_hash_hex(&request.payload);
                     // Read the relay secret before creating or mutating approval state so a
@@ -939,14 +948,14 @@ where
                                 &relay_private_key_hex,
                                 approval_request_id,
                             )
-                                .ok()
-                                .and_then(|approval_capability| {
-                                    manual_approval_frontend_url(
-                                        &relay_config,
-                                        approval_request_id,
-                                        &approval_capability,
-                                    )
-                                });
+                            .ok()
+                            .and_then(|approval_capability| {
+                                manual_approval_frontend_url(
+                                    &relay_config,
+                                    approval_request_id,
+                                    &approval_capability,
+                                )
+                            });
                             self.persist_or_revert(backup)?;
                             return Err(DaemonError::ManualApprovalRequired {
                                 approval_request_id,
@@ -999,6 +1008,11 @@ where
                 }
                 AgentAction::SolanaNonceAccountCreate { create } => {
                     self.sign_solana_nonce_account_create(&vault_key, create)
+                        .await?
+                }
+                AgentAction::SolanaMessageSigning { message } => {
+                    self.signer_backend
+                        .sign_solana_payload(vault_key.id, message.message.as_bytes())
                         .await?
                 }
                 AgentAction::Permit2Permit { .. }
@@ -1370,7 +1384,9 @@ fn ensure_action_supports_manual_approval(action: &AgentAction) -> Result<(), Da
     Ok(())
 }
 
-fn prepare_loaded_state(mut state: PersistedDaemonState) -> Result<PersistedDaemonState, DaemonError> {
+fn prepare_loaded_state(
+    mut state: PersistedDaemonState,
+) -> Result<PersistedDaemonState, DaemonError> {
     ensure_relay_identity(&mut state);
     normalize_disabled_policy_set_attachments(&mut state);
     validate_loaded_state(&state)?;

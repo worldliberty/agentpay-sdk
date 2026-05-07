@@ -13,8 +13,9 @@ use vault_domain::{
     action_from_erc20_calldata, AgentAction, AgentCredentials, BroadcastTx, DomainError,
     Eip3009Transfer, Eip712TypedData, EvmAddress, NonceReleaseRequest, NonceReservation,
     NonceReservationRequest, Permit2Permit, SignRequest, Signature, SolanaAddress,
-    SolanaNonceAccountCreate, SolanaSolTransfer, SolanaSplTransfer, SolanaTokenProgram,
-    TempoSessionOpenTransaction, TempoSessionTopUpTransaction, TempoSessionVoucher,
+    SolanaMessageSigning, SolanaNonceAccountCreate, SolanaSolTransfer, SolanaSplTransfer,
+    SolanaTokenProgram, TempoSessionOpenTransaction, TempoSessionTopUpTransaction,
+    TempoSessionVoucher,
 };
 use zeroize::Zeroizing;
 
@@ -100,6 +101,15 @@ pub trait AgentOperations: Send + Sync {
         nonce_account: SolanaAddress,
         seed: String,
         rent_lamports: u128,
+    ) -> Result<Signature, AgentSdkError>;
+
+    /// Requests a scoped Solana message signature.
+    async fn solana_message_sign(
+        &self,
+        chain_id: u64,
+        address: SolanaAddress,
+        domain: String,
+        message: String,
     ) -> Result<Signature, AgentSdkError>;
 
     /// Requests a Permit2 `PermitSingle` signature.
@@ -359,6 +369,24 @@ where
                 nonce_account,
                 seed,
                 rent_lamports,
+            },
+        })
+        .await
+    }
+
+    async fn solana_message_sign(
+        &self,
+        chain_id: u64,
+        address: SolanaAddress,
+        domain: String,
+        message: String,
+    ) -> Result<Signature, AgentSdkError> {
+        self.sign_action(AgentAction::SolanaMessageSigning {
+            message: SolanaMessageSigning {
+                chain_id,
+                address,
+                domain,
+                message,
             },
         })
         .await

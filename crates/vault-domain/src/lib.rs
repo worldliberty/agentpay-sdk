@@ -22,8 +22,8 @@ mod u128_as_decimal_string;
 
 pub use action::{
     action_from_erc20_calldata, parse_erc20_call, AgentAction, BroadcastTx, Eip3009Transfer,
-    Eip712TypedData, Erc20Call, Permit2Permit, SolanaNonceAccountCreate, SolanaSolTransfer,
-    SolanaSplTransfer, SolanaTokenProgram, TempoSessionOpenTransaction,
+    Eip712TypedData, Erc20Call, Permit2Permit, SolanaMessageSigning, SolanaNonceAccountCreate,
+    SolanaSolTransfer, SolanaSplTransfer, SolanaTokenProgram, TempoSessionOpenTransaction,
     TempoSessionTopUpTransaction, TempoSessionVoucher,
 };
 pub use address::{EvmAddress, RecipientId, SolanaAddress};

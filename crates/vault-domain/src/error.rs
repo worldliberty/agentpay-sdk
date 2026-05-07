@@ -77,6 +77,9 @@ pub enum DomainError {
     /// Solana durable nonce seed was invalid.
     #[error("solana nonce account seed must be non-empty ASCII and at most 32 bytes")]
     InvalidSolanaNonceSeed,
+    /// Solana message signing payload was invalid.
+    #[error("solana message signing payload is invalid")]
+    InvalidSolanaMessage,
     /// Action requested a signer algorithm that does not match the wallet key.
     #[error("signer key algorithm does not support this action")]
     InvalidKeyAlgorithmForAction,

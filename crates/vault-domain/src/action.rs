@@ -9,6 +9,8 @@ use crate::constants::{canonical_policy_chain_id, is_solana_chain_id};
 use crate::u128_as_decimal_string;
 use crate::{AssetId, DomainError, EvmAddress, RecipientId, SolanaAddress};
 
+const MAX_SOLANA_SIGNING_MESSAGE_BYTES: usize = 4 * 1024;
+
 sol! {
     function approve(address spender, uint256 value);
     function transfer(address to, uint256 value);
@@ -647,6 +649,37 @@ impl FromStr for SolanaTokenProgram {
     }
 }
 
+/// Scoped Solana message signing request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SolanaMessageSigning {
+    /// Internal Solana network id.
+    pub chain_id: u64,
+    /// Solana wallet address expected to sign the message.
+    pub address: SolanaAddress,
+    /// External domain requesting the signature.
+    pub domain: String,
+    /// UTF-8 message bytes to sign.
+    pub message: String,
+}
+
+impl SolanaMessageSigning {
+    pub fn validate(&self) -> Result<(), DomainError> {
+        if !is_solana_chain_id(self.chain_id) {
+            return Err(DomainError::InvalidChainId);
+        }
+        let _ = self.address.to_bytes()?;
+        let domain = self.domain.trim();
+        if domain != "solayer" {
+            return Err(DomainError::InvalidSolanaMessage);
+        }
+        let message = self.message.as_bytes();
+        if message.is_empty() || message.len() > MAX_SOLANA_SIGNING_MESSAGE_BYTES {
+            return Err(DomainError::InvalidSolanaMessage);
+        }
+        Ok(())
+    }
+}
+
 /// Constrained native SOL transfer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SolanaSolTransfer {
@@ -892,6 +925,8 @@ pub enum AgentAction {
         /// Unsinged tx fields to authorize and sign.
         tx: BroadcastTx,
     },
+    /// Scoped Solana message signing request.
+    SolanaMessageSigning { message: SolanaMessageSigning },
     /// Constrained native SOL transfer request.
     SolanaSolTransfer { transfer: SolanaSolTransfer },
     /// Constrained Solana SPL token transfer request.
@@ -918,6 +953,7 @@ impl AgentAction {
             Self::TempoSessionVoucher { authorization } => authorization.amount_wei,
             Self::Eip712TypedData { .. } => 0,
             Self::BroadcastTx { tx } => self.broadcast_effective_amount_wei(tx),
+            Self::SolanaMessageSigning { .. } => 0,
             Self::SolanaSolTransfer { transfer } => transfer.amount_wei,
             Self::SolanaSplTransfer { transfer } => transfer.amount_wei,
             Self::SolanaNonceAccountCreate { create } => create.rent_lamports,
@@ -939,6 +975,7 @@ impl AgentAction {
             Self::TempoSessionVoucher { authorization } => authorization.chain_id,
             Self::Eip712TypedData { typed_data } => typed_data.chain_id().unwrap_or_default(),
             Self::BroadcastTx { tx } => tx.chain_id,
+            Self::SolanaMessageSigning { message } => canonical_policy_chain_id(message.chain_id),
             Self::SolanaSolTransfer { transfer } => canonical_policy_chain_id(transfer.chain_id),
             Self::SolanaSplTransfer { transfer } => canonical_policy_chain_id(transfer.chain_id),
             Self::SolanaNonceAccountCreate { create } => canonical_policy_chain_id(create.chain_id),
@@ -969,6 +1006,7 @@ impl AgentAction {
             }
             Self::Eip712TypedData { .. } => AssetId::NativeEth,
             Self::BroadcastTx { tx } => self.broadcast_effective_asset(tx),
+            Self::SolanaMessageSigning { .. } => AssetId::NativeSol,
             Self::SolanaSolTransfer { .. } => AssetId::NativeSol,
             Self::SolanaSplTransfer { transfer } => AssetId::SplToken(transfer.mint.clone()),
             Self::SolanaNonceAccountCreate { .. } => AssetId::NativeSol,
@@ -1005,6 +1043,7 @@ impl AgentAction {
                     .unwrap_or_else(zero_evm_address),
             ),
             Self::BroadcastTx { tx } => self.broadcast_effective_recipient(tx),
+            Self::SolanaMessageSigning { message } => RecipientId::Solana(message.address.clone()),
             Self::SolanaSolTransfer { transfer } => RecipientId::Solana(transfer.to.clone()),
             Self::SolanaSplTransfer { transfer } => {
                 RecipientId::Solana(transfer.recipient_owner.clone())
@@ -1077,7 +1116,9 @@ impl AgentAction {
     pub fn records_spend_event(&self) -> bool {
         !matches!(
             self,
-            Self::Eip712TypedData { .. } | Self::SolanaNonceAccountCreate { .. }
+            Self::Eip712TypedData { .. }
+                | Self::SolanaMessageSigning { .. }
+                | Self::SolanaNonceAccountCreate { .. }
         )
     }
 
@@ -1123,6 +1164,7 @@ impl AgentAction {
             Self::TempoSessionTopUpTransaction { authorization } => authorization.validate(),
             Self::TempoSessionVoucher { authorization } => authorization.validate(),
             Self::Eip712TypedData { typed_data } => typed_data.validate(),
+            Self::SolanaMessageSigning { message } => message.validate(),
             Self::SolanaSolTransfer { transfer } => transfer.validate(),
             Self::SolanaSplTransfer { transfer } => transfer.validate(),
             Self::SolanaNonceAccountCreate { create } => create.validate(),

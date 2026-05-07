@@ -1,3 +1,5 @@
+import type { Command } from 'commander';
+import type { Address, Hex } from 'viem';
 import type { WlfiConfig } from '../../packages/config/src/index.js';
 import type {
   AssetBroadcastPlan,
@@ -7,8 +9,11 @@ import type {
   ResolveAssetBroadcastPlanDeps,
 } from '../lib/asset-broadcast.js';
 import type { ResolvedAssetMetadata, RustAmountOutputShape } from '../lib/config-amounts.js';
-import type { Command } from 'commander';
-import type { Address, Hex } from 'viem';
+import type {
+  SolanaComputeBudget,
+  SolanaSolTransferContext,
+  SolanaTransferContext,
+} from '../lib/solana-transfer.js';
 
 export interface CliPluginContext {
   cli: {
@@ -30,7 +35,7 @@ export interface CliPluginContext {
   };
   agent: {
     runJson: <T>(input: {
-      commandArgs: string[];
+      commandArgs: string[] | (() => Promise<string[]> | string[]);
       auth: Record<string, unknown>;
       config: WlfiConfig;
       asJson: boolean;
@@ -66,6 +71,55 @@ export interface CliPluginContext {
       txHash: Hex;
       asJson: boolean;
     }) => Promise<void>;
+  };
+  solana: {
+    resolveWalletAddress: (config: WlfiConfig) => Promise<string> | string;
+    resolveSolTransferContext: (input: {
+      rpcUrl: string;
+      feePayer: string;
+      recipient: string;
+    }) => Promise<SolanaSolTransferContext>;
+    resolveSplTransferContext: (input: {
+      rpcUrl: string;
+      feePayer: string;
+      mint: string;
+      recipientOwner: string;
+    }) => Promise<SolanaTransferContext>;
+    resolveTransferFee: (input: {
+      rpcUrl: string;
+      mint: string;
+      tokenProgram: SolanaTransferContext['tokenProgram'];
+      amountWei: bigint;
+    }) => Promise<{ transferInstruction: string; transferFeeWei: string | null }>;
+    resolveComputeBudget: (input: {
+      rpcUrl: string;
+      defaultComputeUnitLimit: number;
+      computeUnitLimit?: string;
+      computeUnitPriceMicroLamports?: string;
+    }) => Promise<SolanaComputeBudget>;
+    resolveDurableNonceForBroadcast: (input: {
+      rpcUrl: string;
+      chainId: string | number;
+      recentBlockhash: string;
+      feePayer: string;
+      explicitNonceAccount?: string;
+      auth: Record<string, unknown>;
+      config: WlfiConfig;
+      asJson: boolean;
+    }) => Promise<{ nonceAccount: string; nonceAuthority: string; nonce: string }>;
+    broadcastSignedTransaction: (
+      rpcUrl: string,
+      signedTransactionBase64: string,
+    ) => Promise<string>;
+    reportSignatureStatus: (input: {
+      rpcUrl: string;
+      signature: string;
+      asJson: boolean;
+    }) => Promise<void>;
+    defaults: {
+      solTransferComputeUnitLimit: number;
+      splTransferComputeUnitLimit: number;
+    };
   };
   exitCodes: {
     challengeRequired: number;

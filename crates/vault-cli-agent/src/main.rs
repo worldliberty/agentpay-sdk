@@ -198,6 +198,17 @@ enum Commands {
         #[arg(long, value_parser = parse_positive_u128)]
         rent_lamports: u128,
     },
+    #[command(about = "Request a scoped Solana message signature through policy checks")]
+    SolanaMessageSign {
+        #[arg(long, value_parser = parse_positive_u64)]
+        network: u64,
+        #[arg(long)]
+        address: SolanaAddress,
+        #[arg(long)]
+        domain: String,
+        #[arg(long)]
+        message: String,
+    },
     #[command(about = "Submit an ERC-20 approve request through policy checks")]
     Approve {
         #[arg(long, value_parser = parse_positive_u64)]
@@ -732,6 +743,53 @@ where
                 output_format,
                 quiet,
             );
+            print_agent_output(&output, output_format, output_target)?;
+        }
+        Commands::SolanaMessageSign {
+            network,
+            address,
+            domain,
+            message,
+        } => {
+            let address_str = address.to_string();
+            print_status(
+                "submitting solana message signing request",
+                output_format,
+                quiet,
+            );
+            let signature = match await_signature_or_handle_manual_approval(
+                "solana-message-sign",
+                daemon_socket,
+                output_format,
+                output_target,
+                sdk.solana_message_sign(network, address, domain, message),
+            )
+            .await?
+            {
+                Some(signature) => signature,
+                None => return Ok(CommandRunOutcome::ManualApprovalRequired),
+            };
+            let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);
+            let output = AgentCommandOutput {
+                command: "solana-message-sign".to_string(),
+                network: network.to_string(),
+                asset: "native_sol".to_string(),
+                counterparty: address_str,
+                amount_wei: "0".to_string(),
+                estimated_max_gas_spend_wei: None,
+                tx_type: None,
+                delegation_enabled: None,
+                signature_hex,
+                signature_base58: signature.signature_base58.clone(),
+                r_hex,
+                s_hex,
+                v,
+                raw_tx_hex: None,
+                tx_hash_hex: None,
+                raw_tx_base64: None,
+                tx_id: None,
+            };
+            print_status("solana message signed", output_format, quiet);
             print_agent_output(&output, output_format, output_target)?;
         }
         Commands::Approve {
