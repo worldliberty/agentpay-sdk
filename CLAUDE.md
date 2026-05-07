@@ -99,7 +99,7 @@ Organized in dependency layers:
 - **tsup** bundles the CLI to `dist/cli.cjs` (CJS, node20 target, with shebang)
 - **Cargo** workspace for Rust crates
 - **Biome** for formatting/linting (line width 100, single quotes, 2-space indent, trailing commas)
-- **Rust 1.87.0+** minimum required
+- **Rust 1.89.0+** minimum required
 
 ## Testing
 
