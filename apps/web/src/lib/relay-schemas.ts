@@ -13,10 +13,7 @@ const evmAddressSchema = z
   .regex(/^0x[a-fA-F0-9]{40}$/u, 'address must be a valid EVM address');
 const solanaAddressSchema = z
   .string()
-  .regex(
-    /^[1-9A-HJ-NP-Za-km-z]{32,44}$/u,
-    'address must be a valid Solana public key',
-  );
+  .regex(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/u, 'address must be a valid Solana public key');
 const addressSchema = z.union([evmAddressSchema, solanaAddressSchema]);
 const approvalStatusSchema = z.enum([
   'pending',

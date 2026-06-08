@@ -1,5 +1,11 @@
 import { setTimeout as sleep } from 'node:timers/promises';
-import { encodeFunctionData, erc20Abi, type Address, type Hex, type TransactionReceipt } from 'viem';
+import {
+  type Address,
+  encodeFunctionData,
+  erc20Abi,
+  type Hex,
+  type TransactionReceipt,
+} from 'viem';
 import type { ResolvedAssetMetadata, RustAmountOutputShape } from './config-amounts.js';
 import { normalizeAgentAmountOutput } from './config-amounts.js';
 
@@ -130,25 +136,27 @@ export async function resolveAssetBroadcastPlan(
   const chainInfo = await deps.getChainInfo(input.rpcUrl);
   deps.assertRpcChainIdMatches(input.chainId, chainInfo.chainId);
 
-  const nonce = input.nonce ?? await deps.getNonce(input.rpcUrl, input.from);
-  const gasLimit = input.gasLimit ?? await deps.estimateGas({
-    rpcUrl: input.rpcUrl,
-    from: input.from,
-    to: input.to,
-    value: input.valueWei,
-    data: input.dataHex,
-  });
+  const nonce = input.nonce ?? (await deps.getNonce(input.rpcUrl, input.from));
+  const gasLimit =
+    input.gasLimit ??
+    (await deps.estimateGas({
+      rpcUrl: input.rpcUrl,
+      from: input.from,
+      to: input.to,
+      value: input.valueWei,
+      data: input.dataHex,
+    }));
   const fees = await deps.estimateFees(input.rpcUrl);
   const resolvedFees = fees as BroadcastFeeEstimate;
-  const maxFeePerGasWei = input.maxFeePerGasWei ?? (resolvedFees.maxFeePerGas ?? resolvedFees.gasPrice);
+  const maxFeePerGasWei =
+    input.maxFeePerGasWei ?? resolvedFees.maxFeePerGas ?? resolvedFees.gasPrice;
 
   if (maxFeePerGasWei === null || maxFeePerGasWei <= 0n) {
     throw new Error('Could not determine maxFeePerGas; pass --max-fee-per-gas-wei');
   }
 
   const maxPriorityFeePerGasWei =
-    input.maxPriorityFeePerGasWei
-    ?? resolveEstimatedPriorityFeePerGasWei(resolvedFees);
+    input.maxPriorityFeePerGasWei ?? resolveEstimatedPriorityFeePerGasWei(resolvedFees);
 
   return {
     rpcUrl: input.rpcUrl,
@@ -203,13 +211,11 @@ function isPendingTransactionReceiptError(error: unknown): boolean {
 
   const message = error.message.toLowerCase();
   return (
-    message.includes('transaction receipt')
-    && (
-      message.includes('not found')
-      || message.includes('could not be found')
-      || message.includes('was not found')
-      || message.includes('does not exist')
-    )
+    message.includes('transaction receipt') &&
+    (message.includes('not found') ||
+      message.includes('could not be found') ||
+      message.includes('was not found') ||
+      message.includes('does not exist'))
   );
 }
 

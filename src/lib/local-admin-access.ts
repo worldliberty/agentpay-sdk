@@ -1,5 +1,5 @@
-import { createSudoSession } from './sudo.js';
 import { promptHiddenTty } from './hidden-tty-prompt.js';
+import { createSudoSession } from './sudo.js';
 
 const MAX_SECRET_STDIN_BYTES = 16 * 1024;
 

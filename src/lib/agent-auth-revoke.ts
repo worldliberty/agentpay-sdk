@@ -1,17 +1,15 @@
 import {
   deleteConfigKey,
-  redactConfig,
   readConfig,
+  redactConfig,
   type WlfiConfig,
-  writeConfig
+  writeConfig,
 } from '../../packages/config/src/index.js';
-import {
-  assertValidAgentKeyId,
-} from './keychain.js';
 import {
   deleteStoredAgentAuthToken,
   resolveAgentAuthStorageService,
 } from './agent-auth-storage.js';
+import { assertValidAgentKeyId } from './keychain.js';
 
 export interface RevokeAgentKeyAdminArgsInput {
   agentKeyId: string;
@@ -49,7 +47,7 @@ export function buildRevokeAgentKeyAdminArgs(input: RevokeAgentKeyAdminArgsInput
 
   if (input.vaultPassword) {
     throw new Error(
-      'insecure vaultPassword is disabled; use vaultPasswordStdin or an interactive prompt'
+      'insecure vaultPassword is disabled; use vaultPasswordStdin or an interactive prompt',
     );
   }
   if (input.vaultPasswordStdin) {
@@ -69,7 +67,7 @@ export function buildRevokeAgentKeyAdminArgs(input: RevokeAgentKeyAdminArgsInput
 
 export function completeAgentKeyRevocation(
   output: RevokeAgentKeyAdminOutput,
-  deps: CompleteAgentKeyRevocationDeps = {}
+  deps: CompleteAgentKeyRevocationDeps = {},
 ): CompleteAgentKeyRevocationResult {
   const platform = deps.platform ?? process.platform;
   const agentKeyId = assertValidAgentKeyId(output.agent_key_id);
@@ -100,8 +98,8 @@ export function completeAgentKeyRevocation(
     revoked: true,
     keychain: {
       removed,
-      service: resolveAgentAuthStorageService(platform, agentKeyId)
+      service: resolveAgentAuthStorageService(platform, agentKeyId),
     },
-    config: redactConfig(updated)
+    config: redactConfig(updated),
   };
 }

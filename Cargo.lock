@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "agentpay-admin"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-chains",
  "anyhow",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "agentpay-agent"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -89,7 +89,7 @@ dependencies = [
 
 [[package]]
 name = "agentpay-daemon"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5154,7 +5154,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 
 [[package]]
 name = "vault-daemon"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-primitives 0.8.26",
  "argon2",
@@ -5188,7 +5188,7 @@ dependencies = [
 
 [[package]]
 name = "vault-domain"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-dyn-abi",
  "alloy-primitives 0.8.26",
@@ -5206,7 +5206,7 @@ dependencies = [
 
 [[package]]
 name = "vault-policy"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "alloy-primitives 0.8.26",
  "alloy-sol-types",
@@ -5219,7 +5219,7 @@ dependencies = [
 
 [[package]]
 name = "vault-sdk-agent"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "serde_json",
@@ -5236,7 +5236,7 @@ dependencies = [
 
 [[package]]
 name = "vault-signer"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "bs58",
@@ -5262,7 +5262,7 @@ dependencies = [
 
 [[package]]
 name = "vault-transport-unix"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5282,7 +5282,7 @@ dependencies = [
 
 [[package]]
 name = "vault-transport-xpc"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "block",

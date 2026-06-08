@@ -433,18 +433,18 @@ function startBitrefillServer({ challenge = false } = {}) {
                 },
               }
             : selectedMethod === 'usdt_erc20'
-            ? {
-                ...invoiceBase,
-                paymentMethod: 'usdt_erc20',
-                payment_currency: 'USDT',
-                payment: {
-                  ...invoiceBase.payment,
-                  altcoinPrice: '20.67',
-                  altBasePrice: '20670000',
-                  contractAddress: ETH_USDT,
-                },
-              }
-            : invoiceBase;
+              ? {
+                  ...invoiceBase,
+                  paymentMethod: 'usdt_erc20',
+                  payment_currency: 'USDT',
+                  payment: {
+                    ...invoiceBase.payment,
+                    altcoinPrice: '20.67',
+                    altBasePrice: '20670000',
+                    contractAddress: ETH_USDT,
+                  },
+                }
+              : invoiceBase;
         res.end(JSON.stringify(invoiceByMethod));
         return;
       }
@@ -456,10 +456,7 @@ function startBitrefillServer({ challenge = false } = {}) {
           JSON.stringify({
             ...invoiceBase,
             status: invoicePollCount >= 2 ? 'delivered' : 'pending',
-            orders:
-              invoicePollCount >= 2
-                ? [{ id: 'order-1', status: 'delivered' }]
-                : [],
+            orders: invoicePollCount >= 2 ? [{ id: 'order-1', status: 'delivered' }] : [],
           }),
         );
         return;
@@ -518,27 +515,20 @@ test('bitrefill payment method aliases normalize legacy usdt_erc20 to usdt_eth',
 });
 
 test('bitrefill bootstrap host gating and cookie jar helpers behave deterministically', async () => {
-  const bitrefill = await import(`${bitrefillModulePath.href}?case=${Date.now()}-bootstrap-helpers`);
+  const bitrefill = await import(
+    `${bitrefillModulePath.href}?case=${Date.now()}-bootstrap-helpers`
+  );
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-bitrefill-cookie-jar-'));
   const cookieJarPath = path.join(tempDir, 'cookies.txt');
   const originalSkipBootstrap = process.env.AGENTPAY_BITREFILL_SKIP_BOOTSTRAP;
 
   try {
     delete process.env.AGENTPAY_BITREFILL_SKIP_BOOTSTRAP;
-    assert.equal(
-      bitrefill.shouldAutoBootstrapBitrefillSession('https://www.bitrefill.com'),
-      true,
-    );
-    assert.equal(
-      bitrefill.shouldAutoBootstrapBitrefillSession('http://127.0.0.1:3000'),
-      false,
-    );
+    assert.equal(bitrefill.shouldAutoBootstrapBitrefillSession('https://www.bitrefill.com'), true);
+    assert.equal(bitrefill.shouldAutoBootstrapBitrefillSession('http://127.0.0.1:3000'), false);
 
     process.env.AGENTPAY_BITREFILL_SKIP_BOOTSTRAP = '1';
-    assert.equal(
-      bitrefill.shouldAutoBootstrapBitrefillSession('https://www.bitrefill.com'),
-      false,
-    );
+    assert.equal(bitrefill.shouldAutoBootstrapBitrefillSession('https://www.bitrefill.com'), false);
 
     const expectedCookies = [
       {
@@ -560,10 +550,7 @@ test('bitrefill bootstrap host gating and cookie jar helpers behave deterministi
     ];
 
     bitrefill.writeBitrefillCookiesToCookieJar(expectedCookies, cookieJarPath);
-    assert.deepEqual(
-      bitrefill.readBitrefillCookiesFromCookieJar(cookieJarPath),
-      expectedCookies,
-    );
+    assert.deepEqual(bitrefill.readBitrefillCookiesFromCookieJar(cookieJarPath), expectedCookies);
   } finally {
     if (originalSkipBootstrap === undefined) {
       delete process.env.AGENTPAY_BITREFILL_SKIP_BOOTSTRAP;
@@ -579,16 +566,13 @@ test('bitrefill search uses Bitrefill omni query parameters and returns normaliz
   const { server: bitrefillServer, baseUrl, getLastOmniUrl } = await startBitrefillServer();
 
   try {
-    const result = await runCliAsync(
-      ['bitrefill', 'search', '--query', 'steam', '--json'],
-      {
-        homeDir,
-        env: {
-          AGENTPAY_BITREFILL_TRANSPORT: 'fetch',
-          AGENTPAY_BITREFILL_BASE_URL: baseUrl,
-        },
+    const result = await runCliAsync(['bitrefill', 'search', '--query', 'steam', '--json'], {
+      homeDir,
+      env: {
+        AGENTPAY_BITREFILL_TRANSPORT: 'fetch',
+        AGENTPAY_BITREFILL_BASE_URL: baseUrl,
       },
-    );
+    });
 
     assert.equal(result.status, 0, combinedOutput(result));
     const parsed = JSON.parse(result.stdout);
@@ -617,20 +601,20 @@ test('bitrefill search defaults to YAML-like output when --json is absent', asyn
   const { server: bitrefillServer, baseUrl } = await startBitrefillServer();
 
   try {
-    const result = await runCliAsync(
-      ['bitrefill', 'search', '--query', 'steam'],
-      {
-        homeDir,
-        env: {
-          AGENTPAY_BITREFILL_TRANSPORT: 'fetch',
-          AGENTPAY_BITREFILL_BASE_URL: baseUrl,
-        },
+    const result = await runCliAsync(['bitrefill', 'search', '--query', 'steam'], {
+      homeDir,
+      env: {
+        AGENTPAY_BITREFILL_TRANSPORT: 'fetch',
+        AGENTPAY_BITREFILL_BASE_URL: baseUrl,
       },
-    );
+    });
 
     assert.equal(result.status, 0, combinedOutput(result));
-    assert.match(result.stdout, /^-\n  slug: steam-usa\n  name: "Steam USD"\n  country: US/mu);
-    assert.match(result.stdout, /categories:\n    - games\n    - game-stores/u);
+    assert.match(
+      result.stdout,
+      /^-\n {2}slug: steam-usa\n {2}name: "Steam USD"\n {2}country: US/mu,
+    );
+    assert.match(result.stdout, /categories:\n {4}- games\n {4}- game-stores/u);
     assert.doesNotMatch(result.stdout, /^\[/mu);
   } finally {
     await closeServer(bitrefillServer);
@@ -643,38 +627,35 @@ test('bitrefill product defaults to YAML-like output and omits logo and icon noi
   const { server: bitrefillServer, baseUrl } = await startBitrefillServer();
 
   try {
-    const result = await runCliAsync(
-      ['bitrefill', 'product', '--slug', 'doordash-usa'],
-      {
-        homeDir,
-        env: {
-          AGENTPAY_BITREFILL_TRANSPORT: 'fetch',
-          AGENTPAY_BITREFILL_BASE_URL: baseUrl,
-        },
+    const result = await runCliAsync(['bitrefill', 'product', '--slug', 'doordash-usa'], {
+      homeDir,
+      env: {
+        AGENTPAY_BITREFILL_TRANSPORT: 'fetch',
+        AGENTPAY_BITREFILL_BASE_URL: baseUrl,
       },
-    );
+    });
 
     assert.equal(result.status, 0, combinedOutput(result));
     assert.match(result.stdout, /^slug: doordash-usa\nname: "DoorDash USA"\ncountry: US/mu);
     assert.match(result.stdout, /amountMode: range/u);
-    assert.match(result.stdout, /categories:\n  - food\n  - food-delivery/u);
-    assert.match(result.stdout, /commonAmounts:\n  - "\$20 \(20\)"\n  - "\$25 \(25\)"/u);
-    assert.match(result.stdout, /amountRange:\n  min: "10"\n  max: "500"\n  step: "0\.01"/u);
+    assert.match(result.stdout, /categories:\n {2}- food\n {2}- food-delivery/u);
+    assert.match(result.stdout, /commonAmounts:\n {2}- "\$20 \(20\)"\n {2}- "\$25 \(25\)"/u);
+    assert.match(result.stdout, /amountRange:\n {2}min: "10"\n {2}max: "500"\n {2}step: "0\.01"/u);
     assert.match(
       result.stdout,
-      /description: \|-\n  Meals, groceries, gifts and more, to your door\.\n  \n  Give the gift of delivery with DoorDash\./u,
+      /description: \|-\n {2}Meals, groceries, gifts and more, to your door\.\n {2}\n {2}Give the gift of delivery with DoorDash\./u,
     );
     assert.match(
       result.stdout,
-      /howToRedeem: \|-\n  To redeem this gift card:\n  \n  - Create an account or sign in\.\n  - Navigate to Account > Gift Card\.\n  - Enter your gift card PIN\./u,
+      /howToRedeem: \|-\n {2}To redeem this gift card:\n {2}\n {2}- Create an account or sign in\.\n {2}- Navigate to Account > Gift Card\.\n {2}- Enter your gift card PIN\./u,
     );
     assert.match(
       result.stdout,
-      /termsAndConditions: \|-\n  - This gift card can be redeemed only in the U\.S\.\n  - Card cannot be returned or exchanged for cash unless required by law\./u,
+      /termsAndConditions: \|-\n {2}- This gift card can be redeemed only in the U\.S\.\n {2}- Card cannot be returned or exchanged for cash unless required by law\./u,
     );
     assert.match(
       result.stdout,
-      /reviews:\n  -\n    rating: 5\/5\n    author: shy\n    date: 2025-10-28\n    content: "delivery was almost instant and im extremely satisfied with my order history with bitrefill !!"/u,
+      /reviews:\n {2}-\n {4}rating: 5\/5\n {4}author: shy\n {4}date: 2025-10-28\n {4}content: "delivery was almost instant and im extremely satisfied with my order history with bitrefill !!"/u,
     );
     assert.match(result.stdout, /totalReviews: 2/u);
     assert.doesNotMatch(result.stdout, /logo/u);
@@ -687,8 +668,12 @@ test('bitrefill product defaults to YAML-like output and omits logo and icon noi
 
 test('bitrefill buy without --payment-method shows all supported EVM methods for the cart', async () => {
   const { homeDir } = makeIsolatedHome();
-  const { server: bitrefillServer, baseUrl, getLastCartBody, getLastInvoiceBody } =
-    await startBitrefillServer();
+  const {
+    server: bitrefillServer,
+    baseUrl,
+    getLastCartBody,
+    getLastInvoiceBody,
+  } = await startBitrefillServer();
 
   try {
     const result = await runCliAsync(
@@ -839,8 +824,12 @@ test('bitrefill buy preview filters to supported EVM methods and does not hit th
   const { homeDir, agentpayHome } = makeIsolatedHome();
   const rustBinDir = path.join(agentpayHome, 'bin');
   fs.mkdirSync(rustBinDir, { recursive: true, mode: 0o700 });
-  const { server: bitrefillServer, baseUrl, getLastCartBody, getLastInvoiceBody } =
-    await startBitrefillServer();
+  const {
+    server: bitrefillServer,
+    baseUrl,
+    getLastCartBody,
+    getLastInvoiceBody,
+  } = await startBitrefillServer();
 
   try {
     writeExecutable(
@@ -1069,16 +1058,13 @@ test('bitrefill invoice get resolves the stored access token by invoice id', asy
     assert.equal(parsed.accessToken, 'access-token-1');
     assert.equal(parsed.status, 'pending');
 
-    const listResult = await runCliAsync(
-      ['bitrefill', 'invoice', 'list', '--json'],
-      {
-        homeDir,
-        env: {
-          AGENTPAY_BITREFILL_TRANSPORT: 'fetch',
-          AGENTPAY_BITREFILL_BASE_URL: baseUrl,
-        },
+    const listResult = await runCliAsync(['bitrefill', 'invoice', 'list', '--json'], {
+      homeDir,
+      env: {
+        AGENTPAY_BITREFILL_TRANSPORT: 'fetch',
+        AGENTPAY_BITREFILL_BASE_URL: baseUrl,
       },
-    );
+    });
 
     assert.equal(listResult.status, 0, combinedOutput(listResult));
     const listed = JSON.parse(listResult.stdout);

@@ -1,8 +1,8 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import test from 'node:test';
 
 const modulePath = new URL('../src/lib/agent-auth-migrate.ts', import.meta.url);
 const configModulePath = new URL('../packages/config/src/index.ts', import.meta.url);
@@ -43,7 +43,7 @@ test('migrateLegacyAgentAuthToken stores the legacy config secret in Keychain an
 
   config.writeConfig({
     agentKeyId: TEST_AGENT_KEY_ID,
-    agentAuthToken: 'legacy-token'
+    agentAuthToken: 'legacy-token',
   });
 
   let storedCredentials = null;
@@ -54,13 +54,13 @@ test('migrateLegacyAgentAuthToken stores the legacy config secret in Keychain an
       storeAgentAuthToken: (agentKeyId, token) => {
         storedCredentials = { agentKeyId, token };
       },
-      readAgentAuthToken: () => null
-    }
+      readAgentAuthToken: () => null,
+    },
   );
 
   assert.deepEqual(storedCredentials, {
     agentKeyId: TEST_AGENT_KEY_ID,
-    token: 'legacy-token'
+    token: 'legacy-token',
   });
   assert.equal(result.agentKeyId, TEST_AGENT_KEY_ID);
   assert.equal(result.source, 'config');
@@ -88,15 +88,15 @@ test('migrateLegacyAgentAuthToken refuses to overwrite a different existing Keyc
           platform: 'darwin',
           readConfig: () => ({
             agentKeyId: TEST_AGENT_KEY_ID,
-            agentAuthToken: 'legacy-token'
+            agentAuthToken: 'legacy-token',
           }),
           readAgentAuthToken: () => 'newer-keychain-token',
           storeAgentAuthToken: () => {
             throw new Error('storeAgentAuthToken should not be called');
-          }
-        }
+          },
+        },
       ),
-    /already contains a different agent auth token/
+    /already contains a different agent auth token/,
   );
 });
 
@@ -107,12 +107,12 @@ test('migrateLegacyAgentAuthToken can explicitly overwrite a different Keychain 
   let configState = {
     agentKeyId: TEST_AGENT_KEY_ID,
     agentAuthToken: 'legacy-token',
-    chains: {}
+    chains: {},
   };
 
   const result = migrate.migrateLegacyAgentAuthToken(
     {
-      overwriteKeychain: true
+      overwriteKeychain: true,
     },
     {
       platform: 'darwin',
@@ -130,13 +130,13 @@ test('migrateLegacyAgentAuthToken can explicitly overwrite a different Keychain 
       readAgentAuthToken: () => 'different-keychain-token',
       storeAgentAuthToken: (agentKeyId, token) => {
         storedCredentials = { agentKeyId, token };
-      }
-    }
+      },
+    },
   );
 
   assert.deepEqual(storedCredentials, {
     agentKeyId: TEST_AGENT_KEY_ID,
-    token: 'legacy-token'
+    token: 'legacy-token',
   });
   assert.equal(result.keychain.stored, true);
   assert.equal(result.keychain.overwritten, true);
@@ -150,12 +150,12 @@ test('migrateLegacyAgentAuthToken allows an explicit agent key id when config.js
 
   let configState = {
     agentAuthToken: 'legacy-token',
-    chains: {}
+    chains: {},
   };
 
   const result = migrate.migrateLegacyAgentAuthToken(
     {
-      agentKeyId: TEST_AGENT_KEY_ID
+      agentKeyId: TEST_AGENT_KEY_ID,
     },
     {
       platform: 'darwin',
@@ -171,8 +171,8 @@ test('migrateLegacyAgentAuthToken allows an explicit agent key id when config.js
         return configState;
       },
       readAgentAuthToken: () => null,
-      storeAgentAuthToken: () => {}
-    }
+      storeAgentAuthToken: () => {},
+    },
   );
 
   assert.equal(result.agentKeyId, TEST_AGENT_KEY_ID);
@@ -221,7 +221,9 @@ test('migrateLegacyAgentAuthToken supports Linux Secret Service-backed migration
 });
 
 test('migrateLegacyAgentAuthToken validates configured agentKeyId and explicit overrides', async () => {
-  const migrate = await import(modulePath.href + `?case=${Date.now()}-configured-agent-key-validation`);
+  const migrate = await import(
+    modulePath.href + `?case=${Date.now()}-configured-agent-key-validation`
+  );
 
   assert.throws(
     () =>

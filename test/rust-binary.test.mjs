@@ -167,10 +167,7 @@ test('runRustBinary deduplicates repeated Rust error-chain leaf messages', async
       () => rust.runRustBinary(binaryName, ['--help'], { rustBinDir: root }),
       (error) => {
         assert.equal(error.name, 'RustBinaryExitError');
-        assert.equal(
-          error.message,
-          'transfer denied\nper transaction max 1 < requested 2',
-        );
+        assert.equal(error.message, 'transfer denied\nper transaction max 1 < requested 2');
         assert.match(error.stderr, /Caused by:/u);
         return true;
       },
@@ -595,11 +592,10 @@ test('passthroughRustBinary tolerates late child stdin EPIPE after end callback 
         const originalToken = process.env.AGENTPAY_AGENT_AUTH_TOKEN;
         process.env.AGENTPAY_AGENT_AUTH_TOKEN = 'agent-auth-secret';
         try {
-          const code = await rust.passthroughRustBinary(
-            binaryName,
-            ['transfer'],
-            { rustBinDir: root, daemonSocket: socketPath },
-          );
+          const code = await rust.passthroughRustBinary(binaryName, ['transfer'], {
+            rustBinDir: root,
+            daemonSocket: socketPath,
+          });
 
           assert.equal(code, 0);
         } finally {

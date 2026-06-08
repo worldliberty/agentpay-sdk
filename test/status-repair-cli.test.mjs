@@ -265,10 +265,10 @@ test('status/repair commands use default print and default exit-code handlers', 
   const captured = [];
   const previousExitCode = process.exitCode;
 
-  process.stdout.write = ((chunk, ...args) => {
+  process.stdout.write = (chunk, ...args) => {
     captured.push(String(chunk));
     return originalStdoutWrite(chunk, ...args);
-  });
+  };
 
   try {
     const statusProgram = new Command().name('agentpay');
@@ -311,10 +311,10 @@ test('default printer emits JSON payloads when --json is requested', async () =>
   const captured = [];
   const previousExitCode = process.exitCode;
 
-  process.stdout.write = ((chunk, ...args) => {
+  process.stdout.write = (chunk, ...args) => {
     captured.push(String(chunk));
     return originalStdoutWrite(chunk, ...args);
-  });
+  };
 
   try {
     const statusProgram = new Command().name('agentpay');

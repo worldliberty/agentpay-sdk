@@ -1,7 +1,4 @@
-import {
-  MAX_AGENT_AUTH_TOKEN_BYTES,
-  assertValidAgentAuthToken
-} from './agent-auth-token.js';
+import { assertValidAgentAuthToken, MAX_AGENT_AUTH_TOKEN_BYTES } from './agent-auth-token.js';
 
 export interface AgentAuthRelayOptions {
   env?: NodeJS.ProcessEnv;
@@ -46,7 +43,7 @@ function resolveInlineAgentAuthTokenArg(args: string[]): {
     } else if (current.startsWith('--agent-auth-token=')) {
       nextMatch = {
         index,
-        value: current.slice('--agent-auth-token='.length)
+        value: current.slice('--agent-auth-token='.length),
       };
     }
 
@@ -96,7 +93,7 @@ async function readTrimmedSecretFromProcessStdin(label: string): Promise<string>
 
 export async function prepareAgentAuthRelay(
   args: string[],
-  options: AgentAuthRelayOptions = {}
+  options: AgentAuthRelayOptions = {},
 ): Promise<PreparedAgentAuthRelay> {
   const env = options.env ?? process.env;
   const readFromStdin = options.readFromStdin ?? readTrimmedSecretFromProcessStdin;
@@ -115,35 +112,39 @@ export async function prepareAgentAuthRelay(
   if (inlineArg) {
     validateSecret(inlineArg.value, 'agentAuthToken');
     throw new Error(
-      '--agent-auth-token is disabled for security; use --agent-auth-token-stdin or local credential store-backed `agentpay` commands'
+      '--agent-auth-token is disabled for security; use --agent-auth-token-stdin or local credential store-backed `agentpay` commands',
     );
   }
 
   if (usesStdinFlag) {
     return {
       args: [...args],
-      stdin: withTrailingNewline(validateSecret(await readFromStdin('agentAuthToken'), 'agentAuthToken')),
-      scrubSensitiveEnv: true
+      stdin: withTrailingNewline(
+        validateSecret(await readFromStdin('agentAuthToken'), 'agentAuthToken'),
+      ),
+      scrubSensitiveEnv: true,
     };
   }
 
-  if (Object.prototype.hasOwnProperty.call(env, 'AGENTPAY_AGENT_AUTH_TOKEN')) {
+  if (Object.hasOwn(env, 'AGENTPAY_AGENT_AUTH_TOKEN')) {
     if (skipEnvRelayForArgs(args)) {
       return {
         args: [...args],
-        scrubSensitiveEnv: true
+        scrubSensitiveEnv: true,
       };
     }
 
     return {
       args: ['--agent-auth-token-stdin', ...args],
-      stdin: withTrailingNewline(validateSecret(env.AGENTPAY_AGENT_AUTH_TOKEN ?? '', 'agentAuthToken')),
-      scrubSensitiveEnv: true
+      stdin: withTrailingNewline(
+        validateSecret(env.AGENTPAY_AGENT_AUTH_TOKEN ?? '', 'agentAuthToken'),
+      ),
+      scrubSensitiveEnv: true,
     };
   }
 
   return {
     args: [...args],
-    scrubSensitiveEnv: true
+    scrubSensitiveEnv: true,
   };
 }

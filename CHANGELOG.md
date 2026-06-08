@@ -2,6 +2,16 @@
 
 All notable changes to AgentPay SDK are documented in this file.
 
+## [0.5.0] - 2026-06-07
+
+- added Fiat payment onboarding with Stripe Link through the bundled Link CLI
+- added `agentpay link onboard`, `agentpay link status`, `agentpay link payment-methods`, `agentpay link card`, and Link CLI passthrough commands
+- added installer payment setup selection for Fiat with Link, Crypto wallet setup, or later
+- added `@worldlibertyfinancial/agentpay-sdk/link` helper exports so third-party agents can bind Link, list payment methods, and create approved one-time card credentials through the AgentPay Link facade
+- updated AgentPay skills and adapters to route Fiat/card payments through Link while keeping full card credentials out of chat and logs
+
+Detailed release notes: [releases/v0.5.0.md](releases/v0.5.0.md)
+
 ## [0.4.0] - 2026-05-07
 
 - added first-class Solana vault account support with software-backed Ed25519 keys plus persisted Solana public key/address wallet metadata

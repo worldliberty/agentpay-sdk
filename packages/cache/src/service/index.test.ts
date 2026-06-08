@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { cacheErrorCodes } from '../errors/index.js';
 import type { CacheError } from '../errors/index.js';
+import { cacheErrorCodes } from '../errors/index.js';
 import { RelayCacheService } from './index.js';
 
 class InMemoryCacheClient {
@@ -861,7 +861,9 @@ describe('RelayCacheService approval capability guards', () => {
       type: 'daemon_status',
     });
 
-    await expect(service.removeEncryptedUpdate('20'.repeat(32), update.updateId)).rejects.toMatchObject({
+    await expect(
+      service.removeEncryptedUpdate('20'.repeat(32), update.updateId),
+    ).rejects.toMatchObject({
       code: cacheErrorCodes.notFound,
       message: `Unknown update '${update.updateId}' for daemon '${'20'.repeat(32)}'`,
     } satisfies Partial<CacheError>);

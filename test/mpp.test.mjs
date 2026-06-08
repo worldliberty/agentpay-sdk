@@ -35,7 +35,10 @@ test('selectMppChallenge prefers the mainnet pathUSD challenge for Quicknode tem
     targetUrl: 'https://mpp.quicknode.com/session/tempo-mainnet',
   });
   assert.equal(selected.request.methodDetails?.chainId, 4217);
-  assert.equal(selected.request.currency.toLowerCase(), '0x20c0000000000000000000000000000000000000');
+  assert.equal(
+    selected.request.currency.toLowerCase(),
+    '0x20c0000000000000000000000000000000000000',
+  );
 });
 
 test('selectMppChallenge prefers the testnet challenge for Quicknode tempo-testnet URLs', async () => {

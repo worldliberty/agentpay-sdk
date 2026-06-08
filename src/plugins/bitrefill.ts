@@ -1,19 +1,19 @@
 import type { BitrefillClient, BitrefillInvoice } from '../lib/bitrefill.js';
-import type { ResolvedAssetMetadata, RustAmountOutputShape } from '../lib/config-amounts.js';
-import type { CliPlugin, CliPluginContext } from './types.js';
 import {
   BitrefillChallengeRequiredError,
   buildBitrefillBuyPreview,
   createBitrefillClient,
   findBitrefillInvoiceAccessToken,
   isBitrefillInvoiceFailureStatus,
-  listSupportedBitrefillPaymentQuotes,
   listStoredBitrefillInvoices,
+  listSupportedBitrefillPaymentQuotes,
   rememberBitrefillInvoiceAccessToken,
   resolveBitrefillInvoicePayment,
   resolveBitrefillPaymentQuote,
   validateBitrefillProductAmount,
 } from '../lib/bitrefill.js';
+import type { ResolvedAssetMetadata, RustAmountOutputShape } from '../lib/config-amounts.js';
+import type { CliPlugin, CliPluginContext } from './types.js';
 
 interface BitrefillJsonOptions {
   json: boolean;
@@ -114,7 +114,12 @@ function indentYamlBlock(value: string, indent: number): string {
 
 function formatBitrefillYaml(value: unknown, indent = 0): string {
   const padding = ' '.repeat(indent);
-  if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean') {
+  if (
+    value === null ||
+    value === undefined ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
     return `${padding}${formatYamlScalar(value)}`;
   }
   if (typeof value === 'string') {
@@ -130,11 +135,11 @@ function formatBitrefillYaml(value: unknown, indent = 0): string {
     return value
       .map((entry) => {
         if (
-          entry === null
-          || entry === undefined
-          || typeof entry === 'number'
-          || typeof entry === 'boolean'
-          || (typeof entry === 'string' && !entry.includes('\n'))
+          entry === null ||
+          entry === undefined ||
+          typeof entry === 'number' ||
+          typeof entry === 'boolean' ||
+          (typeof entry === 'string' && !entry.includes('\n'))
         ) {
           return `${padding}- ${formatYamlScalar(entry as string | number | boolean | null | undefined)}`;
         }
@@ -146,17 +151,19 @@ function formatBitrefillYaml(value: unknown, indent = 0): string {
       })
       .join('\n');
   }
-  const entries = Object.entries(value as Record<string, unknown>).filter(([, entry]) => entry !== undefined);
+  const entries = Object.entries(value as Record<string, unknown>).filter(
+    ([, entry]) => entry !== undefined,
+  );
   if (entries.length === 0) {
     return `${padding}{}`;
   }
   return entries
     .map(([key, entry]) => {
       if (
-        entry === null
-        || typeof entry === 'number'
-        || typeof entry === 'boolean'
-        || (typeof entry === 'string' && !entry.includes('\n'))
+        entry === null ||
+        typeof entry === 'number' ||
+        typeof entry === 'boolean' ||
+        (typeof entry === 'string' && !entry.includes('\n'))
       ) {
         return `${padding}${key}: ${formatYamlScalar(entry as string | number | boolean | null)}`;
       }
@@ -184,9 +191,10 @@ function toBitrefillDisplayPayload(payload: unknown): unknown {
           return `${candidate.label ?? candidate.value} (${candidate.value ?? candidate.label})`;
         })
       : [];
-    const range = product.range && typeof product.range === 'object'
-      ? product.range as Record<string, unknown>
-      : null;
+    const range =
+      product.range && typeof product.range === 'object'
+        ? (product.range as Record<string, unknown>)
+        : null;
     const reviews = Array.isArray(product.reviews)
       ? product.reviews.slice(0, 3).map((entry) => {
           if (!entry || typeof entry !== 'object') {
@@ -225,11 +233,7 @@ function toBitrefillDisplayPayload(payload: unknown): unknown {
   return normalized;
 }
 
-function printBitrefillOutput(
-  context: CliPluginContext,
-  payload: unknown,
-  asJson: boolean,
-): void {
+function printBitrefillOutput(context: CliPluginContext, payload: unknown, asJson: boolean): void {
   if (asJson) {
     context.cli.print(payload, true);
     return;
@@ -423,224 +427,231 @@ export const bitrefillCliPlugin: CliPlugin = {
         }
       });
 
-    context.cli.addAgentCommandAuthOptions(
-      bitrefill
-        .command('buy')
-        .description(
-          'Show supported EVM payment methods for a product amount, optionally filtered by --payment-method; add --broadcast to create and pay the Bitrefill invoice immediately',
-        )
-        .requiredOption('--slug <slug>', 'Required. Bitrefill product slug')
-        .requiredOption('--amount <amount>', 'Required. Gift card amount in product currency')
-        .option(
-          '--payment-method <method>',
-          'Optional. Supported EVM payment method filter; required for --broadcast',
-        )
-        .option(
-          '--email <email>',
-          'Optional. Delivery email; required when using --broadcast',
-        )
-        .option('--broadcast', 'Broadcast the invoice payment through the AgentPay daemon path', false)
-        .option('--rpc-url <url>', 'RPC URL override used only for broadcast')
-        .option(
-          '--from <address>',
-          'Sender address override for broadcast; defaults to configured wallet address',
-        )
-        .option('--nonce <nonce>', 'Explicit nonce override for broadcast')
-        .option('--gas-limit <gas>', 'Gas limit override for broadcast')
-        .option('--max-fee-per-gas-wei <wei>', 'Max fee per gas override for broadcast')
-        .option(
-          '--max-priority-fee-per-gas-wei <wei>',
-          'Priority fee per gas override for broadcast',
-        )
-        .option('--tx-type <type>', 'Typed tx value for broadcast', '0x02')
-        .option('--no-wait', 'Do not wait up to 30s for on-chain receipt and invoice status')
-        .option(
-          '--reveal-raw-tx',
-          'Include the signed raw transaction bytes in broadcast output',
-          false,
-        )
-        .option('--reveal-signature', 'Include signer r/s/v fields in broadcast output', false),
-    ).action(async (options: BitrefillBuyOptions) => {
-      let paymentAsset: ResolvedAssetMetadata | null = null;
+    context.cli
+      .addAgentCommandAuthOptions(
+        bitrefill
+          .command('buy')
+          .description(
+            'Show supported EVM payment methods for a product amount, optionally filtered by --payment-method; add --broadcast to create and pay the Bitrefill invoice immediately',
+          )
+          .requiredOption('--slug <slug>', 'Required. Bitrefill product slug')
+          .requiredOption('--amount <amount>', 'Required. Gift card amount in product currency')
+          .option(
+            '--payment-method <method>',
+            'Optional. Supported EVM payment method filter; required for --broadcast',
+          )
+          .option('--email <email>', 'Optional. Delivery email; required when using --broadcast')
+          .option(
+            '--broadcast',
+            'Broadcast the invoice payment through the AgentPay daemon path',
+            false,
+          )
+          .option('--rpc-url <url>', 'RPC URL override used only for broadcast')
+          .option(
+            '--from <address>',
+            'Sender address override for broadcast; defaults to configured wallet address',
+          )
+          .option('--nonce <nonce>', 'Explicit nonce override for broadcast')
+          .option('--gas-limit <gas>', 'Gas limit override for broadcast')
+          .option('--max-fee-per-gas-wei <wei>', 'Max fee per gas override for broadcast')
+          .option(
+            '--max-priority-fee-per-gas-wei <wei>',
+            'Priority fee per gas override for broadcast',
+          )
+          .option('--tx-type <type>', 'Typed tx value for broadcast', '0x02')
+          .option('--no-wait', 'Do not wait up to 30s for on-chain receipt and invoice status')
+          .option(
+            '--reveal-raw-tx',
+            'Include the signed raw transaction bytes in broadcast output',
+            false,
+          )
+          .option('--reveal-signature', 'Include signer r/s/v fields in broadcast output', false),
+      )
+      .action(async (options: BitrefillBuyOptions) => {
+        let paymentAsset: ResolvedAssetMetadata | null = null;
 
-      try {
-        const output = await withBitrefillClient(async (client) => {
-          const product = await client.getProduct(options.slug);
-          const amount = validateBitrefillProductAmount(product, options.amount);
-          const cart = await client.createCart({ slug: product.slug, amount });
-          const selectedMethod = options.paymentMethod?.trim() ?? '';
-          if (!options.broadcast) {
-            const supportedQuotes = listSupportedBitrefillPaymentQuotes(cart);
-            const filteredQuotes = selectedMethod
-              ? [resolveBitrefillPaymentQuote(cart, selectedMethod)]
-              : supportedQuotes;
-            return buildBitrefillBuyQuoteOutput({
-              product: {
-                slug: product.slug,
-                name: product.name,
-                currency: product.currency,
-              },
-              amount,
-              cartId: cart.id,
-              selectedPaymentMethod: selectedMethod || undefined,
-              paymentQuotes: filteredQuotes,
+        try {
+          const output = await withBitrefillClient(async (client) => {
+            const product = await client.getProduct(options.slug);
+            const amount = validateBitrefillProductAmount(product, options.amount);
+            const cart = await client.createCart({ slug: product.slug, amount });
+            const selectedMethod = options.paymentMethod?.trim() ?? '';
+            if (!options.broadcast) {
+              const supportedQuotes = listSupportedBitrefillPaymentQuotes(cart);
+              const filteredQuotes = selectedMethod
+                ? [resolveBitrefillPaymentQuote(cart, selectedMethod)]
+                : supportedQuotes;
+              return buildBitrefillBuyQuoteOutput({
+                product: {
+                  slug: product.slug,
+                  name: product.name,
+                  currency: product.currency,
+                },
+                amount,
+                cartId: cart.id,
+                selectedPaymentMethod: selectedMethod || undefined,
+                paymentQuotes: filteredQuotes,
+              });
+            }
+
+            if (!selectedMethod) {
+              throw new Error('--payment-method is required with --broadcast');
+            }
+
+            const email = requiredStringOption(options.email, '--email');
+            const selectedQuote = resolveBitrefillPaymentQuote(cart, selectedMethod);
+            const invoice = await client.createInvoice({
+              cart,
+              email,
+              paymentMethod: selectedQuote.method,
             });
-          }
-
-          if (!selectedMethod) {
-            throw new Error('--payment-method is required with --broadcast');
-          }
-
-          const email = requiredStringOption(options.email, '--email');
-          const selectedQuote = resolveBitrefillPaymentQuote(cart, selectedMethod);
-          const invoice = await client.createInvoice({
-            cart,
-            email,
-            paymentMethod: selectedQuote.method,
-          });
-          const preview = buildBitrefillBuyPreview({
-            product,
-            amount,
-            invoice,
-            cart,
-          });
-          preview.availablePaymentMethods = [selectedQuote];
-          reportBitrefillInvoiceCreated(invoice, options.json);
-
-          if (!options.broadcast) {
-            return preview;
-          }
-
-          const config = context.config.readConfig();
-          const payment = resolveBitrefillInvoicePayment(invoice);
-          paymentAsset = payment.asset;
-          const plan = await context.broadcast.resolvePlan(
-            {
-              rpcUrl: context.config.resolveCliRpcUrl(options.rpcUrl, payment.networkSelector, config),
-              chainId: payment.chainId,
-              from: options.from
-                ? context.values.assertAddress(options.from, 'from')
-                : context.config.resolveWalletAddress(config),
-              to: payment.broadcastTo,
-              valueWei: payment.valueWei,
-              dataHex: payment.dataHex,
-              nonce: options.nonce
-                ? context.values.parseIntegerString(options.nonce, 'nonce')
-                : undefined,
-              gasLimit: options.gasLimit
-                ? context.values.parsePositiveBigIntString(options.gasLimit, 'gasLimit')
-                : undefined,
-              maxFeePerGasWei: options.maxFeePerGasWei
-                ? context.values.parsePositiveBigIntString(
-                    options.maxFeePerGasWei,
-                    'maxFeePerGasWei',
-                  )
-                : undefined,
-              maxPriorityFeePerGasWei: options.maxPriorityFeePerGasWei
-                ? context.values.parseBigIntString(
-                    options.maxPriorityFeePerGasWei,
-                    'maxPriorityFeePerGasWei',
-                  )
-                : undefined,
-              txType: options.txType,
-            },
-            context.broadcast.resolvePlanDeps,
-          );
-          const signed = await context.agent.runJson<RustAmountOutputShape>({
-            commandArgs: [
-              'broadcast',
-              '--network',
-              String(plan.chainId),
-              '--nonce',
-              String(plan.nonce),
-              '--to',
-              plan.to,
-              '--value-wei',
-              plan.valueWei.toString(),
-              '--data-hex',
-              plan.dataHex,
-              '--gas-limit',
-              plan.gasLimit.toString(),
-              '--max-fee-per-gas-wei',
-              plan.maxFeePerGasWei.toString(),
-              '--max-priority-fee-per-gas-wei',
-              plan.maxPriorityFeePerGasWei.toString(),
-              '--tx-type',
-              plan.txType,
-            ],
-            auth: options,
-            config,
-            asJson: options.json,
-            waitForManualApproval: true,
-          });
-          if (!signed) {
-            return null;
-          }
-
-          const completed = await context.broadcast.complete(
-            plan,
-            signed,
-            context.broadcast.completeDeps,
-          );
-
-          if (options.wait) {
-            await context.broadcast.reportOnchainReceiptStatus({
-              rpcUrl: plan.rpcUrl,
-              txHash: completed.networkTxHash,
-              asJson: options.json,
-            });
-          }
-
-          let finalInvoice = invoice;
-          let invoiceWait:
-            | { timedOut: boolean; status: string; orders: typeof invoice.orders }
-            | { timedOut: false; skipped: true; reason: string }
-            | null = null;
-
-          if (options.wait) {
-            const waited = await waitForBitrefillInvoice(context, client, invoice);
-            finalInvoice = waited.finalInvoice;
-            invoiceWait = waited.invoiceWait;
-          }
-
-          return {
-            ...buildBitrefillBuyPreview({
+            const preview = buildBitrefillBuyPreview({
               product,
               amount,
-              invoice: finalInvoice,
+              invoice,
               cart,
-            }),
-            mode: 'broadcast',
-            broadcastRequested: true,
-            broadcast: context.broadcast.formatOutput({
-              command: 'bitrefill-buy',
-              counterparty: payment.recipient,
-              asset: payment.asset,
-              signed,
-              plan,
-              signedNonce: completed.signedNonce,
-              networkTxHash: completed.networkTxHash,
-              revealRawTx: options.revealRawTx,
-              revealSignature: options.revealSignature,
-            }),
-            invoiceWait,
-          };
-        });
+            });
+            preview.availablePaymentMethods = [selectedQuote];
+            reportBitrefillInvoiceCreated(invoice, options.json);
 
-        if (output) {
-          printBitrefillOutput(context, output, options.json);
+            if (!options.broadcast) {
+              return preview;
+            }
+
+            const config = context.config.readConfig();
+            const payment = resolveBitrefillInvoicePayment(invoice);
+            paymentAsset = payment.asset;
+            const plan = await context.broadcast.resolvePlan(
+              {
+                rpcUrl: context.config.resolveCliRpcUrl(
+                  options.rpcUrl,
+                  payment.networkSelector,
+                  config,
+                ),
+                chainId: payment.chainId,
+                from: options.from
+                  ? context.values.assertAddress(options.from, 'from')
+                  : context.config.resolveWalletAddress(config),
+                to: payment.broadcastTo,
+                valueWei: payment.valueWei,
+                dataHex: payment.dataHex,
+                nonce: options.nonce
+                  ? context.values.parseIntegerString(options.nonce, 'nonce')
+                  : undefined,
+                gasLimit: options.gasLimit
+                  ? context.values.parsePositiveBigIntString(options.gasLimit, 'gasLimit')
+                  : undefined,
+                maxFeePerGasWei: options.maxFeePerGasWei
+                  ? context.values.parsePositiveBigIntString(
+                      options.maxFeePerGasWei,
+                      'maxFeePerGasWei',
+                    )
+                  : undefined,
+                maxPriorityFeePerGasWei: options.maxPriorityFeePerGasWei
+                  ? context.values.parseBigIntString(
+                      options.maxPriorityFeePerGasWei,
+                      'maxPriorityFeePerGasWei',
+                    )
+                  : undefined,
+                txType: options.txType,
+              },
+              context.broadcast.resolvePlanDeps,
+            );
+            const signed = await context.agent.runJson<RustAmountOutputShape>({
+              commandArgs: [
+                'broadcast',
+                '--network',
+                String(plan.chainId),
+                '--nonce',
+                String(plan.nonce),
+                '--to',
+                plan.to,
+                '--value-wei',
+                plan.valueWei.toString(),
+                '--data-hex',
+                plan.dataHex,
+                '--gas-limit',
+                plan.gasLimit.toString(),
+                '--max-fee-per-gas-wei',
+                plan.maxFeePerGasWei.toString(),
+                '--max-priority-fee-per-gas-wei',
+                plan.maxPriorityFeePerGasWei.toString(),
+                '--tx-type',
+                plan.txType,
+              ],
+              auth: options,
+              config,
+              asJson: options.json,
+              waitForManualApproval: true,
+            });
+            if (!signed) {
+              return null;
+            }
+
+            const completed = await context.broadcast.complete(
+              plan,
+              signed,
+              context.broadcast.completeDeps,
+            );
+
+            if (options.wait) {
+              await context.broadcast.reportOnchainReceiptStatus({
+                rpcUrl: plan.rpcUrl,
+                txHash: completed.networkTxHash,
+                asJson: options.json,
+              });
+            }
+
+            let finalInvoice = invoice;
+            let invoiceWait:
+              | { timedOut: boolean; status: string; orders: typeof invoice.orders }
+              | { timedOut: false; skipped: true; reason: string }
+              | null = null;
+
+            if (options.wait) {
+              const waited = await waitForBitrefillInvoice(context, client, invoice);
+              finalInvoice = waited.finalInvoice;
+              invoiceWait = waited.invoiceWait;
+            }
+
+            return {
+              ...buildBitrefillBuyPreview({
+                product,
+                amount,
+                invoice: finalInvoice,
+                cart,
+              }),
+              mode: 'broadcast',
+              broadcastRequested: true,
+              broadcast: context.broadcast.formatOutput({
+                command: 'bitrefill-buy',
+                counterparty: payment.recipient,
+                asset: payment.asset,
+                signed,
+                plan,
+                signedNonce: completed.signedNonce,
+                networkTxHash: completed.networkTxHash,
+                revealRawTx: options.revealRawTx,
+                revealSignature: options.revealSignature,
+              }),
+              invoiceWait,
+            };
+          });
+
+          if (output) {
+            printBitrefillOutput(context, output, options.json);
+          }
+        } catch (error) {
+          if (error instanceof BitrefillChallengeRequiredError) {
+            printBitrefillChallengeRequired(context, error, options.json);
+            return;
+          }
+          if (paymentAsset) {
+            throw context.agent.rewriteAmountError(error, paymentAsset);
+          }
+          throw error;
         }
-      } catch (error) {
-        if (error instanceof BitrefillChallengeRequiredError) {
-          printBitrefillChallengeRequired(context, error, options.json);
-          return;
-        }
-        if (paymentAsset) {
-          throw context.agent.rewriteAmountError(error, paymentAsset);
-        }
-        throw error;
-      }
-    });
+      });
 
     const bitrefillInvoice = bitrefill.command('invoice').description('Bitrefill invoice helpers');
 

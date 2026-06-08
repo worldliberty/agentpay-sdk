@@ -85,5 +85,7 @@ export async function resolveAgentAuthToken(
     return { token: envToken, source: 'env' };
   }
 
-  throw new Error('agentAuthToken is required; use local credential storage or --agent-auth-token-stdin');
+  throw new Error(
+    'agentAuthToken is required; use local credential storage or --agent-auth-token-stdin',
+  );
 }

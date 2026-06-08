@@ -63,10 +63,7 @@ function fileUrlToPathForPlatform(fileUrl, platform = process.platform) {
   return decodeURIComponent(parsed.pathname);
 }
 
-export function resolveRepoRootFromMetaUrl(
-  metaUrl = import.meta.url,
-  platform = process.platform,
-) {
+export function resolveRepoRootFromMetaUrl(metaUrl = import.meta.url, platform = process.platform) {
   const scriptPath = fileUrlToPathForPlatform(metaUrl, platform);
   const pathImpl = platform === 'win32' ? path.win32 : path.posix;
   return pathImpl.resolve(pathImpl.dirname(scriptPath), '..');

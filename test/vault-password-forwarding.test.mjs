@@ -1,5 +1,5 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 
 const modulePath = new URL('../src/lib/vault-password-forwarding.ts', import.meta.url);
 
@@ -41,9 +41,9 @@ test('prepareVaultPasswordRelay rejects split argv passwords', async () => {
       '--json',
       '--vault-password',
       'vault-secret',
-      'rotate-agent-auth-token'
+      'rotate-agent-auth-token',
     ]),
-    /insecure --vault-password is disabled/
+    /insecure --vault-password is disabled/,
   );
 });
 
@@ -51,12 +51,8 @@ test('prepareVaultPasswordRelay rejects inline argv passwords', async () => {
   const relay = await loadModule(`${Date.now()}-inline`);
 
   await assert.rejects(
-    relay.prepareVaultPasswordRelay([
-      '--json',
-      '--vault-password=vault-secret',
-      'bootstrap'
-    ]),
-    /insecure --vault-password is disabled/
+    relay.prepareVaultPasswordRelay(['--json', '--vault-password=vault-secret', 'bootstrap']),
+    /insecure --vault-password is disabled/,
   );
 });
 
@@ -68,7 +64,7 @@ test('prepareVaultPasswordRelay reads vault passwords from stdin when requested'
     readFromStdin: async (label) => {
       requestedLabel = label;
       return 'stdin-secret';
-    }
+    },
   });
 
   assert.equal(requestedLabel, 'vaultPassword');
@@ -104,10 +100,10 @@ test('prepareVaultPasswordRelay rejects AGENTPAY_VAULT_PASSWORD for non-help inv
   await assert.rejects(
     relay.prepareVaultPasswordRelay(['bootstrap'], {
       env: {
-        AGENTPAY_VAULT_PASSWORD: 'env-secret'
-      }
+        AGENTPAY_VAULT_PASSWORD: 'env-secret',
+      },
     }),
-    /AGENTPAY_VAULT_PASSWORD is disabled for security/
+    /AGENTPAY_VAULT_PASSWORD is disabled for security/,
   );
 });
 
@@ -116,7 +112,7 @@ test('prepareVaultPasswordRelay rejects conflicting vault password sources', asy
 
   await assert.rejects(
     relay.prepareVaultPasswordRelay(['--vault-password', 'secret', '--vault-password-stdin']),
-    /--vault-password conflicts with --vault-password-stdin/
+    /--vault-password conflicts with --vault-password-stdin/,
   );
 });
 
@@ -128,9 +124,9 @@ test('prepareVaultPasswordRelay rejects duplicate argv vault passwords', async (
       '--vault-password',
       'secret-one',
       '--vault-password=secret-two',
-      'bootstrap'
+      'bootstrap',
     ]),
-    /--vault-password may only be provided once/
+    /--vault-password may only be provided once/,
   );
 });
 
@@ -141,9 +137,9 @@ test('prepareVaultPasswordRelay rejects duplicate stdin flags', async () => {
     relay.prepareVaultPasswordRelay([
       '--vault-password-stdin',
       '--vault-password-stdin',
-      'bootstrap'
+      'bootstrap',
     ]),
-    /--vault-password-stdin may only be provided once/
+    /--vault-password-stdin may only be provided once/,
   );
 });
 
@@ -152,7 +148,7 @@ test('prepareVaultPasswordRelay rejects oversized inline passwords', async () =>
 
   await assert.rejects(
     relay.prepareVaultPasswordRelay(['--vault-password', 'a'.repeat(16 * 1024 + 1), 'bootstrap']),
-    /vaultPassword must not exceed 16384 bytes/
+    /vaultPassword must not exceed 16384 bytes/,
   );
 });
 
@@ -162,10 +158,10 @@ test('prepareVaultPasswordRelay rejects empty environment passwords', async () =
   await assert.rejects(
     relay.prepareVaultPasswordRelay(['bootstrap'], {
       env: {
-        AGENTPAY_VAULT_PASSWORD: '   \n'
-      }
+        AGENTPAY_VAULT_PASSWORD: '   \n',
+      },
     }),
-    /vaultPassword is required/
+    /vaultPassword is required/,
   );
 });
 
@@ -189,7 +185,7 @@ test('prepareVaultPasswordRelay ignores flags after -- terminator', async () => 
     'bootstrap',
     '--',
     '--vault-password',
-    'vault-secret'
+    'vault-secret',
   ]);
 
   assert.deepEqual(prepared.args, ['bootstrap', '--', '--vault-password', 'vault-secret']);
@@ -202,10 +198,10 @@ test('prepareVaultPasswordRelay rejects AGENTPAY_VAULT_PASSWORD when help appear
   await assert.rejects(
     relay.prepareVaultPasswordRelay(['bootstrap', '--', '--help'], {
       env: {
-        AGENTPAY_VAULT_PASSWORD: 'env-secret'
-      }
+        AGENTPAY_VAULT_PASSWORD: 'env-secret',
+      },
     }),
-    /AGENTPAY_VAULT_PASSWORD is disabled for security/
+    /AGENTPAY_VAULT_PASSWORD is disabled for security/,
   );
 });
 
@@ -244,10 +240,7 @@ test('prepareVaultPasswordRelay rejects inline vault passwords that start with d
   const relay = await loadModule(`${Date.now()}-flag-like-inline-password`);
 
   await assert.rejects(
-    relay.prepareVaultPasswordRelay([
-      '--vault-password=--still-a-secret',
-      'bootstrap',
-    ]),
-    /insecure --vault-password is disabled/
+    relay.prepareVaultPasswordRelay(['--vault-password=--still-a-secret', 'bootstrap']),
+    /insecure --vault-password is disabled/,
   );
 });

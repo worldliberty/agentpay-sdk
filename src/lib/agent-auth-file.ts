@@ -2,7 +2,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ensureAgentPayHome, resolveAgentPayHome } from '../../packages/config/src/index.js';
 import { assertValidAgentAuthToken } from './agent-auth-token.js';
-import { assertTrustedDirectoryPath, assertTrustedPrivateFilePath, readUtf8FileSecure } from './fs-trust.js';
+import {
+  assertTrustedDirectoryPath,
+  assertTrustedPrivateFilePath,
+  readUtf8FileSecure,
+} from './fs-trust.js';
 import { assertValidAgentKeyId } from './keychain.js';
 
 const AGENT_AUTH_DIRECTORY_NAME = 'agent-auth';

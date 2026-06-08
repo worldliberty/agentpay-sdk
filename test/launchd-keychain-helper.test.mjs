@@ -15,7 +15,10 @@ test('launchd install flow wires the root-only keychain helper into daemon setup
     /install -o root -g wheel -m 700 "\$keychain_helper" "\$temp_keychain_helper"/,
   );
   assert.match(installScript, /"\$managed_keychain_helper" replace-generic-password/);
-  assert.match(installScript, /specified item already exists\|already exists in the keychain\|errSecDuplicateItem/);
+  assert.match(
+    installScript,
+    /specified item already exists\|already exists in the keychain\|errSecDuplicateItem/,
+  );
   assert.match(installScript, /\/usr\/bin\/security delete-generic-password/);
   assert.match(installScript, /<key>AGENTPAY_KEYCHAIN_HELPER<\/key>/);
 

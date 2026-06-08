@@ -37,7 +37,7 @@ function hasFlag(args: string[], flag: string): boolean {
 export async function prepareSpawnOptions(
   binaryName: 'agentpay-daemon' | 'agentpay-admin' | 'agentpay-agent',
   args: string[],
-  options: RunRustBinaryOptions
+  options: RunRustBinaryOptions,
 ): Promise<{
   args: string[];
   stdin?: string;
@@ -55,7 +55,9 @@ export async function prepareSpawnOptions(
   if (supportsVaultPasswordRelay(binaryName)) {
     if (preSuppliedSecretStdin === 'vaultPassword') {
       if (!hasFlag(preparedArgs, '--vault-password-stdin')) {
-        throw new Error('preSuppliedSecretStdin=vaultPassword requires --vault-password-stdin in args');
+        throw new Error(
+          'preSuppliedSecretStdin=vaultPassword requires --vault-password-stdin in args',
+        );
       }
       scrubSensitiveEnv = true;
     } else {
@@ -73,7 +75,9 @@ export async function prepareSpawnOptions(
   if (supportsAgentAuthRelay(binaryName)) {
     if (preSuppliedSecretStdin === 'agentAuthToken') {
       if (!hasFlag(preparedArgs, '--agent-auth-token-stdin')) {
-        throw new Error('preSuppliedSecretStdin=agentAuthToken requires --agent-auth-token-stdin in args');
+        throw new Error(
+          'preSuppliedSecretStdin=agentAuthToken requires --agent-auth-token-stdin in args',
+        );
       }
       scrubSensitiveEnv = true;
     } else {
@@ -93,6 +97,6 @@ export async function prepareSpawnOptions(
   return {
     args: preparedArgs,
     stdin,
-    env: buildChildEnv(scrubSensitiveEnv)
+    env: buildChildEnv(scrubSensitiveEnv),
   };
 }

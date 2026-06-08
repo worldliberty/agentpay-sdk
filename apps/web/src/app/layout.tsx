@@ -5,7 +5,7 @@ import { clientConfig } from '@/lib/config';
 
 export const metadata: Metadata = {
   title: clientConfig.siteName,
-  description: 'Review and approve pending AgentPay signing requests.'
+  description: 'Review and approve pending AgentPay signing requests.',
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

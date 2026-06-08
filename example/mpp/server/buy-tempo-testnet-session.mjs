@@ -96,10 +96,10 @@ async function loadWlfiWalletContext() {
     agentAuthTokenSource = 'macOS Keychain';
   } else {
     agentAuthToken = (
-      process.env.AGENTPAY_MPP_DEMO_AGENT_AUTH_TOKEN
-      || process.env.WLFI_AGENT_AUTH_TOKEN
-      || process.env.AGENTPAY_AGENT_AUTH_TOKEN
-      || ''
+      process.env.AGENTPAY_MPP_DEMO_AGENT_AUTH_TOKEN ||
+      process.env.WLFI_AGENT_AUTH_TOKEN ||
+      process.env.AGENTPAY_AGENT_AUTH_TOKEN ||
+      ''
     ).trim();
     agentAuthTokenSource = 'environment';
   }
@@ -128,7 +128,9 @@ async function loadWlfiWalletContext() {
     agentAuthTokenSource,
     agentKeyId: String(wallet.agentKeyId),
     daemonSocket: String(config.daemonSocket),
-    homeDir: path.dirname(String(config.paths?.wlfiHome || '').trim() || path.join(os.homedir(), '.wlfi_agent')),
+    homeDir: path.dirname(
+      String(config.paths?.wlfiHome || '').trim() || path.join(os.homedir(), '.wlfi_agent'),
+    ),
     wallet,
     wlfiBinDir,
   };
@@ -272,7 +274,8 @@ async function startExampleServer({ recipient, recipientPrivateKey }) {
       HOST: '127.0.0.1',
       PORT: String(SERVER_PORT),
       MPP_REALM: `127.0.0.1:${SERVER_PORT}`,
-      MPP_SECRET_KEY: process.env.MPP_SECRET_KEY || 'agentpay-mpp-demo-tempo-testnet-session-secret',
+      MPP_SECRET_KEY:
+        process.env.MPP_SECRET_KEY || 'agentpay-mpp-demo-tempo-testnet-session-secret',
       RECIPIENT_ADDRESS: recipient,
       ...(recipientPrivateKey ? { RECIPIENT_PRIVATE_KEY: recipientPrivateKey } : {}),
       TOKEN_ADDRESS: Addresses.pathUsd,
@@ -390,7 +393,8 @@ async function main() {
   try {
     const context = await loadDemoWalletContext();
     const walletAddress = String(context.wallet.address);
-    const recipientPrivateKey = process.env.RECIPIENT_PRIVATE_KEY || `0x${crypto.randomBytes(32).toString('hex')}`;
+    const recipientPrivateKey =
+      process.env.RECIPIENT_PRIVATE_KEY || `0x${crypto.randomBytes(32).toString('hex')}`;
     const recipientAccount = privateKeyToAccount(recipientPrivateKey);
     const effectiveRecipient = recipientAccount.address;
     if (isAddressEqual(walletAddress, effectiveRecipient)) {
@@ -469,9 +473,7 @@ async function main() {
       }
     }
     if (second.code !== 0) {
-      throw new Error(
-        `second agentpay mpp call failed with exit ${second.code}\n${second.stdout}`,
-      );
+      throw new Error(`second agentpay mpp call failed with exit ${second.code}\n${second.stdout}`);
     }
     const secondParsed = JSON.parse(second.stdout);
     if (fs.existsSync(effectiveSessionStatePath)) {

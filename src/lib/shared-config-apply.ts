@@ -1,10 +1,7 @@
-import {
-  type WlfiConfig,
-  writeConfig,
-} from '../../packages/config/src/index.js';
+import { type WlfiConfig, writeConfig } from '../../packages/config/src/index.js';
+import { resolveValidatedAdminDaemonSocket } from './admin-daemon-socket.js';
 import { resolveAdminSetupVaultPassword } from './admin-setup.js';
 import { deleteBootstrapAgentCredentialsFile } from './bootstrap-credentials.js';
-import { resolveValidatedAdminDaemonSocket } from './admin-daemon-socket.js';
 import { supportsManagedDaemonPlatform } from './platform-support.js';
 import { runRustBinary } from './rust.js';
 import {

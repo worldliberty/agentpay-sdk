@@ -243,9 +243,7 @@ const preserveRotatedApprovalCapability = (
     ...incoming,
     metadata: {
       ...(incomingMetadata ?? {}),
-      ...(preservedCapabilityToken
-        ? { approvalCapabilityToken: preservedCapabilityToken }
-        : {}),
+      ...(preservedCapabilityToken ? { approvalCapabilityToken: preservedCapabilityToken } : {}),
       ...(preservedCapabilityHash ? { approvalCapabilityHash: preservedCapabilityHash } : {}),
     },
   };

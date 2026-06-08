@@ -1,5 +1,5 @@
-import type * as React from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ApprovalRequestRecord, RelayDaemonRecord } from '../src/lib/types';
 
@@ -168,7 +168,9 @@ describe('ApprovalForm duplicate submit guards', () => {
     });
     fireEvent.click(screen.getByLabelText(/I verified this pending request/i));
 
-    const submitForm = screen.getByRole('button', { name: 'Send encrypted update' }).closest('form');
+    const submitForm = screen
+      .getByRole('button', { name: 'Send encrypted update' })
+      .closest('form');
     expect(submitForm).not.toBeNull();
 
     fireEvent.submit(submitForm!);

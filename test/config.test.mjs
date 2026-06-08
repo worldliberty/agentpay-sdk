@@ -1096,9 +1096,7 @@ test('writeConfig accepts Solana recipients for token manual approval policies',
   process.env.AGENTPAY_HOME = agentpayHome;
 
   try {
-    const config = await import(
-      modulePath.href + `?case=${Date.now()}-solana-manual-recipient`
-    );
+    const config = await import(modulePath.href + `?case=${Date.now()}-solana-manual-recipient`);
     const solanaRecipient = '11111111111111111111111111111111';
     const written = config.writeConfig({
       tokens: {

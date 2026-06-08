@@ -326,7 +326,9 @@ test('assertTrustedDaemonSocketPath accepts trusted unix sockets', async () => {
 });
 
 test('daemon socket validators cover ENOENT and synthetic admin success branches', async () => {
-  const trust = await import(`${modulePath.href}?case=${Date.now()}-socket-missing-and-admin-success`);
+  const trust = await import(
+    `${modulePath.href}?case=${Date.now()}-socket-missing-and-admin-success`
+  );
   const daemonSocket = '/virtual/user/run/daemon.sock';
   const adminSocket = '/virtual/root/run/daemon.sock';
 
@@ -433,7 +435,7 @@ test('assertTrustedDaemonSocketPath rejects sudo-caller-owned unix sockets when 
   try {
     assert.throws(
       () => withMockedEuid(0, () => trust.assertTrustedDaemonSocketPath(socketPath)),
-      /must be owned by root/
+      /must be owned by root/,
     );
   } finally {
     if (originalSudoUid === undefined) {
@@ -1038,11 +1040,16 @@ test('private-file, secure-read, and executable trust branches handle synthetic 
     },
     () => {
       const resolved = withMockedEuid(0, () =>
-        trust.assertTrustedRootPrivateFilePath(privateFilePath, 'State file', { allowMissing: true }),
+        trust.assertTrustedRootPrivateFilePath(privateFilePath, 'State file', {
+          allowMissing: true,
+        }),
       );
       assert.equal(resolved, privateFilePath);
       assert.throws(
-        () => withMockedEuid(0, () => trust.assertTrustedRootPrivateFilePath(privateFilePath, 'State file')),
+        () =>
+          withMockedEuid(0, () =>
+            trust.assertTrustedRootPrivateFilePath(privateFilePath, 'State file'),
+          ),
         /does not exist/,
       );
     },
@@ -1064,7 +1071,10 @@ test('private-file, secure-read, and executable trust branches handle synthetic 
     },
     () => {
       assert.throws(
-        () => withMockedEuid(0, () => trust.assertTrustedRootPrivateFilePath(privateFilePath, 'State file')),
+        () =>
+          withMockedEuid(0, () =>
+            trust.assertTrustedRootPrivateFilePath(privateFilePath, 'State file'),
+          ),
         /boom/,
       );
     },
@@ -1440,7 +1450,9 @@ test('root and private file validators cover remaining ENOENT, type, and success
     () => {
       assert.throws(
         () =>
-          withMockedEuid(0, () => trust.assertTrustedRootDirectoryPath('/virtual/root/run', 'Root dir')),
+          withMockedEuid(0, () =>
+            trust.assertTrustedRootDirectoryPath('/virtual/root/run', 'Root dir'),
+          ),
         /must be a directory/,
       );
     },
@@ -1461,7 +1473,8 @@ test('root and private file validators cover remaining ENOENT, type, and success
     },
     () => {
       assert.throws(
-        () => withMockedEuid(0, () => trust.assertTrustedRootPrivateFilePath(statePath, 'State file')),
+        () =>
+          withMockedEuid(0, () => trust.assertTrustedRootPrivateFilePath(statePath, 'State file')),
         /must not be a symlink/,
       );
     },
@@ -1482,7 +1495,8 @@ test('root and private file validators cover remaining ENOENT, type, and success
     },
     () => {
       assert.throws(
-        () => withMockedEuid(0, () => trust.assertTrustedRootPrivateFilePath(statePath, 'State file')),
+        () =>
+          withMockedEuid(0, () => trust.assertTrustedRootPrivateFilePath(statePath, 'State file')),
         /must be a regular file/,
       );
     },
@@ -1533,10 +1547,7 @@ test('root and private file validators cover remaining ENOENT, type, and success
   );
 
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-fs-trust-nonfile-'));
-  assert.throws(
-    () => trust.assertTrustedExecutablePath(tempRoot),
-    /must be a regular file/,
-  );
+  assert.throws(() => trust.assertTrustedExecutablePath(tempRoot), /must be a regular file/);
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
@@ -1633,7 +1644,9 @@ test('root planned validators cover existing socket/file success and EACCES bran
 });
 
 test('secure-read and private-file helpers cover symlink and byte-limit branches', async () => {
-  const trust = await import(`${modulePath.href}?case=${Date.now()}-secure-read-and-private-symlink`);
+  const trust = await import(
+    `${modulePath.href}?case=${Date.now()}-secure-read-and-private-symlink`
+  );
   const privatePath = '/virtual/root/run/private.enc';
   const secureFilePath = '/virtual/root/run/data.json';
 
@@ -1710,7 +1723,9 @@ test('secure-read and private-file helpers cover symlink and byte-limit branches
 });
 
 test('secure-read and executable helpers cover win32 open flags and root-owned executable success', async () => {
-  const trust = await import(`${modulePath.href}?case=${Date.now()}-secure-read-win32-and-root-exec-success`);
+  const trust = await import(
+    `${modulePath.href}?case=${Date.now()}-secure-read-win32-and-root-exec-success`
+  );
   const secureFilePath = '/virtual/root/run/data.json';
   const binaryPath = '/virtual/root/bin/agentpay-daemon';
 

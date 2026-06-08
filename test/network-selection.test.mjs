@@ -7,18 +7,19 @@ test('resolveCliNetworkProfile rejects numeric user input', async () => {
   const networkSelection = await import(`${modulePath.href}?case=${Date.now()}-numeric`);
 
   assert.throws(
-    () => networkSelection.resolveCliNetworkProfile('1', {
-      chainId: 1,
-      chainName: 'eth',
-      rpcUrl: 'https://rpc.ethereum.example',
-      chains: {
-        eth: {
-          chainId: 1,
-          name: 'ETH',
-          rpcUrl: 'https://eth.llamarpc.com',
+    () =>
+      networkSelection.resolveCliNetworkProfile('1', {
+        chainId: 1,
+        chainName: 'eth',
+        rpcUrl: 'https://rpc.ethereum.example',
+        chains: {
+          eth: {
+            chainId: 1,
+            name: 'ETH',
+            rpcUrl: 'https://eth.llamarpc.com',
+          },
         },
-      },
-    }),
+      }),
     /network must be a chain name, not a chain id/,
   );
 });
@@ -103,7 +104,9 @@ test('resolveCliNetworkProfile falls back to active chainId when chainName is un
 });
 
 test('resolveCliNetworkProfile rejects missing and unknown selectors', async () => {
-  const networkSelection = await import(`${modulePath.href}?case=${Date.now()}-missing-and-unknown`);
+  const networkSelection = await import(
+    `${modulePath.href}?case=${Date.now()}-missing-and-unknown`
+  );
 
   assert.throws(
     () =>
@@ -146,7 +149,9 @@ test('resolveCliRpcUrl rejects missing rpcUrl when explicit, network, and config
 });
 
 test('resolveCliRpcUrl falls back to the configured global rpcUrl when the selected network has none', async () => {
-  const networkSelection = await import(`${modulePath.href}?case=${Date.now()}-rpc-global-fallback`);
+  const networkSelection = await import(
+    `${modulePath.href}?case=${Date.now()}-rpc-global-fallback`
+  );
 
   const rpcUrl = networkSelection.resolveCliRpcUrl(undefined, 'eth', {
     rpcUrl: 'https://rpc.global.example',

@@ -152,11 +152,7 @@ test('deriveSolanaManagedNonceAccount derives a deterministic seeded system acco
     chainId,
     feePayer: feePayer.toBase58(),
   });
-  const expected = await PublicKey.createWithSeed(
-    feePayer,
-    managed.seed,
-    SystemProgram.programId,
-  );
+  const expected = await PublicKey.createWithSeed(feePayer, managed.seed, SystemProgram.programId);
 
   assert.equal(managed.seed, 'agentpay-900000002-nonce');
   assert.ok(Buffer.byteLength(managed.seed, 'ascii') <= 32);
@@ -174,9 +170,8 @@ test('getSolanaNonceAccountRentLamports uses the nonce account rent size', async
   const solanaTransfer = await import(`${modulePath.href}?case=${Date.now()}-nonce-rent`);
 
   await withMockedRentExemption(1_500_000, async (calls) => {
-    const lamports = await solanaTransfer.getSolanaNonceAccountRentLamports(
-      'http://127.0.0.1:8899',
-    );
+    const lamports =
+      await solanaTransfer.getSolanaNonceAccountRentLamports('http://127.0.0.1:8899');
 
     assert.equal(lamports, '1500000');
     assert.deepEqual(calls, [{ dataLength: 80, commitment: 'confirmed' }]);

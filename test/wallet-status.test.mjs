@@ -313,7 +313,9 @@ test('getWalletStatus reports keychain status failures without crashing', async 
 });
 
 test('getWalletStatus handles missing agent ids, empty legacy secrets, and partial chain profiles', async () => {
-  const walletStatus = await loadWalletStatusModule(`${Date.now()}-missing-agent-and-partial-chains`);
+  const walletStatus = await loadWalletStatusModule(
+    `${Date.now()}-missing-agent-and-partial-chains`,
+  );
 
   const result = walletStatus.getWalletStatus({
     platform: 'linux',
@@ -361,10 +363,7 @@ test('getWalletStatus handles missing agent ids, empty legacy secrets, and parti
   assert.equal(result.chainProfiles[0].rpcUrlTrusted, true);
   assert.equal(result.chainProfiles[1].chainId, null);
   assert.equal(result.chainProfiles[1].chainName, null);
-  assert.equal(
-    result.security.warnings.includes('agentKeyId is not configured'),
-    true,
-  );
+  assert.equal(result.security.warnings.includes('agentKeyId is not configured'), true);
 });
 
 test('getWalletStatus warns when the macOS Keychain token is absent and the legacy token cannot be compared', async () => {
@@ -533,7 +532,9 @@ test('getWalletStatus rejects same-user daemon sockets when the wrapper runs as 
 
 test('getWalletStatus covers default dependency fallbacks with a real temp config', async () => {
   const walletStatus = await loadWalletStatusModule(`${Date.now()}-default-fallbacks`);
-  const configModule = await import(`${configModulePath.href}?case=${Date.now()}-default-fallbacks`);
+  const configModule = await import(
+    `${configModulePath.href}?case=${Date.now()}-default-fallbacks`
+  );
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-wallet-status-defaults-'));
   process.env.AGENTPAY_HOME = tempRoot;
 
@@ -894,7 +895,9 @@ test('getWalletStatus warns when lingering bootstrap files still expose secrets'
 });
 
 test('getWalletStatus warns when a bootstrap file still contains a plaintext vault private key', async () => {
-  const walletStatus = await loadWalletStatusModule(`${Date.now()}-plaintext-bootstrap-private-key`);
+  const walletStatus = await loadWalletStatusModule(
+    `${Date.now()}-plaintext-bootstrap-private-key`,
+  );
   const binaryPaths = {
     'agentpay-daemon': '/trusted/bin/agentpay-daemon',
     'agentpay-admin': '/trusted/bin/agentpay-admin',
@@ -1015,7 +1018,9 @@ test('getWalletStatus marks inaccessible state files as untrusted', async () => 
 });
 
 test('getWalletStatus reports Linux credential-storage state, untrusted binaries, untrusted bootstrap files, and missing active rpcUrl', async () => {
-  const walletStatus = await loadWalletStatusModule(`${Date.now()}-linux-untrusted-and-missing-rpc`);
+  const walletStatus = await loadWalletStatusModule(
+    `${Date.now()}-linux-untrusted-and-missing-rpc`,
+  );
 
   const result = walletStatus.getWalletStatus({
     platform: 'linux',
@@ -1081,7 +1086,9 @@ test('getWalletStatus reports Linux credential-storage state, untrusted binaries
 });
 
 test('getWalletStatus captures legacy keychain comparison errors and formatWalletStatusText covers summary edge cases', async () => {
-  const walletStatus = await loadWalletStatusModule(`${Date.now()}-legacy-compare-error-and-format-edges`);
+  const walletStatus = await loadWalletStatusModule(
+    `${Date.now()}-legacy-compare-error-and-format-edges`,
+  );
 
   const status = walletStatus.getWalletStatus({
     platform: 'darwin',

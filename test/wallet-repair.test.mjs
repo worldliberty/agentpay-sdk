@@ -408,7 +408,10 @@ test('repairWalletState covers overwrite migrations and default dependency fallb
   );
 
   assert.equal(overwritten.legacyAgentAuth.action, 'migrated');
-  assert.match(overwritten.legacyAgentAuth.reason ?? '', /replaced a different macOS Keychain token/);
+  assert.match(
+    overwritten.legacyAgentAuth.reason ?? '',
+    /replaced a different macOS Keychain token/,
+  );
 
   const configModule = await import(`${configModulePath.href}?case=${Date.now()}-defaults`);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-wallet-repair-defaults-'));
@@ -494,7 +497,9 @@ test('formatWalletRepairText includes failed bootstrap cleanup counts', async ()
 
   const rendered = walletRepair.formatWalletRepairText({
     before: createStatus([]),
-    after: createStatus(['auto-generated bootstrap file still contains a plaintext agent auth token']),
+    after: createStatus([
+      'auto-generated bootstrap file still contains a plaintext agent auth token',
+    ]),
     legacyAgentAuth: {
       attempted: false,
       action: 'none',
@@ -520,7 +525,9 @@ test('formatWalletRepairText includes failed bootstrap cleanup counts', async ()
       error: null,
     },
     fixedWarnings: [],
-    remainingWarnings: ['auto-generated bootstrap file still contains a plaintext agent auth token'],
+    remainingWarnings: [
+      'auto-generated bootstrap file still contains a plaintext agent auth token',
+    ],
     newWarnings: [],
   });
 

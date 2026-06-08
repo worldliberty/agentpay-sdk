@@ -80,7 +80,8 @@ export default async function ApprovalPage({
           </CardHeader>
           <CardContent className="space-y-4 text-sm">
             <div className="rounded-xl border border-border/70 bg-background/70 p-3 font-mono">
-              agentpay admin approve-manual-approval-request --approval-request-id {approval.approvalId}
+              agentpay admin approve-manual-approval-request --approval-request-id{' '}
+              {approval.approvalId}
             </div>
             <div className="rounded-xl border border-border/70 bg-background/70 p-3 font-mono">
               {approvalRoutePath(approval.approvalId)}
@@ -88,8 +89,8 @@ export default async function ApprovalPage({
             <p className="text-muted-foreground">
               The route above is only the non-secret page path. Browser submission requires the
               original CLI-issued secure URL, and its capability token is intentionally scrubbed
-              from the address bar after load. If relay metadata is unavailable, use the local
-              admin CLI command against the daemon socket.
+              from the address bar after load. If relay metadata is unavailable, use the local admin
+              CLI command against the daemon socket.
             </p>
           </CardContent>
         </Card>

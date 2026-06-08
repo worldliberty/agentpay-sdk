@@ -9,32 +9,32 @@ import test from 'node:test';
 
 const modulePath = new URL('../src/lib/admin-setup.ts', import.meta.url);
 const walletBackupModulePath = new URL('../src/lib/wallet-backup.ts', import.meta.url);
-const HOST_MANAGED = process.platform === 'linux'
-  ? {
-      label: 'agentpay-daemon',
-      daemonSocket: '/run/agentpay/daemon.sock',
-      stateFile: '/var/lib/agentpay/daemon-state.enc',
-      serviceFile: '/etc/systemd/system/agentpay-daemon.service',
-      managedBinDir: '/opt/agentpay/bin',
-      installScriptName: 'install-system-daemon.sh',
-      uninstallScriptName: 'uninstall-system-daemon.sh',
-      runnerScriptName: 'run-agentpay-daemon.sh',
-      credentialHelperName: 'agentpay-daemon-password-helper.sh',
-    }
-  : {
-      label: 'com.agentpay.daemon',
-      daemonSocket: '/Library/AgentPay/run/daemon.sock',
-      stateFile: '/var/db/agentpay/daemon-state.enc',
-      serviceFile: '/Library/LaunchDaemons/com.agentpay.daemon.plist',
-      managedBinDir: '/Library/AgentPay/bin',
-      installScriptName: 'install-user-daemon.sh',
-      uninstallScriptName: 'uninstall-user-daemon.sh',
-      runnerScriptName: 'run-agentpay-daemon.sh',
-      credentialHelperName: 'agentpay-system-keychain',
-    };
-const HOST_AGENT_AUTH_STORAGE = process.platform === 'linux'
-  ? 'Linux Secret Service'
-  : 'macOS Keychain';
+const HOST_MANAGED =
+  process.platform === 'linux'
+    ? {
+        label: 'agentpay-daemon',
+        daemonSocket: '/run/agentpay/daemon.sock',
+        stateFile: '/var/lib/agentpay/daemon-state.enc',
+        serviceFile: '/etc/systemd/system/agentpay-daemon.service',
+        managedBinDir: '/opt/agentpay/bin',
+        installScriptName: 'install-system-daemon.sh',
+        uninstallScriptName: 'uninstall-system-daemon.sh',
+        runnerScriptName: 'run-agentpay-daemon.sh',
+        credentialHelperName: 'agentpay-daemon-password-helper.sh',
+      }
+    : {
+        label: 'com.agentpay.daemon',
+        daemonSocket: '/Library/AgentPay/run/daemon.sock',
+        stateFile: '/var/db/agentpay/daemon-state.enc',
+        serviceFile: '/Library/LaunchDaemons/com.agentpay.daemon.plist',
+        managedBinDir: '/Library/AgentPay/bin',
+        installScriptName: 'install-user-daemon.sh',
+        uninstallScriptName: 'uninstall-user-daemon.sh',
+        runnerScriptName: 'run-agentpay-daemon.sh',
+        credentialHelperName: 'agentpay-system-keychain',
+      };
+const HOST_AGENT_AUTH_STORAGE =
+  process.platform === 'linux' ? 'Linux Secret Service' : 'macOS Keychain';
 
 function loadModule(caseId) {
   return import(`${modulePath.href}?case=${caseId}`);
@@ -80,7 +80,7 @@ async function withTrustedRootDaemonSocket(fn) {
     socket.end();
   });
 
-  fs.lstatSync = ((targetPath, ...args) => {
+  fs.lstatSync = (targetPath, ...args) => {
     const stats = originalLstatSync(targetPath, ...args);
     const resolvedPath = path.resolve(String(targetPath));
     if (!rootOwnedPaths.has(resolvedPath)) {
@@ -94,7 +94,7 @@ async function withTrustedRootDaemonSocket(fn) {
         return Reflect.get(target, key, receiver);
       },
     });
-  });
+  };
 
   try {
     await new Promise((resolve, reject) => {
@@ -152,21 +152,24 @@ async function withMockedManagedLaunchDaemonMetadata(input, fn) {
 
   const originalExistsSync = fs.existsSync;
   const originalReadFileSync = fs.readFileSync;
-  fs.existsSync = ((targetPath, ...args) => {
+  fs.existsSync = (targetPath, ...args) => {
     if (path.resolve(String(targetPath)) === plistPath) {
       return true;
     }
     return originalExistsSync(targetPath, ...args);
-  });
-  fs.readFileSync = ((targetPath, ...args) => {
+  };
+  fs.readFileSync = (targetPath, ...args) => {
     if (path.resolve(String(targetPath)) === plistPath) {
-      if (args[0] === 'utf8' || (args[0] && typeof args[0] === 'object' && args[0].encoding === 'utf8')) {
+      if (
+        args[0] === 'utf8' ||
+        (args[0] && typeof args[0] === 'object' && args[0].encoding === 'utf8')
+      ) {
         return plistContents;
       }
       return Buffer.from(plistContents, 'utf8');
     }
     return originalReadFileSync(targetPath, ...args);
-  });
+  };
 
   try {
     await fn();
@@ -219,31 +222,37 @@ async function withMockedStaleManagedLaunchDaemonMetadata(input, fn) {
   const originalExistsSync = fs.existsSync;
   const originalReadFileSync = fs.readFileSync;
   const originalStatSync = fs.statSync;
-  fs.existsSync = ((targetPath, ...args) => {
+  fs.existsSync = (targetPath, ...args) => {
     const resolvedPath = path.resolve(String(targetPath));
     if (resolvedPath === plistPath || staleManagedContents.has(resolvedPath)) {
       return true;
     }
     return originalExistsSync(targetPath, ...args);
-  });
-  fs.readFileSync = ((targetPath, ...args) => {
+  };
+  fs.readFileSync = (targetPath, ...args) => {
     const resolvedPath = path.resolve(String(targetPath));
     if (resolvedPath === plistPath) {
-      if (args[0] === 'utf8' || (args[0] && typeof args[0] === 'object' && args[0].encoding === 'utf8')) {
+      if (
+        args[0] === 'utf8' ||
+        (args[0] && typeof args[0] === 'object' && args[0].encoding === 'utf8')
+      ) {
         return plistContents;
       }
       return Buffer.from(plistContents, 'utf8');
     }
     const staleContents = staleManagedContents.get(resolvedPath);
     if (staleContents !== undefined) {
-      if (args[0] === 'utf8' || (args[0] && typeof args[0] === 'object' && args[0].encoding === 'utf8')) {
+      if (
+        args[0] === 'utf8' ||
+        (args[0] && typeof args[0] === 'object' && args[0].encoding === 'utf8')
+      ) {
         return staleContents;
       }
       return Buffer.from(staleContents, 'utf8');
     }
     return originalReadFileSync(targetPath, ...args);
-  });
-  fs.statSync = ((targetPath, ...args) => {
+  };
+  fs.statSync = (targetPath, ...args) => {
     const staleContents = staleManagedContents.get(path.resolve(String(targetPath)));
     if (staleContents !== undefined) {
       return {
@@ -252,7 +261,7 @@ async function withMockedStaleManagedLaunchDaemonMetadata(input, fn) {
       };
     }
     return originalStatSync(targetPath, ...args);
-  });
+  };
 
   try {
     await fn({ sourcePaths, managedPaths });
@@ -265,7 +274,7 @@ async function withMockedStaleManagedLaunchDaemonMetadata(input, fn) {
 
 async function withInstallMarkerConnectionGate(markerPath, fn) {
   const originalCreateConnection = net.createConnection;
-  net.createConnection = ((...args) => {
+  net.createConnection = (...args) => {
     if (fs.existsSync(markerPath)) {
       return originalCreateConnection(...args);
     }
@@ -279,7 +288,7 @@ async function withInstallMarkerConnectionGate(markerPath, fn) {
       socket.emit('error', error);
     });
     return socket;
-  });
+  };
 
   try {
     await fn();
@@ -354,10 +363,10 @@ test('runAdminSetupCli supports Linux managed setup planning', async () => {
     await withMockedAdminSetupEnv(async () => {
       const stdoutChunks = [];
       const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-      process.stdout.write = ((chunk, ...args) => {
+      process.stdout.write = (chunk, ...args) => {
         stdoutChunks.push(String(chunk));
         return originalStdoutWrite(chunk, ...args);
-      });
+      };
       try {
         const adminSetup = await loadModule(`${Date.now()}-linux-setup-supported`);
         await adminSetup.runAdminSetupCli(['--plan', '--json']);
@@ -385,10 +394,10 @@ test('runAdminTuiCli supports Linux managed TUI passthrough when the daemon sock
         process.env.AGENTPAY_MOCK_SKIP_TUI_OUTPUT = '1';
         const stdoutChunks = [];
         const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-        process.stdout.write = ((chunk, ...args) => {
+        process.stdout.write = (chunk, ...args) => {
           stdoutChunks.push(String(chunk));
           return originalStdoutWrite(chunk, ...args);
-        });
+        };
         try {
           const adminSetup = await loadModule(`${Date.now()}-linux-tui-supported`);
           await withMockedPrompt('vault-password', async () => {
@@ -715,8 +724,14 @@ test('launchDaemonPlistValue reads keyed launchd environment values without conf
   </dict>
 </plist>`;
 
-  assert.equal(adminSetup.launchDaemonPlistValue(plistContents, 'AGENTPAY_ALLOW_ADMIN_EUID'), '501');
-  assert.equal(adminSetup.launchDaemonPlistValue(plistContents, 'AGENTPAY_ALLOW_AGENT_EUID'), '777');
+  assert.equal(
+    adminSetup.launchDaemonPlistValue(plistContents, 'AGENTPAY_ALLOW_ADMIN_EUID'),
+    '501',
+  );
+  assert.equal(
+    adminSetup.launchDaemonPlistValue(plistContents, 'AGENTPAY_ALLOW_AGENT_EUID'),
+    '777',
+  );
   assert.equal(adminSetup.launchDaemonPlistValue(plistContents, 'AGENTPAY_MISSING_KEY'), null);
 });
 
@@ -1194,10 +1209,7 @@ test('formatAdminCommandOutput keeps setup output keychain-first unless secrets 
   assert.match(rendered, /daemon socket: \/Library\/AgentPay\/run\/daemon\.sock/);
   assert.match(rendered, /state file: \/var\/db\/agentpay\/daemon-state\.enc/);
   assert.match(rendered, /chain: eth/);
-  assert.match(
-    rendered,
-    new RegExp(`agent auth token: stored in ${HOST_AGENT_AUTH_STORAGE}`, 'u'),
-  );
+  assert.match(rendered, new RegExp(`agent auth token: stored in ${HOST_AGENT_AUTH_STORAGE}`, 'u'));
   assert.match(rendered, /credential service: agentpay-agent-auth-token/);
   assert.doesNotMatch(rendered, /secret-agent-token/);
   assert.doesNotMatch(rendered, /vault private key:/);
@@ -1622,7 +1634,10 @@ test('confirmAdminSetupOverwrite reuse mode requires REUSE and updates the warni
     },
   );
 
-  assert.match(warning, /reuse the current vault and refresh the local wallet metadata and agent credentials/u);
+  assert.match(
+    warning,
+    /reuse the current vault and refresh the local wallet metadata and agent credentials/u,
+  );
   assert.equal(prompt, 'Type REUSE to reattach the current local vault: ');
 });
 
@@ -1714,10 +1729,7 @@ test('formatAdminCommandOutput falls back to unconfigured defaults when optional
 
   assert.match(rendered, /setup complete/u);
   assert.match(rendered, /chain: unconfigured/u);
-  assert.match(
-    rendered,
-    new RegExp(`agent auth token: stored in ${HOST_AGENT_AUTH_STORAGE}`, 'u'),
-  );
+  assert.match(rendered, new RegExp(`agent auth token: stored in ${HOST_AGENT_AUTH_STORAGE}`, 'u'));
   assert.doesNotMatch(rendered, /daemon socket:/u);
   assert.doesNotMatch(rendered, /state file:/u);
   assert.doesNotMatch(rendered, /credential service:/u);
@@ -1741,7 +1753,10 @@ test('formatAdminCommandOutput renders direct file-storage notes when setup fall
   });
 
   assert.match(rendered, /agent auth token: stored in Linux local credential file/u);
-  assert.match(rendered, /credential file: \/tmp\/agent-auth\/00000000-0000-0000-0000-000000000001\.token/u);
+  assert.match(
+    rendered,
+    /credential file: \/tmp\/agent-auth\/00000000-0000-0000-0000-000000000001\.token/u,
+  );
   assert.match(rendered, /note: secret-tool is unavailable/u);
 });
 
@@ -1759,7 +1774,7 @@ function writeMockSecretTool(targetPath) {
     [
       "const fs = require('node:fs');",
       "const path = require('node:path');",
-      "const root = process.env.AGENTPAY_MOCK_SECRET_TOOL_ROOT;",
+      'const root = process.env.AGENTPAY_MOCK_SECRET_TOOL_ROOT;',
       "if (!root) { process.stderr.write('missing AGENTPAY_MOCK_SECRET_TOOL_ROOT\\n'); process.exit(2); }",
       'const args = process.argv.slice(2);',
       'const command = args[0];',
@@ -1880,7 +1895,7 @@ async function withMockedPrompt(answer, fn, options = {}) {
     },
     configurable: true,
   });
-  readline.createInterface = (() => ({
+  readline.createInterface = () => ({
     output: {
       write() {
         return true;
@@ -1890,7 +1905,7 @@ async function withMockedPrompt(answer, fn, options = {}) {
       callback(resolveAnswer(query));
     },
     close() {},
-  }));
+  });
   try {
     await fn();
   } finally {
@@ -1958,12 +1973,12 @@ function writeMockAdminBinary(targetPath) {
       'const args = process.argv.slice(2);',
       "const outputIndex = args.indexOf('--output');",
       'const outputPath = outputIndex >= 0 ? args[outputIndex + 1] : null;',
-      "const relayCounterPath = process.env.AGENTPAY_MOCK_RELAY_COUNTER || null;",
+      'const relayCounterPath = process.env.AGENTPAY_MOCK_RELAY_COUNTER || null;',
       `const payload = ${JSON.stringify(bootstrapPayload(), null, 2)};`,
       'const writeBootstrap = () => {',
       '  if (!outputPath) return;',
-      "  fs.mkdirSync(path.dirname(outputPath), { recursive: true, mode: 0o700 });",
-      "  fs.writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\\n`, { mode: 0o600 });",
+      '  fs.mkdirSync(path.dirname(outputPath), { recursive: true, mode: 0o700 });',
+      '  fs.writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\\n`, { mode: 0o600 });',
       '  fs.chmodSync(outputPath, 0o600);',
       '};',
       'const relayExitCode = () => {',
@@ -1982,7 +1997,7 @@ function writeMockAdminBinary(targetPath) {
       '    const raw = sequence[Math.min(index, sequence.length - 1)];',
       '    return Number(raw);',
       '  }',
-      "  if (process.env.AGENTPAY_MOCK_RELAY_EXIT) {",
+      '  if (process.env.AGENTPAY_MOCK_RELAY_EXIT) {',
       '    return Number(process.env.AGENTPAY_MOCK_RELAY_EXIT);',
       '  }',
       "  if (process.env.AGENTPAY_MOCK_RELAY_AUTH_FAIL === '1') {",
@@ -1994,7 +2009,7 @@ function writeMockAdminBinary(targetPath) {
       '  const code = relayExitCode();',
       '  if (code !== 0) {',
       "    const message = process.env.AGENTPAY_MOCK_RELAY_ERROR_MESSAGE || (code === 9 ? 'authentication failed' : 'mock relay failure');",
-      "    process.stderr.write(`${message}\\n`);",
+      '    process.stderr.write(`${message}\\n`);',
       '    process.exit(code);',
       '  }',
       "  process.stdout.write('[]\\n');",
@@ -2003,7 +2018,7 @@ function writeMockAdminBinary(targetPath) {
       "if (args.includes('bootstrap')) {",
       '  writeBootstrap();',
       "  if (process.env.AGENTPAY_MOCK_BOOTSTRAP_SYMLINK_OUTPUT === '1' && outputPath) {",
-      "    const realPath = `${outputPath}.real`;",
+      '    const realPath = `${outputPath}.real`;',
       '    fs.renameSync(outputPath, realPath);',
       '    fs.symlinkSync(realPath, outputPath);',
       '  }',
@@ -2012,7 +2027,7 @@ function writeMockAdminBinary(targetPath) {
       "    process.stderr.write('mock bootstrap failure\\n');",
       '    process.exit(code);',
       '  }',
-      "  process.stdout.write('{\"ok\":true}\\n');",
+      '  process.stdout.write(\'{"ok":true}\\n\');',
       '  process.exit(0);',
       '}',
       "if (args.includes('tui')) {",
@@ -2020,7 +2035,7 @@ function writeMockAdminBinary(targetPath) {
       '    writeBootstrap();',
       '  }',
       "  if (process.env.AGENTPAY_MOCK_TUI_SYMLINK_OUTPUT === '1' && outputPath) {",
-      "    const realPath = `${outputPath}.real`;",
+      '    const realPath = `${outputPath}.real`;',
       '    fs.renameSync(outputPath, realPath);',
       '    fs.symlinkSync(realPath, outputPath);',
       '  }',
@@ -2112,12 +2127,12 @@ test('runAdminSetupCli plan mode parses repeated token and attach-policy-id flag
   await withMockedAdminSetupEnv(async () => {
     const stdoutChunks = [];
     const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = ((chunk, ...args) => {
+    process.stdout.write = (chunk, ...args) => {
       if (typeof chunk === 'string' && chunk.trimStart().startsWith('{')) {
         stdoutChunks.push(chunk);
       }
       return true;
-    });
+    };
 
     try {
       const adminSetup = await loadModule(`${Date.now()}-run-setup-plan-repeated-options`);
@@ -2150,12 +2165,12 @@ test('runAdminSetupCli plan mode forwards restore and backup flags', async () =>
   await withMockedAdminSetupEnv(async () => {
     const stdoutChunks = [];
     const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = ((chunk, ...args) => {
+    process.stdout.write = (chunk, ...args) => {
       if (typeof chunk === 'string' && chunk.trimStart().startsWith('{')) {
         stdoutChunks.push(chunk);
       }
       return true;
-    });
+    };
 
     try {
       const adminSetup = await loadModule(`${Date.now()}-run-setup-plan-restore-wallet`);
@@ -2202,20 +2217,16 @@ test('runAdminSetupCli plan mode reuses the current wallet for attach-bootstrap-
 
     const stdoutChunks = [];
     const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = ((chunk, ...args) => {
+    process.stdout.write = (chunk, ...args) => {
       if (typeof chunk === 'string' && chunk.trimStart().startsWith('{')) {
         stdoutChunks.push(chunk);
       }
       return true;
-    });
+    };
 
     try {
       const adminSetup = await loadModule(`${Date.now()}-run-setup-plan-attach-bootstrap-policies`);
-      await adminSetup.runAdminSetupCli([
-        '--plan',
-        '--json',
-        '--attach-bootstrap-policies',
-      ]);
+      await adminSetup.runAdminSetupCli(['--plan', '--json', '--attach-bootstrap-policies']);
     } finally {
       process.stdout.write = originalStdoutWrite;
     }
@@ -2234,14 +2245,14 @@ test('runAdminSetupCli non-json mode renders progress and human summary output',
       const stderrChunks = [];
       const originalStdoutWrite = process.stdout.write.bind(process.stdout);
       const originalStderrWrite = process.stderr.write.bind(process.stderr);
-      process.stdout.write = ((chunk, ...args) => {
+      process.stdout.write = (chunk, ...args) => {
         stdoutChunks.push(String(chunk));
         return originalStdoutWrite(chunk, ...args);
-      });
-      process.stderr.write = ((chunk, ...args) => {
+      };
+      process.stderr.write = (chunk, ...args) => {
         stderrChunks.push(String(chunk));
         return originalStderrWrite(chunk, ...args);
-      });
+      };
 
       try {
         const adminSetup = await loadModule(`${Date.now()}-run-setup-success-non-json`);
@@ -2288,10 +2299,10 @@ test('runAdminSetupCli falls back to a local credential file when secret-tool is
         `${expectedAgentKeyId}.token`,
       );
 
-      process.stdout.write = ((chunk, ...args) => {
+      process.stdout.write = (chunk, ...args) => {
         stdoutChunks.push(String(chunk));
         return originalStdoutWrite(chunk, ...args);
-      });
+      };
       process.env.PATH = `${toolDir}:${path.dirname(process.execPath)}`;
       fs.rmSync(path.join(toolDir, 'secret-tool'), { force: true });
 
@@ -2330,10 +2341,10 @@ test('runAdminSetupCli skips wallet backup prompts by default on fresh setup', a
       const stdoutChunks = [];
       const originalStdoutWrite = process.stdout.write.bind(process.stdout);
       let promptCount = 0;
-      process.stdout.write = ((chunk, ...args) => {
+      process.stdout.write = (chunk, ...args) => {
         stdoutChunks.push(String(chunk));
         return originalStdoutWrite(chunk, ...args);
-      });
+      };
 
       try {
         await withMockedManagedLaunchDaemonMetadata(
@@ -2344,19 +2355,22 @@ test('runAdminSetupCli skips wallet backup prompts by default on fresh setup', a
           },
           async () => {
             const adminSetup = await loadModule(`${Date.now()}-run-setup-skip-default-backup`);
-            await withMockedPrompt((query) => {
-              promptCount += 1;
-              assert.doesNotMatch(query, /wallet backup/iu);
-              return 'vault-secret';
-            }, async () => {
-              await adminSetup.runAdminSetupCli([
-                '--yes',
-                '--daemon-socket',
-                trustedSocket,
-                '--bootstrap-output',
-                path.join(agentpayHome, 'bootstrap-skip-default-backup.json'),
-              ]);
-            });
+            await withMockedPrompt(
+              (query) => {
+                promptCount += 1;
+                assert.doesNotMatch(query, /wallet backup/iu);
+                return 'vault-secret';
+              },
+              async () => {
+                await adminSetup.runAdminSetupCli([
+                  '--yes',
+                  '--daemon-socket',
+                  trustedSocket,
+                  '--bootstrap-output',
+                  path.join(agentpayHome, 'bootstrap-skip-default-backup.json'),
+                ]);
+              },
+            );
           },
         );
       } finally {
@@ -2377,10 +2391,10 @@ test('runAdminSetupCli falls back to plain text progress when stderr is not a tt
     await withMockedAdminSetupEnv(async ({ agentpayHome }) => {
       const stderrChunks = [];
       const originalStderrWrite = process.stderr.write.bind(process.stderr);
-      process.stderr.write = ((chunk, ...args) => {
+      process.stderr.write = (chunk, ...args) => {
         stderrChunks.push(String(chunk));
         return originalStderrWrite(chunk, ...args);
-      });
+      };
 
       try {
         await withMockedManagedLaunchDaemonMetadata(
@@ -2421,10 +2435,10 @@ test('runAdminSetupCli warns when bootstrap cleanup cannot scrub a failed explic
 
       const stderrChunks = [];
       const originalStderrWrite = process.stderr.write.bind(process.stderr);
-      process.stderr.write = ((chunk, ...args) => {
+      process.stderr.write = (chunk, ...args) => {
         stderrChunks.push(String(chunk));
         return originalStderrWrite(chunk, ...args);
-      });
+      };
 
       try {
         const adminSetup = await loadModule(`${Date.now()}-run-setup-bootstrap-cleanup-warning`);
@@ -2468,10 +2482,10 @@ test('runAdminSetupCli warns when temporary wallet import key cleanup fails afte
       const stderrChunks = [];
       const originalStderrWrite = process.stderr.write.bind(process.stderr);
       const originalRmSync = fs.rmSync;
-      process.stderr.write = ((chunk, ...args) => {
+      process.stderr.write = (chunk, ...args) => {
         stderrChunks.push(String(chunk));
         return originalStderrWrite(chunk, ...args);
-      });
+      };
       fs.rmSync = (targetPath, ...args) => {
         if (path.basename(path.resolve(String(targetPath))).startsWith('wallet-import-key-')) {
           throw new Error('delete failed');
@@ -2481,27 +2495,30 @@ test('runAdminSetupCli warns when temporary wallet import key cleanup fails afte
 
       try {
         const adminSetup = await loadModule(
-          `${Date.now()}-run-setup-restore-import-key-cleanup-warning`
+          `${Date.now()}-run-setup-restore-import-key-cleanup-warning`,
         );
         let promptCount = 0;
-        await withMockedPrompt(() => {
-          promptCount += 1;
-          if (promptCount <= 2) {
-            return 'vault-secret';
-          }
-          return 'backup-secret';
-        }, async () => {
-          await adminSetup.runAdminSetupCli([
-            '--yes',
-            '--daemon-socket',
-            trustedSocket,
-            '--restore-wallet-from',
-            backupPath,
-            '--bootstrap-output',
-            path.join(agentpayHome, 'bootstrap-restore-cleanup-warning.json'),
-            '--json',
-          ]);
-        });
+        await withMockedPrompt(
+          () => {
+            promptCount += 1;
+            if (promptCount <= 2) {
+              return 'vault-secret';
+            }
+            return 'backup-secret';
+          },
+          async () => {
+            await adminSetup.runAdminSetupCli([
+              '--yes',
+              '--daemon-socket',
+              trustedSocket,
+              '--restore-wallet-from',
+              backupPath,
+              '--bootstrap-output',
+              path.join(agentpayHome, 'bootstrap-restore-cleanup-warning.json'),
+              '--json',
+            ]);
+          },
+        );
       } finally {
         process.stderr.write = originalStderrWrite;
         fs.rmSync = originalRmSync;
@@ -2521,10 +2538,10 @@ test('runAdminTuiCli reports canceled json output when passthrough exits cleanly
       process.env.AGENTPAY_MOCK_SKIP_TUI_OUTPUT = '1';
       const stdoutChunks = [];
       const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-      process.stdout.write = ((chunk, ...args) => {
+      process.stdout.write = (chunk, ...args) => {
         stdoutChunks.push(String(chunk));
         return originalStdoutWrite(chunk, ...args);
-      });
+      };
 
       try {
         const adminSetup = await loadModule(`${Date.now()}-run-tui-canceled`);
@@ -2589,10 +2606,10 @@ test('runAdminSetupCli completes setup with mocked rust binaries and keychain', 
       const bootstrapPath = path.join(agentpayHome, 'bootstrap-explicit.json');
       const stdoutChunks = [];
       const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-      process.stdout.write = ((chunk, ...args) => {
+      process.stdout.write = (chunk, ...args) => {
         stdoutChunks.push(String(chunk));
         return originalStdoutWrite(chunk, ...args);
-      });
+      };
 
       try {
         const adminSetup = await loadModule(`${Date.now()}-run-setup-success`);
@@ -2610,7 +2627,9 @@ test('runAdminSetupCli completes setup with mocked rust binaries and keychain', 
         process.stdout.write = originalStdoutWrite;
       }
 
-      const updatedConfig = JSON.parse(fs.readFileSync(path.join(agentpayHome, 'config.json'), 'utf8'));
+      const updatedConfig = JSON.parse(
+        fs.readFileSync(path.join(agentpayHome, 'config.json'), 'utf8'),
+      );
       assert.equal(updatedConfig.agentKeyId, '00000000-0000-0000-0000-000000000001');
       assert.equal(updatedConfig.daemonSocket, trustedSocket);
       assert.equal(updatedConfig.chainId, 56);
@@ -2632,10 +2651,10 @@ test('runAdminSetupCli returns non-zero exitCode when bootstrap command fails', 
       const bootstrapPath = path.join(agentpayHome, 'bootstrap-explicit.json');
       const stderrChunks = [];
       const originalStderrWrite = process.stderr.write.bind(process.stderr);
-      process.stderr.write = ((chunk, ...args) => {
+      process.stderr.write = (chunk, ...args) => {
         stderrChunks.push(String(chunk));
         return originalStderrWrite(chunk, ...args);
-      });
+      };
 
       try {
         const adminSetup = await loadModule(`${Date.now()}-run-setup-bootstrap-fail`);
@@ -2667,16 +2686,16 @@ test('runAdminTuiCli imports bootstrap output and reports cancellation when pass
       await withMockedPrompt('vault-secret', async () => {
         await adminSetup.runAdminTuiCli([
           '--daemon-socket',
-        trustedSocket,
-        '--bootstrap-output',
-        bootstrapPath,
-        '--json',
-      ]);
-    });
-    assert.equal(process.exitCode, undefined);
+          trustedSocket,
+          '--bootstrap-output',
+          bootstrapPath,
+          '--json',
+        ]);
+      });
+      assert.equal(process.exitCode, undefined);
 
-    process.env.AGENTPAY_MOCK_TUI_EXIT = '7';
-    const failingBootstrap = path.join(agentpayHome, 'bootstrap-tui-fail.json');
+      process.env.AGENTPAY_MOCK_TUI_EXIT = '7';
+      const failingBootstrap = path.join(agentpayHome, 'bootstrap-tui-fail.json');
       await withMockedPrompt('vault-secret', async () => {
         await adminSetup.runAdminTuiCli([
           '--daemon-socket',
@@ -2738,7 +2757,7 @@ test('runAdminSetupCli fails closed before reinstall when daemon password does n
         [
           "const fs = require('node:fs');",
           'const args = process.argv.slice(2);',
-          "const marker = process.env.AGENTPAY_MOCK_INSTALL_MARKER;",
+          'const marker = process.env.AGENTPAY_MOCK_INSTALL_MARKER;',
           "if (args[0] === '-S' && args[3] === '-v') {",
           '  process.stdin.resume();',
           "  process.stdin.on('end', () => process.exit(0));",
@@ -2766,10 +2785,10 @@ test('runAdminSetupCli fails closed before reinstall when daemon password does n
         const adminSetup = await loadModule(`${Date.now()}-run-setup-password-mismatch`);
         let renderedStderr = '';
         const originalStderrWrite = process.stderr.write.bind(process.stderr);
-        process.stderr.write = ((chunk, ...args) => {
+        process.stderr.write = (chunk, ...args) => {
           renderedStderr += String(chunk);
           return originalStderrWrite(chunk, ...args);
-        });
+        };
         await withMockedPrompt('vault-secret', async () => {
           try {
             await assert.rejects(
@@ -2790,7 +2809,9 @@ test('runAdminSetupCli fails closed before reinstall when daemon password does n
         const promptIndex = renderedStderr.indexOf(
           'System admin password for sudo (input hidden; required to install or recover the root-managed daemon): ',
         );
-        const inspectIndex = renderedStderr.indexOf('Inspecting managed daemon state before install');
+        const inspectIndex = renderedStderr.indexOf(
+          'Inspecting managed daemon state before install',
+        );
         assert.notEqual(promptIndex, -1);
         assert.notEqual(inspectIndex, -1);
         assert.ok(
@@ -2827,7 +2848,10 @@ test('runAdminSetupCli fails closed when a recovered daemon still has existing m
       );
 
       process.env.AGENTPAY_MOCK_RELAY_SEQUENCE = '0,9';
-      process.env.AGENTPAY_MOCK_RELAY_COUNTER = path.join(agentpayHome, 'relay-call-count-existing-state.txt');
+      process.env.AGENTPAY_MOCK_RELAY_COUNTER = path.join(
+        agentpayHome,
+        'relay-call-count-existing-state.txt',
+      );
 
       const adminSetup = await loadModule(`${Date.now()}-run-setup-state-probe-existing-state`);
       await withMockedPrompt('vault-secret', async () => {
@@ -2869,7 +2893,10 @@ test('runAdminSetupCli surfaces managed-state probe errors after daemon password
       );
 
       process.env.AGENTPAY_MOCK_RELAY_SEQUENCE = '0,9';
-      process.env.AGENTPAY_MOCK_RELAY_COUNTER = path.join(agentpayHome, 'relay-call-count-state-probe-fail.txt');
+      process.env.AGENTPAY_MOCK_RELAY_COUNTER = path.join(
+        agentpayHome,
+        'relay-call-count-state-probe-fail.txt',
+      );
 
       const adminSetup = await loadModule(`${Date.now()}-run-setup-state-probe-fail`);
       await withMockedPrompt('vault-secret', async () => {
@@ -2977,7 +3004,11 @@ test('runAdminSetupCli preserves managed-state mismatch errors when probe temp c
 
       const originalRmSync = fs.rmSync;
       fs.rmSync = (targetPath, ...args) => {
-        if (path.basename(path.resolve(String(targetPath))).startsWith('agentpay-managed-state-probe-')) {
+        if (
+          path
+            .basename(path.resolve(String(targetPath)))
+            .startsWith('agentpay-managed-state-probe-')
+        ) {
           throw new Error('probe cleanup failed');
         }
         return originalRmSync.call(fs, targetPath, ...args);
@@ -3010,19 +3041,16 @@ test('resolveAdminSetupVaultPassword reads hidden prompt input through the defau
 
   let rendered = '';
   const originalStderrWrite = process.stderr.write.bind(process.stderr);
-  process.stderr.write = ((chunk, ...args) => {
+  process.stderr.write = (chunk, ...args) => {
     rendered += String(chunk);
     return originalStderrWrite(chunk, ...args);
-  });
+  };
 
   try {
-    await withMockedPrompt(
-      'vault-secret',
-      async () => {
-        const password = await adminSetup.resolveAdminSetupVaultPassword({});
-        assert.equal(password, 'vault-secret');
-      },
-    );
+    await withMockedPrompt('vault-secret', async () => {
+      const password = await adminSetup.resolveAdminSetupVaultPassword({});
+      assert.equal(password, 'vault-secret');
+    });
   } finally {
     process.stderr.write = originalStderrWrite;
   }
@@ -3037,25 +3065,28 @@ test('resolveAdminSetupVaultPassword rejects mismatched confirmation input', asy
   const adminSetup = await loadModule(`${Date.now()}-resolve-hidden-prompt-mismatch`);
   let promptCount = 0;
 
-  await withMockedPrompt(() => {
-    promptCount += 1;
-    return promptCount === 1 ? 'vault-secret' : 'vault-secret-typo';
-  }, async () => {
-    await assert.rejects(
-      () => adminSetup.resolveAdminSetupVaultPassword({}),
-      /vault passwords did not match/u,
-    );
-  });
+  await withMockedPrompt(
+    () => {
+      promptCount += 1;
+      return promptCount === 1 ? 'vault-secret' : 'vault-secret-typo';
+    },
+    async () => {
+      await assert.rejects(
+        () => adminSetup.resolveAdminSetupVaultPassword({}),
+        /vault passwords did not match/u,
+      );
+    },
+  );
 });
 
 test('runAdminSetupCli plan mode prints text output when --json is omitted', async () => {
   await withMockedAdminSetupEnv(async () => {
     const stdoutChunks = [];
     const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = ((chunk, ...args) => {
+    process.stdout.write = (chunk, ...args) => {
       stdoutChunks.push(String(chunk));
       return originalStdoutWrite(chunk, ...args);
-    });
+    };
 
     try {
       const adminSetup = await loadModule(`${Date.now()}-run-setup-plan-text`);
@@ -3074,7 +3105,10 @@ test('runAdminSetupCli reuses the current launchd install when the daemon respon
   await withTrustedRootDaemonSocket(async (trustedSocket) => {
     await withMockedAdminSetupEnv(async ({ agentpayHome }) => {
       process.env.AGENTPAY_MOCK_RELAY_SEQUENCE = '9,0';
-      process.env.AGENTPAY_MOCK_RELAY_COUNTER = path.join(agentpayHome, 'relay-current-install-counter.txt');
+      process.env.AGENTPAY_MOCK_RELAY_COUNTER = path.join(
+        agentpayHome,
+        'relay-current-install-counter.txt',
+      );
 
       await withMockedManagedLaunchDaemonMetadata(
         {
@@ -3093,7 +3127,9 @@ test('runAdminSetupCli reuses the current launchd install when the daemon respon
   });
 });
 
-test('runAdminSetupCli refreshes stale launchd binaries even when the existing daemon accepts the password', { skip: process.platform !== 'darwin' }, async () => {
+test('runAdminSetupCli refreshes stale launchd binaries even when the existing daemon accepts the password', {
+  skip: process.platform !== 'darwin',
+}, async () => {
   await withTrustedRootDaemonSocket(async (trustedSocket) => {
     await withMockedAdminSetupEnv(async ({ agentpayHome, toolDir }) => {
       const installMarkerPath = path.join(agentpayHome, 'install-marker-stale-running-daemon.txt');
@@ -3103,7 +3139,7 @@ test('runAdminSetupCli refreshes stale launchd binaries even when the existing d
         [
           "const fs = require('node:fs');",
           'const args = process.argv.slice(2);',
-          "const marker = process.env.AGENTPAY_MOCK_INSTALL_MARKER;",
+          'const marker = process.env.AGENTPAY_MOCK_INSTALL_MARKER;',
           "if (args[0] === '-S' && args[3] === '-v') {",
           '  process.stdin.resume();',
           "  process.stdin.on('end', () => process.exit(0));",
@@ -3155,7 +3191,7 @@ test('runAdminSetupCli reinstalls when launchd metadata looks current but no man
         [
           "const fs = require('node:fs');",
           'const args = process.argv.slice(2);',
-          "const marker = process.env.AGENTPAY_MOCK_INSTALL_MARKER;",
+          'const marker = process.env.AGENTPAY_MOCK_INSTALL_MARKER;',
           "if (args[0] === '-S' && args[3] === '-v') {",
           '  process.stdin.resume();',
           "  process.stdin.on('end', () => process.exit(0));",
@@ -3183,7 +3219,9 @@ test('runAdminSetupCli reinstalls when launchd metadata looks current but no man
           },
           async () => {
             await withInstallMarkerConnectionGate(installMarkerPath, async () => {
-              const adminSetup = await loadModule(`${Date.now()}-run-setup-current-install-recover`);
+              const adminSetup = await loadModule(
+                `${Date.now()}-run-setup-current-install-recover`,
+              );
               await withMockedPrompt('vault-secret', async () => {
                 await adminSetup.runAdminSetupCli(['--daemon-socket', trustedSocket]);
               });
@@ -3209,7 +3247,7 @@ test('runAdminSetupCli forwards AGENTPAY_RELAY_DAEMON_TOKEN into the root instal
         [
           "const fs = require('node:fs');",
           'const args = process.argv.slice(2);',
-          "const installMarker = process.env.AGENTPAY_MOCK_INSTALL_MARKER;",
+          'const installMarker = process.env.AGENTPAY_MOCK_INSTALL_MARKER;',
           `const relayTokenMarker = ${JSON.stringify(relayTokenMarkerPath)};`,
           "if (args[0] === '-S' && args[3] === '-v') {",
           '  process.stdin.resume();',
@@ -3272,7 +3310,7 @@ test('runAdminSetupCli recovers when launchd metadata looks current and the requ
         [
           "const fs = require('node:fs');",
           'const args = process.argv.slice(2);',
-          "const marker = process.env.AGENTPAY_MOCK_INSTALL_MARKER;",
+          'const marker = process.env.AGENTPAY_MOCK_INSTALL_MARKER;',
           "if (args[0] === '-S' && args[3] === '-v') {",
           '  process.stdin.resume();',
           "  process.stdin.on('end', () => process.exit(0));",
@@ -3300,7 +3338,9 @@ test('runAdminSetupCli recovers when launchd metadata looks current and the requ
           },
           async () => {
             await withInstallMarkerConnectionGate(installMarkerPath, async () => {
-              const adminSetup = await loadModule(`${Date.now()}-run-setup-current-install-existing-state`);
+              const adminSetup = await loadModule(
+                `${Date.now()}-run-setup-current-install-existing-state`,
+              );
               await withMockedPrompt('vault-secret', async () => {
                 await adminSetup.runAdminSetupCli(['--daemon-socket', trustedSocket]);
               });
@@ -3453,13 +3493,15 @@ test('runAdminSetupCli inspects managed state and reinstalls daemon when passwor
 
       const stderrChunks = [];
       const originalStderrWrite = process.stderr.write.bind(process.stderr);
-      process.stderr.write = ((chunk, ...args) => {
+      process.stderr.write = (chunk, ...args) => {
         stderrChunks.push(String(chunk));
         return originalStderrWrite(chunk, ...args);
-      });
+      };
 
       try {
-        const adminSetup = await loadModule(`${Date.now()}-run-setup-password-drift-reinstall-success`);
+        const adminSetup = await loadModule(
+          `${Date.now()}-run-setup-password-drift-reinstall-success`,
+        );
         await withMockedPrompt('vault-secret', async () => {
           await adminSetup.runAdminSetupCli([
             '--yes',
@@ -3577,10 +3619,10 @@ test('runAdminTuiCli warns when cleanup fails after a non-zero passthrough exit'
       const bootstrapPath = path.join(agentpayHome, 'bootstrap-tui-cleanup-warning.json');
       const stderrChunks = [];
       const originalStderrWrite = process.stderr.write.bind(process.stderr);
-      process.stderr.write = ((chunk, ...args) => {
+      process.stderr.write = (chunk, ...args) => {
         stderrChunks.push(String(chunk));
         return originalStderrWrite(chunk, ...args);
-      });
+      };
 
       try {
         const adminSetup = await loadModule(`${Date.now()}-run-tui-cleanup-warning`);

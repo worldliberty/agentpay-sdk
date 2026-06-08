@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import * as MppxTempo from 'mppx/tempo';
-import { createPublicClient, http as viemHttp, keccak256, parseSignature } from 'viem';
+import { createPublicClient, keccak256, parseSignature, http as viemHttp } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { tempo as tempoChain } from 'viem/chains';
 import { Actions as TempoActions, Transaction as TempoTransaction } from 'viem/tempo';
@@ -965,8 +965,7 @@ test('agentpay mpp opens and closes a one-shot Tempo session request', async () 
   const socketPath = path.join(agentpayHome, 'daemon.sock');
   fs.mkdirSync(rustBinDir, { recursive: true, mode: 0o700 });
 
-  const accountPrivateKey =
-    '0x59c6995e998f97a5a0044966f094538f5f4e0e46f95cebf7f5f88f5f2b5b9f10';
+  const accountPrivateKey = '0x59c6995e998f97a5a0044966f094538f5f4e0e46f95cebf7f5f88f5f2b5b9f10';
   const account = privateKeyToAccount(accountPrivateKey);
   const walletAddress = account.address;
   const expectedRequestBody = JSON.stringify({ prompt: 'session' });
@@ -989,7 +988,7 @@ test('agentpay mpp opens and closes a one-shot Tempo session request', async () 
     writeExecutable(
       path.join(rustBinDir, 'agentpay-agent'),
       [
-        "exec node --input-type=module - \"$@\" <<'EOF'",
+        'exec node --input-type=module - "$@" <<\'EOF\'',
         "import { parseSignature } from 'viem';",
         "import { privateKeyToAccount } from 'viem/accounts';",
         `const account = privateKeyToAccount(${JSON.stringify(accountPrivateKey)});`,

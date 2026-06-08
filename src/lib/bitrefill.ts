@@ -4,15 +4,15 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { createCuimpHttp } from 'cuimp';
 import { chromium } from 'playwright-core';
-import { type Address, isAddress, type Hex } from 'viem';
+import { type Address, type Hex, isAddress } from 'viem';
 import { assertSafeRpcUrl, ensureAgentPayHome } from '../../packages/config/src/index.js';
+import { encodeErc20TransferData } from './asset-broadcast.js';
 import {
   formatConfiguredAmount,
   normalizePositiveDecimalInput,
   parseConfiguredAmount,
   type ResolvedAssetMetadata,
 } from './config-amounts.js';
-import { encodeErc20TransferData } from './asset-broadcast.js';
 
 const DEFAULT_BITREFILL_BASE_URL = 'https://www.bitrefill.com';
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -726,13 +726,17 @@ function normalizeRange(value: unknown): BitrefillAmountRange | null {
   };
 }
 
-function normalizeProductSummary(candidate: Record<string, unknown>): BitrefillProductSummary | null {
+function normalizeProductSummary(
+  candidate: Record<string, unknown>,
+): BitrefillProductSummary | null {
   const slug = normalizeSlug(candidate.slug ?? candidate.url ?? candidate.path ?? candidate.href);
   const name = normalizeStringValue(candidate.name ?? candidate.title ?? candidate.label);
   if (!slug || !name) {
     return null;
   }
-  const packages = normalizePackages(candidate.packages ?? candidate.denominations ?? candidate.options);
+  const packages = normalizePackages(
+    candidate.packages ?? candidate.denominations ?? candidate.options,
+  );
   const range = normalizeRange(candidate.range ?? candidate.valueRange ?? candidate.customAmount);
   return {
     slug,
@@ -791,19 +795,21 @@ function normalizePaymentQuoteEntry(
     assetSymbol: methodConfig?.asset.symbol ?? null,
     tokenAddress: methodConfig?.tokenAddress ?? null,
     amount: normalizeStringValue(
-      candidate.amount
-      ?? candidate.altcoinPrice
-      ?? candidate.total
-      ?? candidate.price
-      ?? candidate.payment_amount,
+      candidate.amount ??
+        candidate.altcoinPrice ??
+        candidate.total ??
+        candidate.price ??
+        candidate.payment_amount,
     ),
     amountBaseUnits: normalizeStringValue(
-      candidate.amountBaseUnits
-      ?? candidate.altBasePrice
-      ?? candidate.base_amount
-      ?? candidate.raw_amount,
+      candidate.amountBaseUnits ??
+        candidate.altBasePrice ??
+        candidate.base_amount ??
+        candidate.raw_amount,
     ),
-    fiatAmount: normalizeStringValue(candidate.fiatAmount ?? candidate.fiat_amount ?? candidate.usd),
+    fiatAmount: normalizeStringValue(
+      candidate.fiatAmount ?? candidate.fiat_amount ?? candidate.usd,
+    ),
     raw: payload,
   };
 }
@@ -829,9 +835,9 @@ export function normalizeBitrefillCart(payload: unknown): BitrefillCart {
       }
       return {
         operatorSlug: normalizeStringValue(
-          entry.operator_slug
-          ?? entry.operatorSlug
-          ?? (isPlainObject(entry.operator) ? entry.operator._id : undefined),
+          entry.operator_slug ??
+            entry.operatorSlug ??
+            (isPlainObject(entry.operator) ? entry.operator._id : undefined),
         ),
         valuePackage: normalizeStringValue(
           entry.valuePackage ?? entry.value_package ?? entry.value ?? entry.amount,
@@ -890,11 +896,11 @@ function normalizeOrderSummary(value: unknown): BitrefillOrderSummary | null {
 
 function extractAccessToken(payload: Record<string, unknown>): string | null {
   return normalizeStringValue(
-    payload.accessToken
-    ?? payload.access_token
-    ?? payload.invoiceAccessToken
-    ?? payload.invoice_access_token
-    ?? payload.token,
+    payload.accessToken ??
+      payload.access_token ??
+      payload.invoiceAccessToken ??
+      payload.invoice_access_token ??
+      payload.token,
   );
 }
 
@@ -931,8 +937,8 @@ export function normalizeBitrefillInvoice(
     paymentReceived: normalizeStringValue(payload.paymentReceived ?? payload.payment_received),
     orders: Array.isArray(payload.orders)
       ? payload.orders
-        .map((entry) => normalizeOrderSummary(entry))
-        .filter((entry): entry is BitrefillOrderSummary => Boolean(entry))
+          .map((entry) => normalizeOrderSummary(entry))
+          .filter((entry): entry is BitrefillOrderSummary => Boolean(entry))
       : [],
     payment: {
       address: normalizeStringValue(payment.address ?? payment.paymentAddress),
@@ -1075,35 +1081,57 @@ function resolveBitrefillBrowserExecutablePath(): string {
   const explicitPath = process.env.AGENTPAY_BITREFILL_BROWSER_EXECUTABLE_PATH?.trim();
   const candidates = explicitPath
     ? [explicitPath]
-    : (
-        process.platform === 'darwin'
-          ? [
-              '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-              '/Applications/Chromium.app/Contents/MacOS/Chromium',
-              '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
-              '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
-            ]
-          : process.platform === 'win32'
-            ? [
-                ...(process.env.PROGRAMFILES
-                  ? [path.join(process.env.PROGRAMFILES, 'Google', 'Chrome', 'Application', 'chrome.exe')]
-                  : []),
-                ...(process.env['PROGRAMFILES(X86)']
-                  ? [path.join(process.env['PROGRAMFILES(X86)'], 'Google', 'Chrome', 'Application', 'chrome.exe')]
-                  : []),
-                ...(process.env.LOCALAPPDATA
-                  ? [path.join(process.env.LOCALAPPDATA, 'Google', 'Chrome', 'Application', 'chrome.exe')]
-                  : []),
-              ]
-            : [
-                '/usr/bin/google-chrome',
-                '/usr/bin/google-chrome-stable',
-                '/usr/bin/chromium-browser',
-                '/usr/bin/chromium',
-                '/usr/bin/brave-browser',
-                '/usr/bin/microsoft-edge',
-              ]
-      );
+    : process.platform === 'darwin'
+      ? [
+          '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+          '/Applications/Chromium.app/Contents/MacOS/Chromium',
+          '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+          '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+        ]
+      : process.platform === 'win32'
+        ? [
+            ...(process.env.PROGRAMFILES
+              ? [
+                  path.join(
+                    process.env.PROGRAMFILES,
+                    'Google',
+                    'Chrome',
+                    'Application',
+                    'chrome.exe',
+                  ),
+                ]
+              : []),
+            ...(process.env['PROGRAMFILES(X86)']
+              ? [
+                  path.join(
+                    process.env['PROGRAMFILES(X86)'],
+                    'Google',
+                    'Chrome',
+                    'Application',
+                    'chrome.exe',
+                  ),
+                ]
+              : []),
+            ...(process.env.LOCALAPPDATA
+              ? [
+                  path.join(
+                    process.env.LOCALAPPDATA,
+                    'Google',
+                    'Chrome',
+                    'Application',
+                    'chrome.exe',
+                  ),
+                ]
+              : []),
+          ]
+        : [
+            '/usr/bin/google-chrome',
+            '/usr/bin/google-chrome-stable',
+            '/usr/bin/chromium-browser',
+            '/usr/bin/chromium',
+            '/usr/bin/brave-browser',
+            '/usr/bin/microsoft-edge',
+          ];
 
   for (const candidate of candidates) {
     if (candidate && fs.existsSync(candidate)) {
@@ -1169,14 +1197,16 @@ export function readBitrefillCookiesFromCookieJar(cookieJarPath: string): Bitref
       }
       const [domain, _includeSubdomains, rawPath, rawSecure, rawExpires, name, value] = fields;
       const expires = Number(rawExpires);
-      return [{
-        domain,
-        path: rawPath || '/',
-        secure: rawSecure.toUpperCase() === 'TRUE',
-        expires: Number.isFinite(expires) ? expires : 0,
-        name,
-        value,
-      } satisfies BitrefillBrowserCookie];
+      return [
+        {
+          domain,
+          path: rawPath || '/',
+          secure: rawSecure.toUpperCase() === 'TRUE',
+          expires: Number.isFinite(expires) ? expires : 0,
+          name,
+          value,
+        } satisfies BitrefillBrowserCookie,
+      ];
     });
 }
 
@@ -1188,9 +1218,8 @@ async function bootstrapBitrefillBrowserSession(input: {
   const bootstrapUrl = new URL('/', input.baseUrl).toString();
   const headless = process.env.AGENTPAY_BITREFILL_BOOTSTRAP_HEADLESS === '1';
   const timeoutMs = Number(process.env.AGENTPAY_BITREFILL_BOOTSTRAP_TIMEOUT_MS ?? '');
-  const resolvedTimeoutMs = Number.isFinite(timeoutMs) && timeoutMs > 0
-    ? timeoutMs
-    : DEFAULT_BOOTSTRAP_TIMEOUT_MS;
+  const resolvedTimeoutMs =
+    Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_BOOTSTRAP_TIMEOUT_MS;
 
   console.error(`Bootstrapping Bitrefill browser session via ${executablePath}`);
   if (!headless) {
@@ -1297,13 +1326,16 @@ function isChallengePayload(payload: unknown): boolean {
     return false;
   }
   const joined = JSON.stringify(payload).toLowerCase();
-  return joined.includes('invoice_creation_challenge') || joined.includes('captcha') || joined.includes('challenge');
+  return (
+    joined.includes('invoice_creation_challenge') ||
+    joined.includes('captcha') ||
+    joined.includes('challenge')
+  );
 }
 
-export function createCuimpBitrefillTransport(input: {
-  baseUrl?: string;
-  cookieJarPath?: string;
-} = {}): BitrefillHttpTransport {
+export function createCuimpBitrefillTransport(
+  input: { baseUrl?: string; cookieJarPath?: string } = {},
+): BitrefillHttpTransport {
   const client = createCuimpHttp({
     descriptor: { browser: 'chrome' },
     cookieJar: input.cookieJarPath ?? resolveBitrefillCookieJarPath(),
@@ -1355,9 +1387,9 @@ export function createCuimpBitrefillTransport(input: {
   };
 }
 
-export function createFetchBitrefillTransport(input: {
-  baseUrl?: string;
-} = {}): BitrefillHttpTransport {
+export function createFetchBitrefillTransport(
+  input: { baseUrl?: string } = {},
+): BitrefillHttpTransport {
   const baseUrl = resolveBitrefillBaseUrl(input.baseUrl);
   return {
     async request<T>(request: BitrefillHttpRequest): Promise<BitrefillHttpResponse<T>> {
@@ -1385,9 +1417,7 @@ export function createFetchBitrefillTransport(input: {
       });
       const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
       const rawBody = await response.text();
-      const data = contentType.includes('application/json')
-        ? JSON.parse(rawBody)
-        : rawBody;
+      const data = contentType.includes('application/json') ? JSON.parse(rawBody) : rawBody;
       const headers: Record<string, string> = {};
       response.headers.forEach((value, key) => {
         headers[key] = value;
@@ -1427,10 +1457,7 @@ function createDefaultTransport(): BitrefillHttpTransport {
   });
 }
 
-function assertSuccessfulResponse(
-  response: BitrefillHttpResponse<unknown>,
-  label: string,
-): void {
+function assertSuccessfulResponse(response: BitrefillHttpResponse<unknown>, label: string): void {
   if (response.status >= 200 && response.status < 300) {
     return;
   }
@@ -1468,8 +1495,8 @@ export function validateBitrefillProductAmount(
   const normalizedAmount = normalizeDecimalDisplay(amount);
   if (product.range) {
     if (
-      compareDecimalStrings(normalizedAmount, product.range.min) < 0
-      || compareDecimalStrings(normalizedAmount, product.range.max) > 0
+      compareDecimalStrings(normalizedAmount, product.range.min) < 0 ||
+      compareDecimalStrings(normalizedAmount, product.range.max) > 0
     ) {
       throw new Error(
         `amount ${normalizedAmount} is outside the allowed range ${product.range.min}..${product.range.max}`,
@@ -1506,9 +1533,10 @@ function buildInvoiceCartItemsFromCart(cart: BitrefillCart): Array<Record<string
     operator_slug:
       normalizeStringValue(entry.raw.operator_slug ?? entry.raw.operatorSlug) ?? entry.operatorSlug,
     valuePackage:
-      normalizeStringValue(entry.raw.valuePackage ?? entry.raw.value_package ?? entry.raw.value)
-      ?? entry.valuePackage,
-    count: normalizeIntegerValue(entry.raw.count ?? entry.raw.qty ?? entry.raw.quantity) ?? entry.count,
+      normalizeStringValue(entry.raw.valuePackage ?? entry.raw.value_package ?? entry.raw.value) ??
+      entry.valuePackage,
+    count:
+      normalizeIntegerValue(entry.raw.count ?? entry.raw.qty ?? entry.raw.quantity) ?? entry.count,
     isGift: normalizeBooleanValue(entry.raw.isGift ?? entry.raw.is_gift) || entry.isGift,
     operator: undefined,
   }));
@@ -1523,7 +1551,8 @@ export class BitrefillClient {
   constructor(transport: BitrefillHttpTransport = createDefaultTransport()) {
     this.transport = transport;
     this.baseUrl = resolveBitrefillBaseUrl(process.env.AGENTPAY_BITREFILL_BASE_URL);
-    this.cookieJarPath = process.env.AGENTPAY_BITREFILL_COOKIE_JAR_PATH ?? resolveBitrefillCookieJarPath();
+    this.cookieJarPath =
+      process.env.AGENTPAY_BITREFILL_COOKIE_JAR_PATH ?? resolveBitrefillCookieJarPath();
   }
 
   destroy(): void {
@@ -1792,7 +1821,9 @@ export function createBitrefillClient(transport?: BitrefillHttpTransport): Bitre
   return new BitrefillClient(transport);
 }
 
-export function listSupportedBitrefillPaymentQuotes(cart: BitrefillCart): BitrefillPaymentMethodQuote[] {
+export function listSupportedBitrefillPaymentQuotes(
+  cart: BitrefillCart,
+): BitrefillPaymentMethodQuote[] {
   return [...cart.paymentMethodQuotes]
     .filter((entry) => entry.supported)
     .sort((left, right) => compareBitrefillMethodPriority(left.method, right.method));
@@ -1806,7 +1837,11 @@ export function resolveBitrefillPaymentQuote(
   const quote = cart.paymentMethodQuotes.find((entry) => entry.method === normalizedMethod);
   if (!quote) {
     throw new Error(
-      `payment method '${normalizedMethod}' is not available for this cart; available EVM methods: ${listSupportedBitrefillPaymentQuotes(cart).map((entry) => entry.method).join(', ') || 'none'}`,
+      `payment method '${normalizedMethod}' is not available for this cart; available EVM methods: ${
+        listSupportedBitrefillPaymentQuotes(cart)
+          .map((entry) => entry.method)
+          .join(', ') || 'none'
+      }`,
     );
   }
   return quote;
@@ -1832,7 +1867,9 @@ function parseAmountBaseUnits(invoice: BitrefillInvoice, config: BitrefillMethod
   return parseConfiguredAmount(altcoinPrice, config.asset.decimals, 'invoice payment amount');
 }
 
-export function resolveBitrefillInvoicePayment(invoice: BitrefillInvoice): ResolvedBitrefillInvoicePayment {
+export function resolveBitrefillInvoicePayment(
+  invoice: BitrefillInvoice,
+): ResolvedBitrefillInvoicePayment {
   const paymentMethod = invoice.paymentMethod
     ? assertSupportedBitrefillPaymentMethod(invoice.paymentMethod)
     : null;
@@ -1871,7 +1908,10 @@ export function resolveBitrefillInvoicePayment(invoice: BitrefillInvoice): Resol
     throw new Error(`Bitrefill invoice '${invoice.id}' did not include token contract address`);
   }
   const tokenAddress = normalizeEvmAddress(contractAddress, 'Bitrefill invoice token contract');
-  if (methodConfig.tokenAddress && tokenAddress.toLowerCase() !== methodConfig.tokenAddress.toLowerCase()) {
+  if (
+    methodConfig.tokenAddress &&
+    tokenAddress.toLowerCase() !== methodConfig.tokenAddress.toLowerCase()
+  ) {
     throw new Error(
       `Bitrefill invoice '${invoice.id}' contract mismatch for ${methodConfig.method}: expected ${methodConfig.tokenAddress}, got ${tokenAddress}`,
     );

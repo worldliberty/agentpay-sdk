@@ -439,10 +439,7 @@ function parseChallenge(value: unknown): MppChallenge {
 
   const challenge = value as Record<string, unknown>;
   return {
-    id: requireHeaderField(
-      typeof challenge.id === 'string' ? challenge.id : undefined,
-      'id',
-    ),
+    id: requireHeaderField(typeof challenge.id === 'string' ? challenge.id : undefined, 'id'),
     realm: requireHeaderField(
       typeof challenge.realm === 'string' ? challenge.realm : undefined,
       'realm',
@@ -456,14 +453,11 @@ function parseChallenge(value: unknown): MppChallenge {
       'intent',
     ),
     request: parseChallengeRequest(challenge.request),
-    description:
-      typeof challenge.description === 'string' ? challenge.description : undefined,
+    description: typeof challenge.description === 'string' ? challenge.description : undefined,
     digest: typeof challenge.digest === 'string' ? challenge.digest : undefined,
     expires: typeof challenge.expires === 'string' ? challenge.expires : undefined,
     opaque:
-      challenge.opaque !== undefined
-        ? assertStringRecord(challenge.opaque, 'opaque')
-        : undefined,
+      challenge.opaque !== undefined ? assertStringRecord(challenge.opaque, 'opaque') : undefined,
   };
 }
 

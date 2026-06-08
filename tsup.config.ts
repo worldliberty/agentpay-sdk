@@ -16,6 +16,7 @@ if (!globalThis.__agentpaySuppressBigintBufferWarningInstalled) {
 export default defineConfig({
   entry: {
     cli: 'src/cli.ts',
+    link: 'src/lib/link.ts',
   },
   format: ['cjs'],
   platform: 'node',

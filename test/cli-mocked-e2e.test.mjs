@@ -758,7 +758,12 @@ test('Solana broadcast reuses stdin agent auth for managed nonce creation and tr
   const socketPath = path.join(agentpayHome, 'daemon.sock');
   const socketServer = await startUnixSocket(socketPath);
   const feePayer = Keypair.generate().publicKey;
-  const { server: rpcServer, rpcUrl, signature, calls } = await startMockSolanaRpcServer({
+  const {
+    server: rpcServer,
+    rpcUrl,
+    signature,
+    calls,
+  } = await startMockSolanaRpcServer({
     nonceAuthority: feePayer,
   });
   const recipient = Keypair.generate().publicKey;
@@ -3774,7 +3779,15 @@ test('config agent-auth rotate reports recovery commands for stale admin daemon 
     });
 
     const rotated = runCli(
-      ['config', 'agent-auth', 'rotate', '--agent-key-id', AGENT_KEY_ID, '--non-interactive', '--json'],
+      [
+        'config',
+        'agent-auth',
+        'rotate',
+        '--agent-key-id',
+        AGENT_KEY_ID,
+        '--non-interactive',
+        '--json',
+      ],
       { homeDir },
     );
     assert.notEqual(rotated.status, 0);

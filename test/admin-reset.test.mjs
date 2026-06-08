@@ -1,38 +1,39 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
+import test from 'node:test';
 
 const modulePath = new URL('../src/lib/admin-reset.ts', import.meta.url);
 const walletProfileModulePath = new URL('../src/lib/wallet-profile.ts', import.meta.url);
 
 const TEST_AGENT_KEY_ID = '00000000-0000-0000-0000-000000000001';
 const PATH_SHIM_MARKER = '# agentpay-sdk one-click PATH shim';
-const HOST_MANAGED = process.platform === 'linux'
-  ? {
-      label: 'agentpay-daemon',
-      daemonSocket: '/run/agentpay/daemon.sock',
-      stateFile: '/var/lib/agentpay/daemon-state.enc',
-      relayDaemonTokenFile: '/var/lib/agentpay/relay-daemon-token',
-      daemonPasswordFile: '/var/lib/agentpay/daemon-password',
-      rootDir: '/opt/agentpay',
-      stateDir: '/var/lib/agentpay',
-      logDir: null,
-      uninstallScriptName: 'uninstall-system-daemon.sh',
-    }
-  : {
-      label: 'com.agentpay.daemon',
-      daemonSocket: '/Library/AgentPay/run/daemon.sock',
-      stateFile: '/var/db/agentpay/daemon-state.enc',
-      relayDaemonTokenFile: '/var/db/agentpay/relay-daemon-token',
-      daemonPasswordFile: null,
-      rootDir: '/Library/AgentPay',
-      stateDir: '/var/db/agentpay',
-      logDir: '/var/log/agentpay',
-      uninstallScriptName: 'uninstall-user-daemon.sh',
-    };
+const HOST_MANAGED =
+  process.platform === 'linux'
+    ? {
+        label: 'agentpay-daemon',
+        daemonSocket: '/run/agentpay/daemon.sock',
+        stateFile: '/var/lib/agentpay/daemon-state.enc',
+        relayDaemonTokenFile: '/var/lib/agentpay/relay-daemon-token',
+        daemonPasswordFile: '/var/lib/agentpay/daemon-password',
+        rootDir: '/opt/agentpay',
+        stateDir: '/var/lib/agentpay',
+        logDir: null,
+        uninstallScriptName: 'uninstall-system-daemon.sh',
+      }
+    : {
+        label: 'com.agentpay.daemon',
+        daemonSocket: '/Library/AgentPay/run/daemon.sock',
+        stateFile: '/var/db/agentpay/daemon-state.enc',
+        relayDaemonTokenFile: '/var/db/agentpay/relay-daemon-token',
+        daemonPasswordFile: null,
+        rootDir: '/Library/AgentPay',
+        stateDir: '/var/db/agentpay',
+        logDir: '/var/log/agentpay',
+        uninstallScriptName: 'uninstall-user-daemon.sh',
+      };
 const AGENT_AUTH_SERVICE = 'agentpay-agent-auth-token';
 
 function writeExecutable(targetPath, body) {
@@ -107,7 +108,7 @@ async function withMockedPrompt(answer, fn, options = {}) {
     },
     configurable: true,
   });
-  readline.createInterface = (() => ({
+  readline.createInterface = () => ({
     output: {
       write() {
         return true;
@@ -117,7 +118,7 @@ async function withMockedPrompt(answer, fn, options = {}) {
       callback(answer);
     },
     close() {},
-  }));
+  });
   try {
     await fn([]);
   } finally {
@@ -188,35 +189,52 @@ test('cleanupLocalAdminResetState clears wallet credentials but preserves non-se
   const clearedKeys = [];
   let deletedConfigPath = null;
 
-  const result = reset.cleanupLocalAdminResetState({ deleteConfig: false }, {
-    platform: 'darwin',
-    existsSync: (targetPath) => targetPath === '/tmp/config.json' || targetPath === '/tmp/home',
-    resolveConfigPath: () => '/tmp/config.json',
-    resolveAgentPayHome: () => '/tmp/home',
-    readConfig: () => ({ ...configState }),
-    deleteConfigKey: (key) => {
-      clearedKeys.push(key);
-      const next = { ...configState };
-      delete next[key];
-      configState = next;
-      return { ...configState };
+  const result = reset.cleanupLocalAdminResetState(
+    { deleteConfig: false },
+    {
+      platform: 'darwin',
+      existsSync: (targetPath) => targetPath === '/tmp/config.json' || targetPath === '/tmp/home',
+      resolveConfigPath: () => '/tmp/config.json',
+      resolveAgentPayHome: () => '/tmp/home',
+      readConfig: () => ({ ...configState }),
+      deleteConfigKey: (key) => {
+        clearedKeys.push(key);
+        const next = { ...configState };
+        delete next[key];
+        configState = next;
+        return { ...configState };
+      },
+      deleteAgentAuthToken: (agentKeyId) => {
+        assert.equal(agentKeyId, TEST_AGENT_KEY_ID);
+        return true;
+      },
+      unlinkSync: (targetPath) => {
+        deletedConfigPath = targetPath;
+      },
+      cleanupBootstrapArtifacts: () => ({
+        agentpayHome: '/tmp/home',
+        action: 'deleted',
+        files: [
+          {
+            path: '/tmp/home/bootstrap-1-1.json',
+            status: 'plaintext',
+            agentKeyId: TEST_AGENT_KEY_ID,
+            leaseExpiresAt: null,
+            error: null,
+            cleanup: 'deleted',
+          },
+          {
+            path: '/tmp/home/bootstrap-1-2.json',
+            status: 'invalid',
+            agentKeyId: null,
+            leaseExpiresAt: null,
+            error: 'bad file',
+            cleanup: 'skipped',
+          },
+        ],
+      }),
     },
-    deleteAgentAuthToken: (agentKeyId) => {
-      assert.equal(agentKeyId, TEST_AGENT_KEY_ID);
-      return true;
-    },
-    unlinkSync: (targetPath) => {
-      deletedConfigPath = targetPath;
-    },
-    cleanupBootstrapArtifacts: () => ({
-      agentpayHome: '/tmp/home',
-      action: 'deleted',
-      files: [
-        { path: '/tmp/home/bootstrap-1-1.json', status: 'plaintext', agentKeyId: TEST_AGENT_KEY_ID, leaseExpiresAt: null, error: null, cleanup: 'deleted' },
-        { path: '/tmp/home/bootstrap-1-2.json', status: 'invalid', agentKeyId: null, leaseExpiresAt: null, error: 'bad file', cleanup: 'skipped' },
-      ],
-    }),
-  });
+  );
 
   assert.equal(result.agentKeyId, TEST_AGENT_KEY_ID);
   assert.equal(result.keychain.removed, true);
@@ -253,26 +271,29 @@ test('cleanupLocalAdminResetState can delete the whole config file', async () =>
   const clearedKeys = [];
   const deletedPaths = [];
 
-  const result = reset.cleanupLocalAdminResetState({ deleteConfig: true }, {
-    platform: 'darwin',
-    existsSync: (targetPath) => targetPath === '/tmp/config.json' || targetPath === '/tmp/home',
-    resolveConfigPath: () => '/tmp/config.json',
-    resolveAgentPayHome: () => '/tmp/home',
-    readConfig: () => ({ ...configState }),
-    deleteConfigKey: (key) => {
-      clearedKeys.push(key);
-      return { ...configState };
+  const result = reset.cleanupLocalAdminResetState(
+    { deleteConfig: true },
+    {
+      platform: 'darwin',
+      existsSync: (targetPath) => targetPath === '/tmp/config.json' || targetPath === '/tmp/home',
+      resolveConfigPath: () => '/tmp/config.json',
+      resolveAgentPayHome: () => '/tmp/home',
+      readConfig: () => ({ ...configState }),
+      deleteConfigKey: (key) => {
+        clearedKeys.push(key);
+        return { ...configState };
+      },
+      deleteAgentAuthToken: () => true,
+      unlinkSync: (targetPath) => {
+        deletedPaths.push(targetPath);
+      },
+      cleanupBootstrapArtifacts: () => ({
+        agentpayHome: '/tmp/home',
+        action: 'deleted',
+        files: [],
+      }),
     },
-    deleteAgentAuthToken: () => true,
-    unlinkSync: (targetPath) => {
-      deletedPaths.push(targetPath);
-    },
-    cleanupBootstrapArtifacts: () => ({
-      agentpayHome: '/tmp/home',
-      action: 'deleted',
-      files: [],
-    }),
-  });
+  );
 
   assert.equal(result.agentKeyId, TEST_AGENT_KEY_ID);
   assert.equal(result.keychain.removed, true);
@@ -298,29 +319,32 @@ test('cleanupLocalAdminResetState falls back to wallet.agentKeyId when top-level
     },
   };
 
-  const result = reset.cleanupLocalAdminResetState({ deleteConfig: false }, {
-    platform: 'darwin',
-    existsSync: (targetPath) => targetPath === '/tmp/config.json' || targetPath === '/tmp/home',
-    resolveConfigPath: () => '/tmp/config.json',
-    resolveAgentPayHome: () => '/tmp/home',
-    readConfig: () => ({ ...configState }),
-    deleteConfigKey: (key) => {
-      assert.equal(key, 'wallet');
-      const next = { ...configState };
-      delete next[key];
-      configState = next;
-      return { ...configState };
+  const result = reset.cleanupLocalAdminResetState(
+    { deleteConfig: false },
+    {
+      platform: 'darwin',
+      existsSync: (targetPath) => targetPath === '/tmp/config.json' || targetPath === '/tmp/home',
+      resolveConfigPath: () => '/tmp/config.json',
+      resolveAgentPayHome: () => '/tmp/home',
+      readConfig: () => ({ ...configState }),
+      deleteConfigKey: (key) => {
+        assert.equal(key, 'wallet');
+        const next = { ...configState };
+        delete next[key];
+        configState = next;
+        return { ...configState };
+      },
+      deleteAgentAuthToken: (agentKeyId) => {
+        removedAgentKeyId = agentKeyId;
+        return true;
+      },
+      cleanupBootstrapArtifacts: () => ({
+        agentpayHome: '/tmp/home',
+        action: 'deleted',
+        files: [],
+      }),
     },
-    deleteAgentAuthToken: (agentKeyId) => {
-      removedAgentKeyId = agentKeyId;
-      return true;
-    },
-    cleanupBootstrapArtifacts: () => ({
-      agentpayHome: '/tmp/home',
-      action: 'deleted',
-      files: [],
-    }),
-  });
+  );
 
   assert.equal(result.agentKeyId, TEST_AGENT_KEY_ID);
   assert.equal(removedAgentKeyId, TEST_AGENT_KEY_ID);
@@ -337,7 +361,8 @@ test('cleanupLocalAdminUninstallState removes the entire AgentPay home and clear
 
   const result = reset.cleanupLocalAdminUninstallState({
     platform: 'darwin',
-    existsSync: (targetPath) => targetPath === '/tmp/home/config.json' || targetPath === '/tmp/home',
+    existsSync: (targetPath) =>
+      targetPath === '/tmp/home/config.json' || targetPath === '/tmp/home',
     resolveConfigPath: () => '/tmp/home/config.json',
     resolveAgentPayHome: () => '/tmp/home',
     readConfig: () => ({
@@ -362,9 +387,7 @@ test('cleanupLocalAdminUninstallState removes the entire AgentPay home and clear
   assert.equal(result.config.deleted, true);
   assert.equal(result.agentpayHome.existed, true);
   assert.equal(result.agentpayHome.deleted, true);
-  assert.deepEqual(removedPaths, [
-    ['/tmp/home', { recursive: true, force: true }],
-  ]);
+  assert.deepEqual(removedPaths, [['/tmp/home', { recursive: true, force: true }]]);
 });
 
 test('cleanupLocalAdminUninstallState removes config separately when it lives outside AgentPay home', async () => {
@@ -373,8 +396,7 @@ test('cleanupLocalAdminUninstallState removes config separately when it lives ou
 
   const result = reset.cleanupLocalAdminUninstallState({
     platform: 'darwin',
-    existsSync: (targetPath) =>
-      targetPath === '/tmp/config.json' || targetPath === '/tmp/home',
+    existsSync: (targetPath) => targetPath === '/tmp/config.json' || targetPath === '/tmp/home',
     resolveConfigPath: () => '/tmp/config.json',
     resolveAgentPayHome: () => '/tmp/home',
     readConfig: () => ({
@@ -435,7 +457,11 @@ test('cleanupLocalAdminUninstallState reverses one-click shell exports, AI skill
       ].join('\n'),
       'utf8',
     );
-    fs.writeFileSync(configPath, `${JSON.stringify({ agentKeyId: TEST_AGENT_KEY_ID, chains: {} }, null, 2)}\n`, 'utf8');
+    fs.writeFileSync(
+      configPath,
+      `${JSON.stringify({ agentKeyId: TEST_AGENT_KEY_ID, chains: {} }, null, 2)}\n`,
+      'utf8',
+    );
     fs.writeFileSync(
       manifestPath,
       `${JSON.stringify(
@@ -523,7 +549,11 @@ test('cleanupLocalAdminUninstallState treats installRoot equal to AgentPay home 
 
   try {
     fs.mkdirSync(agentpayHome, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(configPath, `${JSON.stringify({ agentKeyId: TEST_AGENT_KEY_ID, chains: {} }, null, 2)}\n`, 'utf8');
+    fs.writeFileSync(
+      configPath,
+      `${JSON.stringify({ agentKeyId: TEST_AGENT_KEY_ID, chains: {} }, null, 2)}\n`,
+      'utf8',
+    );
     fs.writeFileSync(
       manifestPath,
       `${JSON.stringify(
@@ -563,22 +593,25 @@ test('cleanupLocalAdminUninstallState treats installRoot equal to AgentPay home 
 test('cleanupLocalAdminResetState reports no bootstrap cleanup when AgentPay home is missing', async () => {
   const reset = await import(modulePath.href + `?case=${Date.now()}-reset-no-agentpay-home`);
 
-  const result = reset.cleanupLocalAdminResetState({}, {
-    platform: 'darwin',
-    existsSync: (targetPath) => targetPath === '/tmp/config.json',
-    resolveConfigPath: () => '/tmp/config.json',
-    resolveAgentPayHome: () => '/tmp/home',
-    readConfig: () => ({
-      chainId: 1,
-      chains: {},
-    }),
-    deleteConfigKey: () => ({}),
-    deleteAgentAuthToken: () => false,
-    unlinkSync: () => {},
-    cleanupBootstrapArtifacts: () => {
-      throw new Error('should not run when agentpayHome is missing');
+  const result = reset.cleanupLocalAdminResetState(
+    {},
+    {
+      platform: 'darwin',
+      existsSync: (targetPath) => targetPath === '/tmp/config.json',
+      resolveConfigPath: () => '/tmp/config.json',
+      resolveAgentPayHome: () => '/tmp/home',
+      readConfig: () => ({
+        chainId: 1,
+        chains: {},
+      }),
+      deleteConfigKey: () => ({}),
+      deleteAgentAuthToken: () => false,
+      unlinkSync: () => {},
+      cleanupBootstrapArtifacts: () => {
+        throw new Error('should not run when agentpayHome is missing');
+      },
     },
-  });
+  );
 
   assert.equal(result.bootstrapArtifacts.attempted, false);
   assert.equal(result.bootstrapArtifacts.fileCount, 0);
@@ -588,29 +621,32 @@ test('cleanupLocalAdminResetState reports no bootstrap cleanup when AgentPay hom
 test('cleanupLocalAdminResetState tolerates missing config and non-macOS keychain helpers', async () => {
   const reset = await import(modulePath.href + `?case=${Date.now()}-reset-missing-config-linux`);
 
-  const result = reset.cleanupLocalAdminResetState({}, {
-    platform: 'linux',
-    existsSync: (targetPath) => targetPath === '/tmp/home',
-    resolveConfigPath: () => '/tmp/config.json',
-    resolveAgentPayHome: () => '/tmp/home',
-    readConfig: () => {
-      throw new Error('readConfig should not run when config is missing');
+  const result = reset.cleanupLocalAdminResetState(
+    {},
+    {
+      platform: 'linux',
+      existsSync: (targetPath) => targetPath === '/tmp/home',
+      resolveConfigPath: () => '/tmp/config.json',
+      resolveAgentPayHome: () => '/tmp/home',
+      readConfig: () => {
+        throw new Error('readConfig should not run when config is missing');
+      },
+      deleteConfigKey: () => {
+        throw new Error('deleteConfigKey should not run when config is missing');
+      },
+      deleteAgentAuthToken: () => {
+        throw new Error('deleteAgentAuthToken should not run when config is missing');
+      },
+      unlinkSync: () => {
+        throw new Error('unlinkSync should not run when config is missing');
+      },
+      cleanupBootstrapArtifacts: () => ({
+        agentpayHome: '/tmp/home',
+        action: 'deleted',
+        files: [],
+      }),
     },
-    deleteConfigKey: () => {
-      throw new Error('deleteConfigKey should not run when config is missing');
-    },
-    deleteAgentAuthToken: () => {
-      throw new Error('deleteAgentAuthToken should not run when config is missing');
-    },
-    unlinkSync: () => {
-      throw new Error('unlinkSync should not run when config is missing');
-    },
-    cleanupBootstrapArtifacts: () => ({
-      agentpayHome: '/tmp/home',
-      action: 'deleted',
-      files: [],
-    }),
-  });
+  );
 
   assert.equal(result.agentKeyId, null);
   assert.equal(result.keychain.removed, false);
@@ -624,22 +660,25 @@ test('cleanupLocalAdminResetState tolerates missing config and non-macOS keychai
 test('cleanupLocalAdminResetState captures bootstrap cleanup errors as warnings', async () => {
   const reset = await import(modulePath.href + `?case=${Date.now()}-reset-bootstrap-cleanup-error`);
 
-  const result = reset.cleanupLocalAdminResetState({}, {
-    platform: 'darwin',
-    existsSync: () => true,
-    resolveConfigPath: () => '/tmp/config.json',
-    resolveAgentPayHome: () => '/tmp/home',
-    readConfig: () => ({
-      chainId: 1,
-      chains: {},
-    }),
-    deleteConfigKey: () => ({}),
-    deleteAgentAuthToken: () => false,
-    unlinkSync: () => {},
-    cleanupBootstrapArtifacts: () => {
-      throw 'mock bootstrap cleanup failure';
+  const result = reset.cleanupLocalAdminResetState(
+    {},
+    {
+      platform: 'darwin',
+      existsSync: () => true,
+      resolveConfigPath: () => '/tmp/config.json',
+      resolveAgentPayHome: () => '/tmp/home',
+      readConfig: () => ({
+        chainId: 1,
+        chains: {},
+      }),
+      deleteConfigKey: () => ({}),
+      deleteAgentAuthToken: () => false,
+      unlinkSync: () => {},
+      cleanupBootstrapArtifacts: () => {
+        throw 'mock bootstrap cleanup failure';
+      },
     },
-  });
+  );
 
   assert.equal(result.bootstrapArtifacts.attempted, true);
   assert.equal(result.bootstrapArtifacts.error, 'mock bootstrap cleanup failure');
@@ -689,12 +728,7 @@ test('runAdminResetCli supports Linux and still requires a local tty for sudo wh
       writeManagedUninstallScript(rustBinDir);
       writeExecutable(
         path.join(toolDir, 'sudo'),
-        [
-          'if [ "$1" = "-n" ]; then',
-          '  exit 1',
-          'fi',
-          'exit 0',
-        ].join('\n'),
+        ['if [ "$1" = "-n" ]; then', '  exit 1', 'fi', 'exit 0'].join('\n'),
       );
       fs.writeFileSync(
         path.join(agentpayHome, 'config.json'),
@@ -730,12 +764,7 @@ test('runAdminUninstallCli supports Linux and still requires a local tty for sud
       writeManagedUninstallScript(rustBinDir);
       writeExecutable(
         path.join(toolDir, 'sudo'),
-        [
-          'if [ "$1" = "-n" ]; then',
-          '  exit 1',
-          'fi',
-          'exit 0',
-        ].join('\n'),
+        ['if [ "$1" = "-n" ]; then', '  exit 1', 'fi', 'exit 0'].join('\n'),
       );
       fs.writeFileSync(
         path.join(agentpayHome, 'config.json'),
@@ -751,7 +780,9 @@ test('runAdminUninstallCli supports Linux and still requires a local tty for sud
       process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
 
       try {
-        const reset = await import(`${modulePath.href}?case=${Date.now()}-linux-uninstall-supported`);
+        const reset = await import(
+          `${modulePath.href}?case=${Date.now()}-linux-uninstall-supported`
+        );
         await assert.rejects(
           () => reset.runAdminUninstallCli(['--yes']),
           /System admin password for sudo is required; rerun on a local TTY/u,
@@ -771,9 +802,13 @@ test('runAdminResetCli enforces confirmation in non-interactive and prompt-abort
     const originalAgentPayHome = process.env.AGENTPAY_HOME;
     process.env.HOME = homeDir;
     process.env.AGENTPAY_HOME = agentpayHome;
-    fs.writeFileSync(path.join(agentpayHome, 'config.json'), `${JSON.stringify({ chains: {} }, null, 2)}\n`, {
-      mode: 0o600,
-    });
+    fs.writeFileSync(
+      path.join(agentpayHome, 'config.json'),
+      `${JSON.stringify({ chains: {} }, null, 2)}\n`,
+      {
+        mode: 0o600,
+      },
+    );
 
     try {
       const reset = await import(`${modulePath.href}?case=${Date.now()}-reset-confirmation-guards`);
@@ -787,10 +822,7 @@ test('runAdminResetCli enforces confirmation in non-interactive and prompt-abort
       );
 
       await withMockedPrompt('NOPE', async () => {
-        await assert.rejects(
-          () => reset.runAdminResetCli([]),
-          /admin reset aborted/,
-        );
+        await assert.rejects(() => reset.runAdminResetCli([]), /admin reset aborted/);
       });
     } finally {
       process.env.HOME = originalHome;
@@ -806,12 +838,7 @@ test('runAdminResetCli requires a local tty before prompting for the hidden root
     writeExecutable(uninstallScriptPath, 'exit 0');
     writeExecutable(
       sudoScriptPath,
-      [
-        'if [ "$1" = "-n" ]; then',
-        '  exit 1',
-        'fi',
-        'exit 0',
-      ].join('\n'),
+      ['if [ "$1" = "-n" ]; then', '  exit 1', 'fi', 'exit 0'].join('\n'),
     );
     fs.writeFileSync(
       path.join(agentpayHome, 'config.json'),
@@ -827,7 +854,9 @@ test('runAdminResetCli requires a local tty before prompting for the hidden root
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
 
     try {
-      const reset = await import(`${modulePath.href}?case=${Date.now()}-reset-hidden-password-no-tty`);
+      const reset = await import(
+        `${modulePath.href}?case=${Date.now()}-reset-hidden-password-no-tty`
+      );
       await assert.rejects(
         () => reset.runAdminResetCli(['--yes']),
         /System admin password for sudo is required; rerun on a local TTY/u,
@@ -872,7 +901,9 @@ test('runAdminResetCli validates prompted hidden root passwords before sudo prim
     process.env.PATH = toolDir;
 
     try {
-      const blankReset = await import(`${modulePath.href}?case=${Date.now()}-reset-blank-hidden-password`);
+      const blankReset = await import(
+        `${modulePath.href}?case=${Date.now()}-reset-blank-hidden-password`
+      );
       await withMockedPrompt('   ', async () => {
         await assert.rejects(
           () => blankReset.runAdminResetCli(['--yes']),
@@ -929,23 +960,22 @@ test('runAdminResetCli does not echo the hidden sudo password to stdout', async 
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
 
     try {
-      const reset = await import(`${modulePath.href}?case=${Date.now()}-reset-hidden-password-unmuted-echo`);
+      const reset = await import(
+        `${modulePath.href}?case=${Date.now()}-reset-hidden-password-unmuted-echo`
+      );
       let rendered = '';
       const originalStderrWrite = process.stderr.write.bind(process.stderr);
       try {
-        process.stderr.write = ((chunk, ...args) => {
+        process.stderr.write = (chunk, ...args) => {
           rendered += String(chunk);
           return originalStderrWrite(chunk, ...args);
+        };
+        await withMockedPrompt('root-password', async () => {
+          await assert.rejects(
+            () => reset.runAdminResetCli(['--yes', '--non-interactive']),
+            /failed to uninstall managed daemon \(exit code 1\)/u,
+          );
         });
-        await withMockedPrompt(
-          'root-password',
-          async () => {
-            await assert.rejects(
-              () => reset.runAdminResetCli(['--yes', '--non-interactive']),
-              /failed to uninstall managed daemon \(exit code 1\)/u,
-            );
-          },
-        );
       } finally {
         process.stderr.write = originalStderrWrite;
       }
@@ -980,7 +1010,7 @@ test('runAdminResetCli executes the reset workflow with staged managed-daemon he
         '  exit 1',
         'fi',
         'if [ "$1" = "-n" ]; then',
-          '  exit 0',
+        '  exit 0',
         'fi',
         'exit 0',
       ].join('\n'),
@@ -1009,14 +1039,14 @@ test('runAdminResetCli executes the reset workflow with staged managed-daemon he
     process.env.HOME = homeDir;
     process.env.AGENTPAY_HOME = agentpayHome;
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
-    process.stderr.write = ((chunk, ...args) => {
+    process.stderr.write = (chunk, ...args) => {
       stderrChunks.push(String(chunk));
       return originalStderrWrite(chunk, ...args);
-    });
-    process.stdout.write = ((chunk, ...args) => {
+    };
+    process.stdout.write = (chunk, ...args) => {
       stdoutChunks.push(String(chunk));
       return originalStdoutWrite(chunk, ...args);
-    });
+    };
 
     try {
       const reset = await import(`${modulePath.href}?case=${Date.now()}-run-cli-reset`);
@@ -1090,7 +1120,9 @@ test('runAdminResetCli removes persisted wallet metadata from a kept config file
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
 
     try {
-      const reset = await import(`${modulePath.href}?case=${Date.now()}-run-cli-reset-clears-wallet`);
+      const reset = await import(
+        `${modulePath.href}?case=${Date.now()}-run-cli-reset-clears-wallet`
+      );
       await withMockedPrompt('root-password', async () => {
         await reset.runAdminResetCli(['--yes', '--non-interactive']);
       });
@@ -1138,10 +1170,10 @@ test('runAdminResetCli non-json summary reports missing config and bootstrap cle
     fs.chmodSync(agentpayHome, 0o777);
     const stdoutChunks = [];
     const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = ((chunk, ...args) => {
+    process.stdout.write = (chunk, ...args) => {
       stdoutChunks.push(String(chunk));
       return originalStdoutWrite(chunk, ...args);
-    });
+    };
 
     const originalHome = process.env.HOME;
     const originalAgentPayHome = process.env.AGENTPAY_HOME;
@@ -1151,7 +1183,9 @@ test('runAdminResetCli non-json summary reports missing config and bootstrap cle
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
 
     try {
-      const reset = await import(`${modulePath.href}?case=${Date.now()}-run-cli-reset-summary-warning`);
+      const reset = await import(
+        `${modulePath.href}?case=${Date.now()}-run-cli-reset-summary-warning`
+      );
       await withMockedPrompt('root-password', async () => {
         await reset.runAdminResetCli(['--yes', '--non-interactive']);
       });
@@ -1191,11 +1225,9 @@ test('runAdminResetCli emits machine-readable output on successful json reset ru
         'exit 0',
       ].join('\n'),
     );
-    fs.writeFileSync(
-      configPath,
-      `${JSON.stringify({ rustBinDir, chains: {} }, null, 2)}\n`,
-      { mode: 0o600 },
-    );
+    fs.writeFileSync(configPath, `${JSON.stringify({ rustBinDir, chains: {} }, null, 2)}\n`, {
+      mode: 0o600,
+    });
 
     const originalHome = process.env.HOME;
     const originalAgentPayHome = process.env.AGENTPAY_HOME;
@@ -1205,15 +1237,15 @@ test('runAdminResetCli emits machine-readable output on successful json reset ru
     process.env.HOME = homeDir;
     process.env.AGENTPAY_HOME = agentpayHome;
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
-    process.stdout.write = ((chunk, ...args) => {
-      stdoutChunks.push(
-        typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'),
-      );
+    process.stdout.write = (chunk, ...args) => {
+      stdoutChunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'));
       return originalStdoutWrite(chunk, ...args);
-    });
+    };
 
     try {
-      const reset = await import(`${modulePath.href}?case=${Date.now()}-run-cli-reset-json-success`);
+      const reset = await import(
+        `${modulePath.href}?case=${Date.now()}-run-cli-reset-json-success`
+      );
       await withMockedPrompt('root-password', async () => {
         await reset.runAdminResetCli(['--yes', '--non-interactive', '--json']);
       });
@@ -1267,7 +1299,9 @@ test('runAdminResetCli prefers stdout when managed state deletion fails without 
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
 
     try {
-      const reset = await import(`${modulePath.href}?case=${Date.now()}-run-cli-reset-rm-stdout-fail`);
+      const reset = await import(
+        `${modulePath.href}?case=${Date.now()}-run-cli-reset-rm-stdout-fail`
+      );
       await withMockedPrompt('root-password', async () => {
         await assert.rejects(
           () => reset.runAdminResetCli(['--yes', '--non-interactive', '--json']),
@@ -1317,7 +1351,9 @@ test('runAdminResetCli falls back to the default managed state deletion message 
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
 
     try {
-      const reset = await import(`${modulePath.href}?case=${Date.now()}-run-cli-reset-rm-default-fail`);
+      const reset = await import(
+        `${modulePath.href}?case=${Date.now()}-run-cli-reset-rm-default-fail`
+      );
       await withMockedPrompt('root-password', async () => {
         await assert.rejects(
           () => reset.runAdminResetCli(['--yes', '--non-interactive', '--json']),
@@ -1379,17 +1415,19 @@ test('runAdminResetCli can delete config and print spinner progress when stderr 
     process.env.HOME = homeDir;
     process.env.AGENTPAY_HOME = agentpayHome;
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
-    process.stderr.write = ((chunk, ...args) => {
+    process.stderr.write = (chunk, ...args) => {
       stderrChunks.push(String(chunk));
       return originalStderrWrite(chunk, ...args);
-    });
-    process.stdout.write = ((chunk, ...args) => {
+    };
+    process.stdout.write = (chunk, ...args) => {
       stdoutChunks.push(String(chunk));
       return originalStdoutWrite(chunk, ...args);
-    });
+    };
 
     try {
-      const reset = await import(`${modulePath.href}?case=${Date.now()}-run-cli-reset-delete-config`);
+      const reset = await import(
+        `${modulePath.href}?case=${Date.now()}-run-cli-reset-delete-config`
+      );
       await withStderrTty(async () => {
         await withMockedPrompt('root-password', async () => {
           await reset.runAdminResetCli(['--yes', '--delete-config']);
@@ -1405,7 +1443,10 @@ test('runAdminResetCli can delete config and print spinner progress when stderr 
 
     assert.match(stderrChunks.join(''), /\u001b\[2K/u);
     assert.match(stdoutChunks.join(''), /config deleted:/u);
-    assert.match(stdoutChunks.join(''), new RegExp(`old agent key cleared: ${TEST_AGENT_KEY_ID}`, 'u'));
+    assert.match(
+      stdoutChunks.join(''),
+      new RegExp(`old agent key cleared: ${TEST_AGENT_KEY_ID}`, 'u'),
+    );
     assert.equal(fs.existsSync(configPath), false);
   });
 });
@@ -1454,10 +1495,10 @@ test('runAdminUninstallCli removes the local AgentPay home with --json output', 
     process.env.HOME = homeDir;
     process.env.AGENTPAY_HOME = agentpayHome;
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
-    process.stdout.write = ((chunk, ...args) => {
+    process.stdout.write = (chunk, ...args) => {
       stdoutChunks.push(String(chunk));
       return originalStdoutWrite(chunk, ...args);
-    });
+    };
 
     try {
       const reset = await import(`${modulePath.href}?case=${Date.now()}-run-cli-uninstall`);
@@ -1608,16 +1649,15 @@ test('runAdminUninstallCli enforces explicit confirmation in non-interactive and
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
 
     try {
-      const reset = await import(`${modulePath.href}?case=${Date.now()}-run-cli-uninstall-confirmation`);
+      const reset = await import(
+        `${modulePath.href}?case=${Date.now()}-run-cli-uninstall-confirmation`
+      );
       await assert.rejects(
         () => reset.runAdminUninstallCli(['--non-interactive']),
         /requires --yes in non-interactive mode/u,
       );
       await withMockedPrompt('NOPE', async () => {
-        await assert.rejects(
-          () => reset.runAdminUninstallCli([]),
-          /admin uninstall aborted/u,
-        );
+        await assert.rejects(() => reset.runAdminUninstallCli([]), /admin uninstall aborted/u);
       });
     } finally {
       process.env.HOME = originalHome;
@@ -1663,7 +1703,9 @@ test('runAdminResetCli surfaces managed-daemon uninstall failures before local c
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
 
     try {
-      const reset = await import(`${modulePath.href}?case=${Date.now()}-run-cli-reset-uninstall-fail`);
+      const reset = await import(
+        `${modulePath.href}?case=${Date.now()}-run-cli-reset-uninstall-fail`
+      );
       await withMockedPrompt('root-password', async () => {
         await assert.rejects(
           () => reset.runAdminResetCli(['--yes', '--non-interactive']),
@@ -1708,17 +1750,19 @@ test('runAdminResetCli and runAdminUninstallCli exercise tty spinner fail paths 
     const originalPath = process.env.PATH;
     const originalSetInterval = global.setInterval;
     const originalClearInterval = global.clearInterval;
-    global.setInterval = ((callback) => {
+    global.setInterval = (callback) => {
       callback();
       return 1;
-    });
-    global.clearInterval = (() => {});
+    };
+    global.clearInterval = () => {};
     process.env.HOME = homeDir;
     process.env.AGENTPAY_HOME = agentpayHome;
     process.env.PATH = toolDir;
 
     try {
-      const resetCli = await import(`${modulePath.href}?case=${Date.now()}-run-cli-reset-sudo-throw`);
+      const resetCli = await import(
+        `${modulePath.href}?case=${Date.now()}-run-cli-reset-sudo-throw`
+      );
       await withStderrTty(async () => {
         await withMockedPrompt('root-password', async () => {
           await assert.rejects(
@@ -1849,7 +1893,9 @@ test('runAdminUninstallCli falls back to the default root artifact failure messa
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
 
     try {
-      const reset = await import(`${modulePath.href}?case=${Date.now()}-run-cli-uninstall-rm-default-fail`);
+      const reset = await import(
+        `${modulePath.href}?case=${Date.now()}-run-cli-uninstall-rm-default-fail`
+      );
       await withMockedPrompt('root-password', async () => {
         await assert.rejects(
           () => reset.runAdminUninstallCli(['--yes', '--non-interactive']),
@@ -1903,7 +1949,9 @@ test('runAdminUninstallCli fails when managed root-owned files still exist after
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
 
     try {
-      const reset = await import(`${modulePath.href}?case=${Date.now()}-run-cli-uninstall-root-remnant`);
+      const reset = await import(
+        `${modulePath.href}?case=${Date.now()}-run-cli-uninstall-root-remnant`
+      );
       await withMockedPrompt('root-password', async () => {
         await assert.rejects(
           () => reset.runAdminUninstallCli(['--yes', '--non-interactive']),
@@ -1957,21 +2005,29 @@ test('runAdminUninstallCli fails when the local AgentPay home still exists after
     process.env.HOME = homeDir;
     process.env.AGENTPAY_HOME = agentpayHome;
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
-    fs.rmSync = ((targetPath, options) => {
+    fs.rmSync = (targetPath, options) => {
       if (path.resolve(String(targetPath)) === path.resolve(agentpayHome)) {
         return;
       }
       return originalRmSync(targetPath, options);
-    });
+    };
 
     try {
-      const reset = await import(`${modulePath.href}?case=${Date.now()}-run-cli-uninstall-local-remnant`);
+      const reset = await import(
+        `${modulePath.href}?case=${Date.now()}-run-cli-uninstall-local-remnant`
+      );
       await withMockedPrompt('root-password', async () => {
         await assert.rejects(
           () => reset.runAdminUninstallCli(['--yes', '--non-interactive']),
           (error) => {
-            assert.match(String(error?.message), /admin uninstall left local AgentPay files behind:/u);
-            assert.match(String(error?.message), new RegExp(agentpayHome.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
+            assert.match(
+              String(error?.message),
+              /admin uninstall left local AgentPay files behind:/u,
+            );
+            assert.match(
+              String(error?.message),
+              new RegExp(agentpayHome.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'),
+            );
             return true;
           },
         );
@@ -2014,10 +2070,10 @@ test('runAdminUninstallCli non-json summary reports configured agent keys and re
     );
     const stdoutChunks = [];
     const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = ((chunk, ...args) => {
+    process.stdout.write = (chunk, ...args) => {
       stdoutChunks.push(String(chunk));
       return originalStdoutWrite(chunk, ...args);
-    });
+    };
 
     const originalHome = process.env.HOME;
     const originalAgentPayHome = process.env.AGENTPAY_HOME;
@@ -2027,7 +2083,9 @@ test('runAdminUninstallCli non-json summary reports configured agent keys and re
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
 
     try {
-      const reset = await import(`${modulePath.href}?case=${Date.now()}-run-cli-uninstall-summary-config-present`);
+      const reset = await import(
+        `${modulePath.href}?case=${Date.now()}-run-cli-uninstall-summary-config-present`
+      );
       await withMockedPrompt('UNINSTALL', async () => {
         await reset.runAdminUninstallCli([]);
       });
@@ -2046,7 +2104,10 @@ test('runAdminUninstallCli non-json summary reports configured agent keys and re
       output,
       /legacy global npm AgentPay SDK CLI not removed: current command is not running from a legacy global npm install/u,
     );
-    assert.match(output, /next: run `agentpay admin setup` only if you want a fresh managed wallet again/u);
+    assert.match(
+      output,
+      /next: run `agentpay admin setup` only if you want a fresh managed wallet again/u,
+    );
   });
 });
 
@@ -2073,10 +2134,10 @@ test('runAdminUninstallCli non-json summary reports missing config and confirms 
     );
     const stdoutChunks = [];
     const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = ((chunk, ...args) => {
+    process.stdout.write = (chunk, ...args) => {
       stdoutChunks.push(String(chunk));
       return originalStdoutWrite(chunk, ...args);
-    });
+    };
 
     const originalHome = process.env.HOME;
     const originalAgentPayHome = process.env.AGENTPAY_HOME;
@@ -2086,7 +2147,9 @@ test('runAdminUninstallCli non-json summary reports missing config and confirms 
     process.env.PATH = `${toolDir}:${originalPath ?? ''}`;
 
     try {
-      const reset = await import(`${modulePath.href}?case=${Date.now()}-run-cli-uninstall-summary-missing-config`);
+      const reset = await import(
+        `${modulePath.href}?case=${Date.now()}-run-cli-uninstall-summary-missing-config`
+      );
       await withMockedPrompt('UNINSTALL', async () => {
         await reset.runAdminUninstallCli([]);
       });

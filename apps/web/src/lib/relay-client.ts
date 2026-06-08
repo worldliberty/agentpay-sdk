@@ -6,17 +6,17 @@ import {
   relayDaemonRecordSchema,
   secureApprovalLinkRecordSchema,
 } from './relay-schemas.ts';
-import type { ApprovalRequestRecord, RelayDaemonRecord, SecureApprovalLinkRecord } from './types.ts';
+import type {
+  ApprovalRequestRecord,
+  RelayDaemonRecord,
+  SecureApprovalLinkRecord,
+} from './types.ts';
 
 export function buildRelayUrl(pathname: string): URL {
   return new URL(pathname, `${clientConfig.relayBaseUrl}/`);
 }
 
-async function fetchJson<T>(
-  target: URL,
-  schema: z.ZodType<T>,
-  init?: RequestInit,
-): Promise<T> {
+async function fetchJson<T>(target: URL, schema: z.ZodType<T>, init?: RequestInit): Promise<T> {
   const response = await fetch(target, {
     ...init,
     headers: {

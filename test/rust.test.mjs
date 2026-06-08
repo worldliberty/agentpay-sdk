@@ -1,6 +1,6 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
+import test from 'node:test';
 
 const modulePath = new URL('../src/lib/rust-spawn-options.ts', import.meta.url);
 
@@ -15,8 +15,8 @@ test('prepareSpawnOptions accepts pre-supplied agent auth stdin without re-runni
     {
       stdin: 'agent-secret\n',
       preSuppliedSecretStdin: 'agentAuthToken',
-      scrubSensitiveEnv: true
-    }
+      scrubSensitiveEnv: true,
+    },
   );
 
   assert.deepEqual(prepared.args, ['--agent-auth-token-stdin', 'broadcast']);
@@ -34,16 +34,13 @@ test('prepareSpawnOptions rejects pre-supplied agent auth stdin when args do not
   const rust = await import(modulePath.href + `?case=${Date.now()}-missing-agent-auth-flag`);
 
   await assert.rejects(
-    () => rust.prepareSpawnOptions(
-      'agentpay-agent',
-      ['--help'],
-      {
+    () =>
+      rust.prepareSpawnOptions('agentpay-agent', ['--help'], {
         stdin: 'agent-secret\n',
         preSuppliedSecretStdin: 'agentAuthToken',
-        scrubSensitiveEnv: true
-      }
-    ),
-    /requires --agent-auth-token-stdin in args/
+        scrubSensitiveEnv: true,
+      }),
+    /requires --agent-auth-token-stdin in args/,
   );
 });
 
@@ -89,7 +86,7 @@ test('prepareSpawnOptions returns process env directly when scrubbing is disable
   const rust = await import(modulePath.href + `?case=${Date.now()}-no-scrub-env`);
 
   const prepared = await rust.prepareSpawnOptions('agentpay-unknown', ['--help'], {
-    scrubSensitiveEnv: false
+    scrubSensitiveEnv: false,
   });
 
   assert.equal(prepared.stdin, undefined);
@@ -102,18 +99,18 @@ test('prepareSpawnOptions validates pre-supplied secret stdin invariants', async
   await assert.rejects(
     () =>
       rust.prepareSpawnOptions('agentpay-admin', ['--vault-password-stdin', 'bootstrap'], {
-        preSuppliedSecretStdin: 'vaultPassword'
+        preSuppliedSecretStdin: 'vaultPassword',
       }),
-    /requires an explicit stdin payload/
+    /requires an explicit stdin payload/,
   );
 
   await assert.rejects(
     () =>
       rust.prepareSpawnOptions('agentpay-admin', ['bootstrap'], {
         stdin: 'vault-secret\n',
-        preSuppliedSecretStdin: 'vaultPassword'
+        preSuppliedSecretStdin: 'vaultPassword',
       }),
-    /requires --vault-password-stdin in args/
+    /requires --vault-password-stdin in args/,
   );
 });
 
@@ -128,23 +125,23 @@ test('prepareSpawnOptions rejects relay conflicts with explicit stdin payloads',
     mockedStdin.setEncoding('utf8');
     Object.defineProperty(process, 'stdin', {
       value: mockedStdin,
-      configurable: true
+      configurable: true,
     });
 
     await assert.rejects(
       () =>
         rust.prepareSpawnOptions('agentpay-admin', ['--vault-password-stdin', 'bootstrap'], {
-          stdin: 'already-present\n'
+          stdin: 'already-present\n',
         }),
-      /vault password relay conflicts with explicit stdin payload/
+      /vault password relay conflicts with explicit stdin payload/,
     );
 
     await assert.rejects(
       () =>
         rust.prepareSpawnOptions('agentpay-agent', ['broadcast'], {
-          stdin: 'already-present\n'
+          stdin: 'already-present\n',
         }),
-      /agent auth token relay conflicts with explicit stdin payload/
+      /agent auth token relay conflicts with explicit stdin payload/,
     );
   } finally {
     if (originalStdinDescriptor) {

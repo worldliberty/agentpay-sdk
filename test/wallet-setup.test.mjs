@@ -1142,7 +1142,9 @@ test('completeWalletSetup imports credentials, updates config, and redacts expli
 });
 
 test('completeWalletSetup returns a cleanup warning when redaction and fallback delete both fail', async () => {
-  const walletSetup = await import(walletSetupModulePath.href + `?case=${Date.now()}-cleanup-warning`);
+  const walletSetup = await import(
+    walletSetupModulePath.href + `?case=${Date.now()}-cleanup-warning`
+  );
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-wallet-setup-'));
   const bootstrapPath = path.join(tempRoot, 'exports', 'bootstrap.json');
   process.env.AGENTPAY_HOME = path.join(tempRoot, 'home');
@@ -2197,7 +2199,9 @@ test('completeWalletSetup rejects attachment and optional-policy mismatches and 
 });
 
 test('resolveWalletSetupBootstrapOutputPath enforces writable and file-type guards', async () => {
-  const walletSetup = await import(walletSetupModulePath.href + `?case=${Date.now()}-bootstrap-output-guard-edges`);
+  const walletSetup = await import(
+    walletSetupModulePath.href + `?case=${Date.now()}-bootstrap-output-guard-edges`
+  );
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-wallet-setup-guard-'));
 
   const nonWritableParent = path.join(tempRoot, 'non-writable');
@@ -2237,7 +2241,8 @@ test('resolveWalletSetupBootstrapOutputPath enforces writable and file-type guar
   const parentFile = path.join(tempRoot, 'parent-file');
   fs.writeFileSync(parentFile, 'not-a-directory', { mode: 0o600 });
   assert.throws(
-    () => walletSetup.resolveWalletSetupBootstrapOutputPath(path.join(parentFile, 'bootstrap.json')),
+    () =>
+      walletSetup.resolveWalletSetupBootstrapOutputPath(path.join(parentFile, 'bootstrap.json')),
     /must be a directory/,
   );
 
@@ -2370,7 +2375,10 @@ test('createWalletSetupPlan preflight covers root, missing-ancestor, and mocked 
         },
       );
       assert.equal(plan.preflight.bootstrapOutputReady, false);
-      assert.match(plan.preflight.bootstrapOutputError ?? '', /must not be writable by group\/other/);
+      assert.match(
+        plan.preflight.bootstrapOutputError ?? '',
+        /must not be writable by group\/other/,
+      );
     },
   );
 });
@@ -2503,7 +2511,10 @@ test('createWalletSetupPlan preview guards cover non-writable directories and un
         },
       );
       assert.equal(plan.preflight.bootstrapOutputReady, false);
-      assert.match(plan.preflight.bootstrapOutputError ?? '', /must not be writable by group\/other/);
+      assert.match(
+        plan.preflight.bootstrapOutputError ?? '',
+        /must not be writable by group\/other/,
+      );
     },
   );
 
@@ -2511,7 +2522,9 @@ test('createWalletSetupPlan preview guards cover non-writable directories and un
 });
 
 test('createWalletSetupPlan preflight covers mocked fs edge branches and interactive note rendering', async () => {
-  const walletSetup = await import(walletSetupModulePath.href + `?case=${Date.now()}-plan-preflight-edges`);
+  const walletSetup = await import(
+    walletSetupModulePath.href + `?case=${Date.now()}-plan-preflight-edges`
+  );
   const virtualBootstrapPath = '/virtual/preview/bootstrap.json';
 
   withMockedFs(
@@ -2591,7 +2604,10 @@ test('createWalletSetupPlan preflight covers mocked fs edge branches and interac
         },
       );
       assert.equal(plan.preflight.bootstrapOutputReady, false);
-      assert.match(plan.preflight.bootstrapOutputError ?? '', /must not be writable by group\/other/);
+      assert.match(
+        plan.preflight.bootstrapOutputError ?? '',
+        /must not be writable by group\/other/,
+      );
     },
   );
 
@@ -2641,7 +2657,9 @@ test('createWalletSetupPlan preflight covers mocked fs edge branches and interac
 });
 
 test('completeWalletSetup mismatch validation covers required/optional/network-scope branches', async () => {
-  const walletSetup = await import(walletSetupModulePath.href + `?case=${Date.now()}-mismatch-branches`);
+  const walletSetup = await import(
+    walletSetupModulePath.href + `?case=${Date.now()}-mismatch-branches`
+  );
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-wallet-setup-mismatch-'));
   const bootstrapPath = path.join(tempRoot, 'exports', 'bootstrap.json');
   const daemonSocket = path.join(tempRoot, 'home', 'run', 'daemon.sock');

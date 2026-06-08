@@ -49,7 +49,7 @@ function findForwardedOptionValue(args: string[], optionName: string): string | 
       const next = forwarded[index + 1];
       if (next === undefined || next === '--' || next.startsWith('-')) {
         throw new Error(
-          `${optionName} requires a value; use ${optionName}=<value> if the value starts with -`
+          `${optionName} requires a value; use ${optionName}=<value> if the value starts with -`,
         );
       }
       return next;
@@ -82,7 +82,7 @@ export function forwardedArgsSkipAdminAccessGuard(args: string[]): boolean {
 export function resolveAdminAccess(
   binaryName: RustBinaryName,
   args: string[],
-  deps: AdminAccessGuardDeps = {}
+  deps: AdminAccessGuardDeps = {},
 ): AdminAccessResolution {
   if (binaryName !== 'agentpay-admin' || forwardedArgsSkipAdminAccessGuard(args)) {
     return {
@@ -92,7 +92,7 @@ export function resolveAdminAccess(
       runningAsRoot: false,
       hasVaultPasswordSource: false,
       canPromptSecurely: false,
-      nonInteractive: hasNonInteractiveFlag(args)
+      nonInteractive: hasNonInteractiveFlag(args),
     };
   }
 
@@ -117,7 +117,7 @@ export function resolveAdminAccess(
       runningAsRoot,
       hasVaultPasswordSource,
       canPromptSecurely,
-      nonInteractive
+      nonInteractive,
     };
   }
 
@@ -129,7 +129,7 @@ export function resolveAdminAccess(
       runningAsRoot,
       hasVaultPasswordSource,
       canPromptSecurely,
-      nonInteractive
+      nonInteractive,
     };
   }
 
@@ -142,7 +142,7 @@ export function resolveAdminAccess(
       runningAsRoot,
       hasVaultPasswordSource,
       canPromptSecurely,
-      nonInteractive
+      nonInteractive,
     };
   }
 
@@ -154,7 +154,7 @@ export function resolveAdminAccess(
       runningAsRoot,
       hasVaultPasswordSource,
       canPromptSecurely,
-      nonInteractive
+      nonInteractive,
     };
   }
 
@@ -167,14 +167,14 @@ export function resolveAdminAccess(
     runningAsRoot,
     hasVaultPasswordSource,
     canPromptSecurely,
-    nonInteractive
+    nonInteractive,
   };
 }
 
 export function assertAdminAccessPreconditions(
   binaryName: RustBinaryName,
   args: string[],
-  deps: AdminAccessGuardDeps = {}
+  deps: AdminAccessGuardDeps = {},
 ): void {
   const access = resolveAdminAccess(binaryName, args, deps);
   if (access.permitted) {

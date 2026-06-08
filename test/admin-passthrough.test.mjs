@@ -1,5 +1,5 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 
 const modulePath = new URL('../src/lib/admin-passthrough.ts', import.meta.url);
 
@@ -28,7 +28,8 @@ test('blockedRawAdminPassthroughMessage redirects revoke-agent-key to the safe w
 test('rewriteAdminHelpText removes raw bootstrap and agent token management passthrough entries', async () => {
   const passthrough = await loadModule(`${Date.now()}-help`);
 
-  const rendered = passthrough.rewriteAdminHelpText(`Admin CLI for configuring vault policies and agent keys
+  const rendered =
+    passthrough.rewriteAdminHelpText(`Admin CLI for configuring vault policies and agent keys
   bootstrap                       Create spending policies and issue a vault key + agent key
   rotate-agent-auth-token         Rotate the bearer token for an existing agent key
   revoke-agent-key                Revoke an existing agent key and invalidate its bearer token

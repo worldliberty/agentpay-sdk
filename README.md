@@ -1,8 +1,11 @@
 # AgentPay SDK
 
-AgentPay SDK is a local runtime for self-custodial, policy-aware wallet operations. It lets you construct, sign, and broadcast blockchain transactions while keeping full control of the wallet and approval path.
+AgentPay SDK gives agents two payment paths:
 
-The main entrypoint is the `agentpay` CLI, which manages the local daemon, wallet access, balances, policy, transfers, and approvals.
+- Fiat with Link: the user binds a Link account, approves each spend request in the Link app, and the agent receives a one-time card credential or Link-backed machine-payment token.
+- Crypto with a local wallet: the self-custodial AgentPay daemon constructs, signs, and broadcasts blockchain transactions while keeping full control of the wallet and approval path.
+
+The main entrypoint is the `agentpay` CLI, which manages Link fiat onboarding, the local daemon, wallet access, balances, policy, transfers, and approvals.
 
 ## Install
 
@@ -28,9 +31,20 @@ The script can:
 - install workspace adapters for `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md`, `.clinerules/agentpay-sdk.md`, and the Cursor rule pack
 - install the Cursor adapter when the current directory is already a Cursor workspace or `AGENTPAY_SETUP_CURSOR_WORKSPACE` is set
 - when no supported AI target is detected, offer the same integrations with all options enabled by default
-- finish after installation and hand off wallet creation to a separate `agentpay admin setup` step by default
+- let the user choose a payment setup path after install: Fiat with Link, Crypto with the local wallet, or later
+- run `agentpay link onboard` for Fiat setup or `agentpay admin setup` for Crypto setup when selected
 - support managed wallet setup on macOS with `launchd` and on Linux with system `systemd`
 - do not configure browser-based relay or web approval services
+
+Non-interactive installs can choose the payment path explicitly:
+
+```bash
+curl -fsSL https://wlfi.sh | AGENTPAY_SETUP_PAYMENT_METHOD=fiat bash
+curl -fsSL https://wlfi.sh | AGENTPAY_SETUP_PAYMENT_METHOD=crypto bash
+curl -fsSL https://wlfi.sh | AGENTPAY_SETUP_PAYMENT_METHOD=none bash
+```
+
+The legacy `AGENTPAY_SETUP_RUN_ADMIN_SETUP=yes` option still maps to the Crypto wallet setup path.
 
 ### Skills only
 
@@ -55,7 +69,7 @@ That mode:
 - `--skills-only`: network access plus a writable home directory or Cursor workspace target
 
 The full one-click installer does not require local Cargo, pnpm, or a preinstalled Node runtime. It still installs Node `20+` locally when the machine does not already have a compatible Node available, because the `agentpay` launcher runs on Node.
-On macOS and Linux, the packaged installer can install the precompiled runtime first and then hand off wallet bootstrap to `agentpay admin setup`.
+On macOS and Linux, the packaged installer can install the precompiled runtime first and then hand off Fiat setup to `agentpay link onboard` or Crypto wallet bootstrap to `agentpay admin setup`.
 
 ### Install from source
 
@@ -96,7 +110,99 @@ If you update Rust daemon code from a source checkout, rerun `npm run install:ru
 
 ## Usage
 
-AgentPay uses a self-custodial local daemon wallet. The managed wallet bootstrap flow below is supported on macOS and Linux:
+### Fiat with Link
+
+Bind Link once:
+
+```bash
+agentpay link onboard
+```
+
+List Link payment methods:
+
+```bash
+agentpay link payment-methods --json
+```
+
+Create a one-time card for an agent purchase. Full card credentials are written to a local `0600` file; stdout stays redacted.
+
+```bash
+agentpay link card \
+  --payment-method-id csmrpd_xxx \
+  --merchant-name "Stripe Press" \
+  --merchant-url "https://press.stripe.com" \
+  --amount 3500 \
+  --context "The user asked this agent to buy Working in Public from Stripe Press. The user will approve this exact purchase in Link before any card credential can be used." \
+  --output-file ~/.agentpay/link-cards/stripe-press-card.json
+```
+
+Advanced Link passthrough is available under `agentpay link`, including `agentpay link spend-request ...`, `agentpay link mpp ...`, and `agentpay link serve ...`.
+
+### Third-party agents
+
+Third-party programs can call the AgentPay Link facade directly:
+
+```js
+import {
+  createLinkCard,
+  listLinkPaymentMethods,
+  onboardLinkAccount,
+} from '@worldlibertyfinancial/agentpay-sdk/link';
+
+await onboardLinkAccount({ clientName: 'My Agent' });
+const methods = await listLinkPaymentMethods();
+const card = await createLinkCard({
+  paymentMethodId: methods[0].id,
+  merchantName: 'Example Merchant',
+  merchantUrl: 'https://merchant.example',
+  amountCents: 2500,
+  context:
+    'The user asked this third-party agent to complete an approved purchase at Example Merchant using Link.',
+});
+```
+
+### Developer package distribution
+
+For third-party agent developers, distribute a built npm package or installer bundle so the `@worldlibertyfinancial/agentpay-sdk/link` export resolves to `dist/link.cjs`.
+
+To create a developer package tarball from this checkout:
+
+```bash
+npm run build
+npm pack
+```
+
+`npm pack` runs the package `prepack` script, which rebuilds before writing the tarball. If you are cutting a new release, update `package.json` to the release version before packing:
+
+```bash
+npm version <version> --no-git-tag-version
+npm pack
+```
+
+Developers can install the resulting tarball directly:
+
+```bash
+npm install ./worldlibertyfinancial-agentpay-sdk-<version>.tgz
+```
+
+Or install it from a release host, private registry, or GitHub Packages:
+
+```bash
+npm install https://your-release-host/worldlibertyfinancial-agentpay-sdk-<version>.tgz
+```
+
+Before handing off a tarball, verify that it contains the Link facade build output:
+
+```bash
+tar -tf worldlibertyfinancial-agentpay-sdk-<version>.tgz | grep 'dist/link.cjs'
+tar -tf worldlibertyfinancial-agentpay-sdk-<version>.tgz | grep 'package.json'
+```
+
+Do not rely on an unbuilt source checkout for developer installation. The package export points at `dist/link.cjs`, and `dist/` is generated build output.
+
+### Crypto with local wallet
+
+The managed wallet bootstrap flow below is supported on macOS and Linux:
 
 1. run `agentpay admin setup`
 2. let it install the daemon and set up a wallet
@@ -138,6 +244,13 @@ User-facing examples below avoid shell env vars on purpose. Prefer prompts, conf
   - uses `--overwrite-keychain` only when you have confirmed the plaintext config token is the credential you intend to keep
 - `agentpay daemon`
   - not a user entrypoint; the managed daemon lifecycle is handled by `agentpay admin setup` on macOS or Linux
+- `agentpay link onboard`
+  - binds the user's Link account for Fiat payments
+  - uses the bundled Stripe Link CLI and shows the same Link approval experience
+- `agentpay link card`
+  - creates a Link spend request, asks the user to approve in Link, polls until approved, and writes one-time card credentials to a private local file
+- `agentpay link ...`
+  - passes advanced Link commands through to the bundled Link CLI, including spend requests, MPP, and the HTTP MCP server
 
 ## Shared config vs live wallet state
 

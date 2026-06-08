@@ -13,15 +13,15 @@ import { Input } from '@worldlibertyfinancial/agent-ui/input';
 import { Label } from '@worldlibertyfinancial/agent-ui/label';
 import { Textarea } from '@worldlibertyfinancial/agent-ui/textarea';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   APPROVAL_CAPABILITY_QUERY_KEY,
   APPROVAL_CAPABILITY_SYNC_CHANNEL,
   CONSUMED_APPROVAL_CAPABILITY_REASON,
-  INVALID_APPROVAL_CAPABILITY_REASON,
-  MISSING_APPROVAL_CAPABILITY_REASON,
   clearApprovalCapability,
   createApprovalCapabilitySyncMessage,
+  INVALID_APPROVAL_CAPABILITY_REASON,
+  MISSING_APPROVAL_CAPABILITY_REASON,
   parseApprovalCapabilitySyncMessage,
   persistApprovalCapability,
   resolveApprovalCapability,
@@ -79,7 +79,7 @@ export function ApprovalForm({
       ? INVALID_APPROVAL_CAPABILITY_REASON
       : approvalCapabilityState === 'consumed'
         ? CONSUMED_APPROVAL_CAPABILITY_REASON
-      : MISSING_APPROVAL_CAPABILITY_REASON;
+        : MISSING_APPROVAL_CAPABILITY_REASON;
 
   useEffect(() => {
     setLiveApproval(approval);
@@ -435,7 +435,10 @@ export function ApprovalForm({
     setError(null);
 
     try {
-      const recovered = await requestSecureApprovalLink(currentApproval.approvalId, relayAdminToken);
+      const recovered = await requestSecureApprovalLink(
+        currentApproval.approvalId,
+        relayAdminToken,
+      );
       const persisted = persistApprovalCapability(
         currentApproval.approvalId,
         recovered.approvalCapability,
@@ -446,11 +449,7 @@ export function ApprovalForm({
       }
 
       capabilitySyncChannelRef.current?.postMessage(
-        createApprovalCapabilitySyncMessage(
-          currentApproval.approvalId,
-          persisted.value,
-          'loaded',
-        ),
+        createApprovalCapabilitySyncMessage(currentApproval.approvalId, persisted.value, 'loaded'),
       );
       setApprovalCapability(persisted.value);
       setApprovalCapabilityState('loaded');
@@ -496,7 +495,7 @@ export function ApprovalForm({
                   ? 'destructive'
                   : approvalCapabilityState === 'consumed'
                     ? 'warning'
-                  : 'secondary'
+                    : 'secondary'
             }
           >
             {approvalCapability
@@ -505,7 +504,7 @@ export function ApprovalForm({
                 ? 'Invalid secure link'
                 : approvalCapabilityState === 'consumed'
                   ? 'Secure link consumed'
-                : 'View only'}
+                  : 'View only'}
           </Badge>
           {approvalCapability ? (
             <p className="text-muted-foreground">
@@ -613,8 +612,8 @@ export function ApprovalForm({
           <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-4 text-sm">
             <p className="font-medium text-foreground">Human confirmation required</p>
             <p className="mt-1 text-muted-foreground">
-              Verify the destination, amount, and daemon identity before sending the vault
-              password. The password is cleared from the page after every submit attempt.
+              Verify the destination, amount, and daemon identity before sending the vault password.
+              The password is cleared from the page after every submit attempt.
             </p>
             <label className="mt-3 flex items-start gap-3" htmlFor="confirm-details">
               <input
