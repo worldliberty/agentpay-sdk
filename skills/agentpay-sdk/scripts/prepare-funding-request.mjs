@@ -98,10 +98,7 @@ function formatNativeAmount(wei) {
   if (fraction === 0n) {
     return `${whole.toString()}.0`;
   }
-  return `${whole.toString()}.${fraction
-    .toString()
-    .padStart(18, '0')
-    .replace(/0+$/u, '')}`;
+  return `${whole.toString()}.${fraction.toString().padStart(18, '0').replace(/0+$/u, '')}`;
 }
 
 function renderSvgDataUri(text) {

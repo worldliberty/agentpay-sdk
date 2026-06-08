@@ -11,9 +11,9 @@
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { Transaction as TempoTransaction } from 'viem/tempo';
-import { keccak256, recoverAddress, parseSignature } from 'viem';
+import { keccak256, parseSignature, recoverAddress } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
+import { Transaction as TempoTransaction } from 'viem/tempo';
 
 const TEST_PRIVATE_KEY = (() => {
   const bytes = new Uint8Array(32);
@@ -56,11 +56,7 @@ test('getSignPayload with and without `from` produce different hashes', () => {
     from: account.address,
   });
 
-  assert.notEqual(
-    hashWithout,
-    hashWith,
-    'hashes must differ — `from` enables Keychain wrapping',
-  );
+  assert.notEqual(hashWithout, hashWith, 'hashes must differ — `from` enables Keychain wrapping');
 });
 
 test('signing hash without `from` round-trips through ecrecover correctly', async () => {

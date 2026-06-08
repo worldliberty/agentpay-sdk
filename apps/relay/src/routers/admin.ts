@@ -2,9 +2,10 @@ import { cacheErrorCodes } from '@worldlibertyfinancial/agent-cache/errors';
 import { adminProcedure, TRPCError, t } from '@/lib/core/trpc';
 import { listApprovalRequestsInputSchema, submitEncryptedUpdateInputSchema } from '@/lib/schemas';
 
-function adminApprovalFrontendBaseUrl(
-  env: { RELAY_BASE_URL: string; RELAY_FRONTEND_BASE_URL?: string | undefined },
-): string | null {
+function adminApprovalFrontendBaseUrl(env: {
+  RELAY_BASE_URL: string;
+  RELAY_FRONTEND_BASE_URL?: string | undefined;
+}): string | null {
   const candidate = env.RELAY_FRONTEND_BASE_URL?.trim() || env.RELAY_BASE_URL.trim();
   return candidate ? candidate.replace(/\/$/u, '') : null;
 }
@@ -14,7 +15,9 @@ function approvalCapabilityToken(metadata: Record<string, string> | undefined): 
   return candidate ? candidate : null;
 }
 
-function sanitizedApprovalMetadata(metadata: Record<string, string> | undefined): Record<string, string> | undefined {
+function sanitizedApprovalMetadata(
+  metadata: Record<string, string> | undefined,
+): Record<string, string> | undefined {
   if (!metadata) {
     return undefined;
   }

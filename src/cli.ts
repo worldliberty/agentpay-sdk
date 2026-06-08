@@ -145,8 +145,7 @@ import {
 import { registerBuiltinCliPlugins } from './plugins/index.js';
 
 type SolanaTransferModule = typeof import('./lib/solana-transfer.js');
-type SolanaDurableNonceContext =
-  import('./lib/solana-transfer.js').SolanaDurableNonceContext;
+type SolanaDurableNonceContext = import('./lib/solana-transfer.js').SolanaDurableNonceContext;
 
 let solanaTransferModulePromise: Promise<SolanaTransferModule> | undefined;
 

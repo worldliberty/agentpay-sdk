@@ -1,5 +1,5 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 
 const modulePath = new URL('../src/lib/admin-guard.ts', import.meta.url);
 
@@ -76,8 +76,8 @@ test('assertAdminAccessPreconditions allows non-admin binaries without a passwor
       env: {},
       getEffectiveUid: () => 501,
       stdinIsTty: false,
-      stderrIsTty: false
-    })
+      stderrIsTty: false,
+    }),
   );
 });
 
@@ -90,9 +90,9 @@ test('assertAdminAccessPreconditions still requires a password source or tty whe
         env: {},
         getEffectiveUid: () => 0,
         stdinIsTty: false,
-        stderrIsTty: false
+        stderrIsTty: false,
       }),
-    /require --vault-password-stdin or a local TTY/
+    /require --vault-password-stdin or a local TTY/,
   );
 
   assert.doesNotThrow(() =>
@@ -100,8 +100,8 @@ test('assertAdminAccessPreconditions still requires a password source or tty whe
       env: {},
       getEffectiveUid: () => 0,
       stdinIsTty: true,
-      stderrIsTty: true
-    })
+      stderrIsTty: true,
+    }),
   );
 });
 
@@ -109,12 +109,16 @@ test('assertAdminAccessPreconditions allows stdin password relay', async () => {
   const adminGuard = await loadModule(`${Date.now()}-password-sources`);
 
   assert.doesNotThrow(() =>
-    adminGuard.assertAdminAccessPreconditions('agentpay-admin', ['bootstrap', '--vault-password-stdin'], {
-      env: {},
-      getEffectiveUid: () => 501,
-      stdinIsTty: false,
-      stderrIsTty: false
-    })
+    adminGuard.assertAdminAccessPreconditions(
+      'agentpay-admin',
+      ['bootstrap', '--vault-password-stdin'],
+      {
+        env: {},
+        getEffectiveUid: () => 501,
+        stdinIsTty: false,
+        stderrIsTty: false,
+      },
+    ),
   );
 });
 
@@ -123,13 +127,17 @@ test('assertAdminAccessPreconditions rejects insecure argv and env password sour
 
   assert.throws(
     () =>
-      adminGuard.assertAdminAccessPreconditions('agentpay-admin', ['bootstrap', '--vault-password=secret'], {
-        env: {},
-        getEffectiveUid: () => 501,
-        stdinIsTty: false,
-        stderrIsTty: false
-      }),
-    /insecure --vault-password is disabled/
+      adminGuard.assertAdminAccessPreconditions(
+        'agentpay-admin',
+        ['bootstrap', '--vault-password=secret'],
+        {
+          env: {},
+          getEffectiveUid: () => 501,
+          stdinIsTty: false,
+          stderrIsTty: false,
+        },
+      ),
+    /insecure --vault-password is disabled/,
   );
 
   assert.throws(
@@ -138,9 +146,9 @@ test('assertAdminAccessPreconditions rejects insecure argv and env password sour
         env: { AGENTPAY_VAULT_PASSWORD: 'secret' },
         getEffectiveUid: () => 501,
         stdinIsTty: false,
-        stderrIsTty: false
+        stderrIsTty: false,
       }),
-    /AGENTPAY_VAULT_PASSWORD is disabled for security/
+    /AGENTPAY_VAULT_PASSWORD is disabled for security/,
   );
 });
 
@@ -150,31 +158,39 @@ test('resolveAdminAccess falls back to process.getuid and then null when euid he
   await withMockedProcessUidFns(
     {
       geteuid: undefined,
-      getuid: () => 0
+      getuid: () => 0,
     },
     async () => {
-      const access = adminGuard.resolveAdminAccess('agentpay-admin', ['bootstrap', '--vault-password-stdin'], {
-        env: {},
-        stdinIsTty: false,
-        stderrIsTty: false
-      });
+      const access = adminGuard.resolveAdminAccess(
+        'agentpay-admin',
+        ['bootstrap', '--vault-password-stdin'],
+        {
+          env: {},
+          stdinIsTty: false,
+          stderrIsTty: false,
+        },
+      );
       assert.equal(access.runningAsRoot, true);
-    }
+    },
   );
 
   await withMockedProcessUidFns(
     {
       geteuid: undefined,
-      getuid: undefined
+      getuid: undefined,
     },
     async () => {
-      const access = adminGuard.resolveAdminAccess('agentpay-admin', ['bootstrap', '--vault-password-stdin'], {
-        env: {},
-        stdinIsTty: false,
-        stderrIsTty: false
-      });
+      const access = adminGuard.resolveAdminAccess(
+        'agentpay-admin',
+        ['bootstrap', '--vault-password-stdin'],
+        {
+          env: {},
+          stdinIsTty: false,
+          stderrIsTty: false,
+        },
+      );
       assert.equal(access.runningAsRoot, false);
-    }
+    },
   );
 });
 
@@ -183,13 +199,17 @@ test('resolveAdminAccess rejects split vault password options without a usable v
 
   assert.throws(
     () =>
-      adminGuard.resolveAdminAccess('agentpay-admin', ['bootstrap', '--vault-password', '-secret'], {
-        env: {},
-        getEffectiveUid: () => 501,
-        stdinIsTty: false,
-        stderrIsTty: false
-      }),
-    /--vault-password requires a value/
+      adminGuard.resolveAdminAccess(
+        'agentpay-admin',
+        ['bootstrap', '--vault-password', '-secret'],
+        {
+          env: {},
+          getEffectiveUid: () => 501,
+          stdinIsTty: false,
+          stderrIsTty: false,
+        },
+      ),
+    /--vault-password requires a value/,
   );
 });
 
@@ -203,8 +223,8 @@ test('resolveAdminAccess treats split vault password values as insecure when the
       env: {},
       getEffectiveUid: () => 501,
       stdinIsTty: false,
-      stderrIsTty: false
-    }
+      stderrIsTty: false,
+    },
   );
 
   assert.equal(access.permitted, false);
@@ -220,7 +240,7 @@ test('resolveAdminAccess uses default env and tty deps when explicit overrides a
   await withMockedProcessUidFns(
     {
       geteuid: () => 0,
-      getuid: () => 501
+      getuid: () => 501,
     },
     async () => {
       await withMockedTty(true, false, async () => {
@@ -231,7 +251,7 @@ test('resolveAdminAccess uses default env and tty deps when explicit overrides a
         assert.equal(access.permitted, false);
         assert.match(access.reason, /AGENTPAY_VAULT_PASSWORD is disabled/);
       });
-    }
+    },
   );
 
   if (originalEnv === undefined) {
@@ -249,8 +269,8 @@ test('assertAdminAccessPreconditions allows interactive admin terminals', async 
       env: {},
       getEffectiveUid: () => 501,
       stdinIsTty: true,
-      stderrIsTty: true
-    })
+      stderrIsTty: true,
+    }),
   );
 });
 
@@ -261,7 +281,7 @@ test('resolveAdminAccess reports interactive prompting only when prompts are all
     env: {},
     getEffectiveUid: () => 501,
     stdinIsTty: true,
-    stderrIsTty: true
+    stderrIsTty: true,
   });
   assert.equal(interactive.permitted, true);
   assert.equal(interactive.mode, 'interactive-prompt');
@@ -273,8 +293,8 @@ test('resolveAdminAccess reports interactive prompting only when prompts are all
       env: {},
       getEffectiveUid: () => 501,
       stdinIsTty: true,
-      stderrIsTty: true
-    }
+      stderrIsTty: true,
+    },
   );
   assert.equal(nonInteractive.permitted, false);
   assert.equal(nonInteractive.mode, 'blocked');
@@ -290,9 +310,9 @@ test('assertAdminAccessPreconditions rejects non-root non-interactive admin invo
         env: {},
         getEffectiveUid: () => 501,
         stdinIsTty: false,
-        stderrIsTty: false
+        stderrIsTty: false,
       }),
-    /require --vault-password-stdin or a local TTY/
+    /require --vault-password-stdin or a local TTY/,
   );
 });
 
@@ -301,13 +321,17 @@ test('assertAdminAccessPreconditions rejects tty admin invocations when --non-in
 
   assert.throws(
     () =>
-      adminGuard.assertAdminAccessPreconditions('agentpay-admin', ['bootstrap', '--non-interactive'], {
-        env: {},
-        getEffectiveUid: () => 501,
-        stdinIsTty: true,
-        stderrIsTty: true
-      }),
-    /use --vault-password-stdin/
+      adminGuard.assertAdminAccessPreconditions(
+        'agentpay-admin',
+        ['bootstrap', '--non-interactive'],
+        {
+          env: {},
+          getEffectiveUid: () => 501,
+          stdinIsTty: true,
+          stderrIsTty: true,
+        },
+      ),
+    /use --vault-password-stdin/,
   );
 });
 
@@ -316,16 +340,19 @@ test('assertAdminAccessPreconditions rejects root non-interactive admin invocati
 
   assert.throws(
     () =>
-      adminGuard.assertAdminAccessPreconditions('agentpay-admin', ['bootstrap', '--non-interactive'], {
-        env: {},
-        getEffectiveUid: () => 0,
-        stdinIsTty: true,
-        stderrIsTty: true
-      }),
-    /use --vault-password-stdin/
+      adminGuard.assertAdminAccessPreconditions(
+        'agentpay-admin',
+        ['bootstrap', '--non-interactive'],
+        {
+          env: {},
+          getEffectiveUid: () => 0,
+          stdinIsTty: true,
+          stderrIsTty: true,
+        },
+      ),
+    /use --vault-password-stdin/,
   );
 });
-
 
 test('resolveAdminAccess ignores password and non-interactive markers after option terminator', async () => {
   const adminGuard = await loadModule(`${Date.now()}-option-terminator`);
@@ -337,8 +364,8 @@ test('resolveAdminAccess ignores password and non-interactive markers after opti
       env: {},
       getEffectiveUid: () => 501,
       stdinIsTty: true,
-      stderrIsTty: true
-    }
+      stderrIsTty: true,
+    },
   );
 
   assert.equal(access.permitted, true);
@@ -357,8 +384,8 @@ test('resolveAdminAccess blocks password markers placed after option terminator 
       env: {},
       getEffectiveUid: () => 501,
       stdinIsTty: false,
-      stderrIsTty: false
-    }
+      stderrIsTty: false,
+    },
   );
 
   assert.equal(access.permitted, false);

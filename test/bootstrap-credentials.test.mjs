@@ -1,8 +1,8 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import test from 'node:test';
 
 const modulePath = new URL('../src/lib/bootstrap-credentials.ts', import.meta.url);
 
@@ -10,7 +10,7 @@ function writePrivateFile(targetPath, contents) {
   fs.mkdirSync(path.dirname(targetPath), { recursive: true, mode: 0o700 });
   fs.writeFileSync(targetPath, contents, {
     encoding: 'utf8',
-    mode: 0o600
+    mode: 0o600,
   });
   fs.chmodSync(targetPath, 0o600);
 }
@@ -48,13 +48,13 @@ test('readBootstrapAgentCredentialsFile rejects oversized bootstrap payloads', a
     JSON.stringify({
       agent_key_id: '00000000-0000-0000-0000-000000000001',
       agent_auth_token: 'x',
-      padding: 'a'.repeat(256 * 1024)
-    })
+      padding: 'a'.repeat(256 * 1024),
+    }),
   );
 
   assert.throws(
     () => bootstrap.readBootstrapAgentCredentialsFile(bootstrapPath),
-    /must not exceed 262144 bytes/
+    /must not exceed 262144 bytes/,
   );
 
   fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -69,13 +69,13 @@ test('readBootstrapAgentCredentialsFile rejects invalid agent key ids', async ()
     bootstrapPath,
     JSON.stringify({
       agent_key_id: 'not-a-uuid',
-      agent_auth_token: 'agent-token'
-    })
+      agent_auth_token: 'agent-token',
+    }),
   );
 
   assert.throws(
     () => bootstrap.readBootstrapAgentCredentialsFile(bootstrapPath),
-    /agentKeyId must be a valid UUID/
+    /agentKeyId must be a valid UUID/,
   );
 
   fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -90,13 +90,13 @@ test('readBootstrapAgentCredentialsFile rejects empty or whitespace agent auth t
     bootstrapPath,
     JSON.stringify({
       agent_key_id: '00000000-0000-0000-0000-000000000001',
-      agent_auth_token: '   \n'
-    })
+      agent_auth_token: '   \n',
+    }),
   );
 
   assert.throws(
     () => bootstrap.readBootstrapAgentCredentialsFile(bootstrapPath),
-    /agent_auth_token is required/
+    /agent_auth_token is required/,
   );
 
   fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -127,7 +127,7 @@ test('readBootstrapSetupFile parses summary and credentials from one validated p
       recipient_scope: 'all recipients',
       policy_attachment: 'policy_set',
       policy_note: 'bootstrap note',
-    })
+    }),
   );
 
   const result = bootstrap.readBootstrapSetupFile(bootstrapPath);
@@ -162,8 +162,8 @@ test('readBootstrapSetupSummaryFile accepts unrestricted shared-config summaries
         recipient_scope: undefined,
         policy_attachment: 'all_policies',
         attached_policy_ids: [],
-      })
-    )
+      }),
+    ),
   );
 
   const summary = bootstrap.readBootstrapSetupSummaryFile(bootstrapPath);
@@ -193,8 +193,8 @@ test('readBootstrapSetupSummaryFile accepts explicit-only attachments without bo
         asset_scope: undefined,
         recipient_scope: undefined,
         attached_policy_ids: ['00000000-0000-0000-0000-000000000099'],
-      })
-    )
+      }),
+    ),
   );
 
   const summary = bootstrap.readBootstrapSetupSummaryFile(bootstrapPath);
@@ -205,19 +205,15 @@ test('readBootstrapSetupSummaryFile accepts explicit-only attachments without bo
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
-
 test('cleanupBootstrapAgentCredentialsFile is a no-op when the bootstrap file is missing', async () => {
   const bootstrap = await import(modulePath.href + `?case=${Date.now()}-cleanup-missing`);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-bootstrap-test-'));
   const bootstrapPath = path.join(tempRoot, 'missing.json');
 
-  assert.deepEqual(
-    bootstrap.cleanupBootstrapAgentCredentialsFile(bootstrapPath, 'deleted'),
-    {
-      sourcePath: bootstrapPath,
-      action: 'missing'
-    }
-  );
+  assert.deepEqual(bootstrap.cleanupBootstrapAgentCredentialsFile(bootstrapPath, 'deleted'), {
+    sourcePath: bootstrapPath,
+    action: 'missing',
+  });
 
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
@@ -229,20 +225,19 @@ test('cleanupBootstrapAgentCredentialsFile deletes malformed files when redactio
 
   writePrivateFile(bootstrapPath, '{\n  "agent_auth_token": "secret"');
 
-  assert.deepEqual(
-    bootstrap.cleanupBootstrapAgentCredentialsFile(bootstrapPath, 'redacted'),
-    {
-      sourcePath: bootstrapPath,
-      action: 'deleted'
-    }
-  );
+  assert.deepEqual(bootstrap.cleanupBootstrapAgentCredentialsFile(bootstrapPath, 'redacted'), {
+    sourcePath: bootstrapPath,
+    action: 'deleted',
+  });
   assert.equal(fs.existsSync(bootstrapPath), false);
 
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
 test('cleanupBootstrapAgentCredentialsFile returns a failed result when redaction and fallback delete both fail', async () => {
-  const bootstrap = await import(modulePath.href + `?case=${Date.now()}-cleanup-fallback-delete-failure`);
+  const bootstrap = await import(
+    modulePath.href + `?case=${Date.now()}-cleanup-fallback-delete-failure`
+  );
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-bootstrap-test-'));
   const bootstrapPath = path.join(tempRoot, 'bootstrap.json');
 
@@ -276,7 +271,7 @@ test('assertBootstrapSetupSummaryLeaseIsActive rejects invalid timestamps', asyn
 
   assert.throws(
     () => bootstrap.assertBootstrapSetupSummaryLeaseIsActive({ leaseExpiresAt: 'not-a-date' }),
-    /lease_expires_at is not a valid ISO-8601 timestamp/
+    /lease_expires_at is not a valid ISO-8601 timestamp/,
   );
 });
 
@@ -284,11 +279,12 @@ test('assertBootstrapSetupSummaryLeaseIsActive rejects expired bootstrap leases'
   const bootstrap = await import(modulePath.href + `?case=${Date.now()}-expired-lease`);
 
   assert.throws(
-    () => bootstrap.assertBootstrapSetupSummaryLeaseIsActive(
-      { leaseExpiresAt: '2020-01-01T00:00:00Z' },
-      { now: () => Date.parse('2020-01-01T00:00:01Z') }
-    ),
-    /bootstrap summary lease has expired/
+    () =>
+      bootstrap.assertBootstrapSetupSummaryLeaseIsActive(
+        { leaseExpiresAt: '2020-01-01T00:00:00Z' },
+        { now: () => Date.parse('2020-01-01T00:00:01Z') },
+      ),
+    /bootstrap summary lease has expired/,
   );
 });
 
@@ -297,7 +293,7 @@ test('assertBootstrapSetupSummaryLeaseIsActive accepts active bootstrap leases',
 
   bootstrap.assertBootstrapSetupSummaryLeaseIsActive(
     { leaseExpiresAt: '2030-01-01T00:00:00Z' },
-    { now: () => Date.parse('2029-12-31T23:59:59Z') }
+    { now: () => Date.parse('2029-12-31T23:59:59Z') },
   );
 });
 
@@ -309,7 +305,6 @@ test('assertBootstrapSetupSummaryLeaseIsActive uses the default clock when deps 
   });
 });
 
-
 test('redactBootstrapAgentCredentialsFile redacts both agent auth token and vault private key', async () => {
   const bootstrap = await import(modulePath.href + `?case=${Date.now()}-redact-private-key`);
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-bootstrap-test-'));
@@ -320,8 +315,8 @@ test('redactBootstrapAgentCredentialsFile redacts both agent auth token and vaul
     JSON.stringify({
       agent_key_id: '00000000-0000-0000-0000-000000000001',
       agent_auth_token: 'agent-secret-token',
-      vault_private_key: '11'.repeat(32)
-    })
+      vault_private_key: '11'.repeat(32),
+    }),
   );
 
   bootstrap.redactBootstrapAgentCredentialsFile(bootstrapPath);
@@ -459,12 +454,7 @@ test('readBootstrapSetupSummaryFile parses destination and token policy arrays',
             policy_id: 'manual-approval',
           },
         ],
-        attached_policy_ids: [
-          'dest-per-tx',
-          'token-per-tx',
-          'override-per-tx',
-          'manual-approval',
-        ],
+        attached_policy_ids: ['dest-per-tx', 'token-per-tx', 'override-per-tx', 'manual-approval'],
       }),
     ),
   );
@@ -530,10 +520,7 @@ test('readBootstrapSetupSummaryFile rejects malformed optional field types', asy
     }),
     /token_policies\[0\]\.chain_id is required/,
   );
-  assertPayloadError(
-    validBootstrapPayload({ lease_id: '' }),
-    /lease_id is required/,
-  );
+  assertPayloadError(validBootstrapPayload({ lease_id: '' }), /lease_id is required/);
   assertPayloadError(
     validBootstrapPayload({
       per_tx_policy_id: 'policy-per-tx',
@@ -584,7 +571,9 @@ test('readBootstrapAgentCredentialsFile supports camelCase fallback keys and rej
 });
 
 test('readBootstrapAgentCredentialsFile rejects <redacted> token payloads', async () => {
-  const bootstrap = await import(modulePath.href + `?case=${Date.now()}-redacted-token-placeholder`);
+  const bootstrap = await import(
+    modulePath.href + `?case=${Date.now()}-redacted-token-placeholder`
+  );
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-bootstrap-test-'));
   const bootstrapPath = path.join(tempRoot, 'bootstrap.json');
   writePrivateFile(

@@ -63,15 +63,18 @@ test('getDaemonRecord rejects malformed relay payloads instead of trusting them'
   const originalFetch = global.fetch;
 
   global.fetch = async () =>
-    new Response(JSON.stringify({
-      ...validDaemon,
-      daemonPublicKey: 'not-hex',
-    }), {
-      status: 200,
-      headers: {
-        'content-type': 'application/json',
+    new Response(
+      JSON.stringify({
+        ...validDaemon,
+        daemonPublicKey: 'not-hex',
+      }),
+      {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+        },
       },
-    });
+    );
 
   try {
     await assert.rejects(

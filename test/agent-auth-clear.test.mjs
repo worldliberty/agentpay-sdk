@@ -1,5 +1,5 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 
 const modulePath = new URL('../src/lib/agent-auth-clear.ts', import.meta.url);
 
@@ -14,7 +14,7 @@ test('clearAgentAuthToken removes matching configured agentKeyId and legacy conf
     daemonSocket: '/trusted/run/daemon.sock',
     stateFile: '/trusted/state.enc',
     rustBinDir: '/trusted/bin',
-    chains: {}
+    chains: {},
   };
   const clearedKeys = [];
 
@@ -31,7 +31,7 @@ test('clearAgentAuthToken removes matching configured agentKeyId and legacy conf
       delete next[key];
       configState = next;
       return { ...configState };
-    }
+    },
   });
 
   assert.equal(result.agentKeyId, TEST_AGENT_KEY_ID);
@@ -50,7 +50,7 @@ test('clearAgentAuthToken preserves other configured agentKeyIds but still scrub
     daemonSocket: '/trusted/run/daemon.sock',
     stateFile: '/trusted/state.enc',
     rustBinDir: '/trusted/bin',
-    chains: {}
+    chains: {},
   };
   const clearedKeys = [];
 
@@ -64,7 +64,7 @@ test('clearAgentAuthToken preserves other configured agentKeyIds but still scrub
       delete next[key];
       configState = next;
       return { ...configState };
-    }
+    },
   });
 
   assert.equal(result.agentKeyId, TEST_AGENT_KEY_ID);

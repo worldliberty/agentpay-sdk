@@ -4,17 +4,8 @@
     "rootDir": "src",
     "outDir": "dist",
     "jsx": "react-jsx",
-    "lib": [
-      "dom",
-      "dom.iterable",
-      "es2022"
-    ],
-    "types": [
-      "react",
-      "react-dom"
-    ]
+    "lib": ["dom", "dom.iterable", "es2022"],
+    "types": ["react", "react-dom"]
   },
-  "include": [
-    "src/**/*"
-  ]
+  "include": ["src/**/*"]
 }

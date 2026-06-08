@@ -55,10 +55,7 @@ function signalExitCode(signal: NodeJS.Signals | null): number {
   return typeof signalNumber === 'number' ? 128 + signalNumber : 128;
 }
 
-async function writeChildStdin(
-  child: ReturnType<typeof spawn>,
-  stdin: string,
-): Promise<void> {
+async function writeChildStdin(child: ReturnType<typeof spawn>, stdin: string): Promise<void> {
   const stream = child.stdin;
   if (!stream) {
     return;
@@ -148,9 +145,7 @@ async function runCommand(
   return result;
 }
 
-function resolveEnvAssignmentArgs(
-  env: Record<string, string | undefined> | undefined,
-): string[] {
+function resolveEnvAssignmentArgs(env: Record<string, string | undefined> | undefined): string[] {
   if (!env) {
     return [];
   }
@@ -220,16 +215,11 @@ export function createSudoSession(deps: CreateSudoSessionDeps) {
     }
 
     await prime();
-    let result = await runCommand(
-      'sudo',
-      ['-n', ...commandArgs],
-      options,
-      {
-        spawnCommand,
-        stdout,
-        stderr,
-      },
-    );
+    let result = await runCommand('sudo', ['-n', ...commandArgs], options, {
+      spawnCommand,
+      stdout,
+      stderr,
+    });
 
     if (result.code === 0) {
       return result;
@@ -242,16 +232,11 @@ export function createSudoSession(deps: CreateSudoSessionDeps) {
 
     primed = false;
     await prime();
-    result = await runCommand(
-      'sudo',
-      ['-n', ...commandArgs],
-      options,
-      {
-        spawnCommand,
-        stdout,
-        stderr,
-      },
-    );
+    result = await runCommand('sudo', ['-n', ...commandArgs], options, {
+      spawnCommand,
+      stdout,
+      stderr,
+    });
     return result;
   }
 

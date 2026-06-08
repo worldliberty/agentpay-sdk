@@ -6,7 +6,7 @@ import type { ApprovalUpdateInput, EncryptedApprovalUpdateEnvelope } from './typ
 
 export function encryptApprovalUpdate(
   daemonPublicKeyHex: string,
-  payload: ApprovalUpdateInput
+  payload: ApprovalUpdateInput,
 ): EncryptedApprovalUpdateEnvelope {
   const daemonPublicKey = hexToBytes(daemonPublicKeyHex.replace(/^0x/u, ''));
   const ephemeralSecretKey = x25519.utils.randomPrivateKey();
@@ -21,6 +21,6 @@ export function encryptApprovalUpdate(
     algorithm: 'x25519-xchacha20poly1305-v1',
     ephemeralPublicKey: bytesToHex(ephemeralPublicKey),
     nonce: bytesToHex(nonce),
-    ciphertext: bytesToHex(ciphertext)
+    ciphertext: bytesToHex(ciphertext),
   };
 }

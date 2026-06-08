@@ -1,9 +1,9 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import test from 'node:test';
 
 const modulePath = new URL('../src/lib/passthrough-security.ts', import.meta.url);
 const expectedDefaultManagedSocket =
@@ -65,8 +65,14 @@ test('forwardedArgsSkipDaemonSocketValidation skips help and version passthrough
   assert.equal(passthrough.forwardedArgsSkipDaemonSocketValidation(['--version']), true);
   assert.equal(passthrough.forwardedArgsSkipDaemonSocketValidation(['transfer']), false);
   assert.equal(passthrough.forwardedArgsSkipDaemonSocketValidation(['transfer', 'help']), false);
-  assert.equal(passthrough.forwardedArgsSkipDaemonSocketValidation(['transfer', '--', '--help']), false);
-  assert.equal(passthrough.forwardedArgsSkipDaemonSocketValidation(['transfer', '--', '-h']), false);
+  assert.equal(
+    passthrough.forwardedArgsSkipDaemonSocketValidation(['transfer', '--', '--help']),
+    false,
+  );
+  assert.equal(
+    passthrough.forwardedArgsSkipDaemonSocketValidation(['transfer', '--', '-h']),
+    false,
+  );
 });
 
 test('resolveValidatedPassthroughDaemonSocket prefers explicit forwarded daemon sockets', async () => {
@@ -82,8 +88,8 @@ test('resolveValidatedPassthroughDaemonSocket prefers explicit forwarded daemon 
       assertTrustedDaemonSocketPath: (targetPath) => {
         seen.push(targetPath);
         return targetPath;
-      }
-    }
+      },
+    },
   );
 
   assert.equal(resolved, '/trusted/run/custom.sock');
@@ -99,8 +105,8 @@ test('resolveValidatedPassthroughDaemonSocket falls back to env and config value
     { daemonSocket: '/trusted/run/config.sock' },
     {
       env: { AGENTPAY_DAEMON_SOCKET: '/trusted/run/env.sock' },
-      assertTrustedDaemonSocketPath: (targetPath) => targetPath
-    }
+      assertTrustedDaemonSocketPath: (targetPath) => targetPath,
+    },
   );
   const configResolved = passthrough.resolveValidatedPassthroughDaemonSocket(
     'agentpay-admin',
@@ -108,8 +114,8 @@ test('resolveValidatedPassthroughDaemonSocket falls back to env and config value
     { daemonSocket: '/trusted/run/config.sock' },
     {
       env: {},
-      assertTrustedDaemonSocketPath: (targetPath) => targetPath
-    }
+      assertTrustedDaemonSocketPath: (targetPath) => targetPath,
+    },
   );
 
   assert.equal(envResolved, '/trusted/run/env.sock');
@@ -179,10 +185,10 @@ test('resolveValidatedPassthroughDaemonSocket rejects empty daemon socket values
         {},
         {
           env: {},
-          assertTrustedDaemonSocketPath: (targetPath) => targetPath
-        }
+          assertTrustedDaemonSocketPath: (targetPath) => targetPath,
+        },
       ),
-    /--daemon-socket requires a path/
+    /--daemon-socket requires a path/,
   );
 });
 
@@ -197,10 +203,10 @@ test('resolveValidatedPassthroughDaemonSocket rejects duplicate daemon socket va
         {},
         {
           env: {},
-          assertTrustedDaemonSocketPath: (targetPath) => targetPath
-        }
+          assertTrustedDaemonSocketPath: (targetPath) => targetPath,
+        },
       ),
-    /--daemon-socket may only be provided once/
+    /--daemon-socket may only be provided once/,
   );
 });
 
@@ -210,12 +216,12 @@ test('readForwardedLongOptionValue ignores tokens after option terminator', asyn
   assert.deepEqual(
     passthrough.readForwardedLongOptionValue(
       ['transfer', '--', '--daemon-socket', '/unparsed.sock'],
-      '--daemon-socket'
+      '--daemon-socket',
     ),
     {
       present: false,
-      value: undefined
-    }
+      value: undefined,
+    },
   );
 });
 
@@ -232,8 +238,8 @@ test('resolveValidatedPassthroughDaemonSocket skips validation for daemon passth
       assertTrustedDaemonSocketPath: () => {
         called = true;
         return '/trusted/run/daemon.sock';
-      }
-    }
+      },
+    },
   );
 
   assert.equal(resolved, null);
@@ -254,10 +260,11 @@ test('resolveValidatedPassthroughDaemonSocket requires root-owned sockets for ad
   const server = await listenOnUnixSocket(socketPath);
 
   assert.throws(
-    () => passthrough.resolveValidatedPassthroughDaemonSocket('agentpay-admin', ['bootstrap'], {
-      daemonSocket: socketPath
-    }),
-    /must be owned by root/
+    () =>
+      passthrough.resolveValidatedPassthroughDaemonSocket('agentpay-admin', ['bootstrap'], {
+        daemonSocket: socketPath,
+      }),
+    /must be owned by root/,
   );
 
   await closeUnixSocket(server, socketPath);
@@ -335,9 +342,9 @@ test('resolveValidatedPassthroughDaemonSocket still accepts same-user sockets fo
 
   assert.equal(
     passthrough.resolveValidatedPassthroughDaemonSocket('agentpay-agent', ['transfer'], {
-      daemonSocket: socketPath
+      daemonSocket: socketPath,
     }),
-    path.resolve(socketPath)
+    path.resolve(socketPath),
   );
 
   await closeUnixSocket(server, socketPath);
@@ -363,13 +370,11 @@ test('resolveValidatedPassthroughDaemonSocket rejects same-user sockets for agen
     assert.throws(
       () =>
         withMockedEuid(0, () =>
-          passthrough.resolveValidatedPassthroughDaemonSocket(
-            'agentpay-agent',
-            ['transfer'],
-            { daemonSocket: socketPath }
-          )
+          passthrough.resolveValidatedPassthroughDaemonSocket('agentpay-agent', ['transfer'], {
+            daemonSocket: socketPath,
+          }),
         ),
-      /must be owned by root/
+      /must be owned by root/,
     );
   } finally {
     if (originalSudoUid === undefined) {

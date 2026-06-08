@@ -35,7 +35,10 @@ interface ResolvedDaemonSocketSelection {
   source: ResolvedDaemonSocketSource;
 }
 
-function findForwardedOptionOccurrences(args: string[], optionName: string): ForwardedOptionValue[] {
+function findForwardedOptionOccurrences(
+  args: string[],
+  optionName: string,
+): ForwardedOptionValue[] {
   const matches: ForwardedOptionValue[] = [];
 
   for (let index = 0; index < args.length; index += 1) {
@@ -48,12 +51,12 @@ function findForwardedOptionOccurrences(args: string[], optionName: string): For
       const value = args[index + 1];
       if (value === undefined || value === '--' || value.startsWith('-')) {
         throw new Error(
-          `${optionName} requires a path; use ${optionName}=<path> if the path starts with -`
+          `${optionName} requires a path; use ${optionName}=<path> if the path starts with -`,
         );
       }
       matches.push({
         present: true,
-        value
+        value,
       });
       index += 1;
       continue;
@@ -62,7 +65,7 @@ function findForwardedOptionOccurrences(args: string[], optionName: string): For
     if (current.startsWith(`${optionName}=`)) {
       matches.push({
         present: true,
-        value: current.slice(optionName.length + 1)
+        value: current.slice(optionName.length + 1),
       });
     }
   }
@@ -117,7 +120,7 @@ export function forwardedArgsSkipDaemonSocketValidation(args: string[]): boolean
 
 export function readForwardedLongOptionValue(
   args: string[],
-  optionName: string
+  optionName: string,
 ): ForwardedOptionValue {
   const matches = findForwardedOptionOccurrences(args, optionName);
   if (matches.length > 1) {
@@ -130,7 +133,7 @@ export function readForwardedLongOptionValue(
 
   return {
     present: false,
-    value: undefined
+    value: undefined,
   };
 }
 
@@ -138,15 +141,16 @@ export function resolveValidatedPassthroughDaemonSocket(
   binaryName: RustBinaryName,
   args: string[],
   config: WlfiConfig,
-  deps: ResolvePassthroughDaemonSocketDeps = {}
+  deps: ResolvePassthroughDaemonSocketDeps = {},
 ): string | null {
   if (binaryName === 'agentpay-daemon' || forwardedArgsSkipDaemonSocketValidation(args)) {
     return null;
   }
 
   const env = deps.env ?? process.env;
-  const trustDaemonSocketPath = deps.assertTrustedDaemonSocketPath
-    ?? (binaryName === 'agentpay-admin'
+  const trustDaemonSocketPath =
+    deps.assertTrustedDaemonSocketPath ??
+    (binaryName === 'agentpay-admin'
       ? assertTrustedAdminDaemonSocketPath
       : assertTrustedDaemonSocketPath);
   const forwardedValue = readForwardedLongOptionValue(args, '--daemon-socket');
@@ -155,7 +159,12 @@ export function resolveValidatedPassthroughDaemonSocket(
     throw new Error('--daemon-socket requires a path');
   }
 
-  const selection = resolvePassthroughDaemonSocketSelection(binaryName, forwardedValue, env, config);
+  const selection = resolvePassthroughDaemonSocketSelection(
+    binaryName,
+    forwardedValue,
+    env,
+    config,
+  );
 
   try {
     return trustDaemonSocketPath(selection.value);

@@ -10,11 +10,11 @@ export default defineConfig({
     'src/components/input.tsx',
     'src/components/label.tsx',
     'src/components/separator.tsx',
-    'src/components/textarea.tsx'
+    'src/components/textarea.tsx',
   ],
   format: ['esm'],
   dts: true,
   sourcemap: true,
   clean: true,
-  external: ['react', 'react-dom']
+  external: ['react', 'react-dom'],
 });

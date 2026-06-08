@@ -3,8 +3,5 @@
   "compilerOptions": {
     "baseUrl": "."
   },
-  "include": [
-    "src/**/*.ts",
-    "tsup.config.ts"
-  ]
+  "include": ["src/**/*.ts", "tsup.config.ts"]
 }

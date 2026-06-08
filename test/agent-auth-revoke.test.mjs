@@ -1,8 +1,8 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import test from 'node:test';
 
 const modulePath = new URL('../src/lib/agent-auth-revoke.ts', import.meta.url);
 const configModulePath = new URL('../packages/config/src/index.ts', import.meta.url);
@@ -17,7 +17,7 @@ test('buildRevokeAgentKeyAdminArgs forwards secure admin flags', async () => {
     agentKeyId: TEST_AGENT_KEY_ID,
     vaultPasswordStdin: true,
     nonInteractive: true,
-    daemonSocket: '/tmp/agentpay.sock'
+    daemonSocket: '/tmp/agentpay.sock',
   });
 
   assert.deepEqual(args, [
@@ -29,7 +29,7 @@ test('buildRevokeAgentKeyAdminArgs forwards secure admin flags', async () => {
     '/tmp/agentpay.sock',
     'revoke-agent-key',
     '--agent-key-id',
-    TEST_AGENT_KEY_ID
+    TEST_AGENT_KEY_ID,
   ]);
 });
 
@@ -40,9 +40,9 @@ test('buildRevokeAgentKeyAdminArgs rejects insecure inline vault passwords', asy
     () =>
       revoke.buildRevokeAgentKeyAdminArgs({
         agentKeyId: TEST_AGENT_KEY_ID,
-        vaultPassword: 'vault-secret'
+        vaultPassword: 'vault-secret',
       }),
-    /insecure vaultPassword is disabled/
+    /insecure vaultPassword is disabled/,
   );
 });
 
@@ -55,22 +55,22 @@ test('completeAgentKeyRevocation removes local credentials for the configured ag
 
   config.writeConfig({
     agentKeyId: TEST_AGENT_KEY_ID,
-    agentAuthToken: 'legacy-token'
+    agentAuthToken: 'legacy-token',
   });
 
   let removedAgentKeyId = null;
   const result = revoke.completeAgentKeyRevocation(
     {
       agent_key_id: TEST_AGENT_KEY_ID,
-      revoked: true
+      revoked: true,
     },
     {
       platform: 'darwin',
       deleteAgentAuthToken: (agentKeyId) => {
         removedAgentKeyId = agentKeyId;
         return true;
-      }
-    }
+      },
+    },
   );
 
   assert.equal(removedAgentKeyId, TEST_AGENT_KEY_ID);
@@ -96,18 +96,18 @@ test('completeAgentKeyRevocation leaves unrelated configured agent metadata inta
 
   config.writeConfig({
     agentKeyId: OTHER_AGENT_KEY_ID,
-    agentAuthToken: 'legacy-token'
+    agentAuthToken: 'legacy-token',
   });
 
   const result = revoke.completeAgentKeyRevocation(
     {
       agent_key_id: TEST_AGENT_KEY_ID,
-      revoked: true
+      revoked: true,
     },
     {
       platform: 'darwin',
-      deleteAgentAuthToken: () => false
-    }
+      deleteAgentAuthToken: () => false,
+    },
   );
 
   assert.equal(result.agentKeyId, TEST_AGENT_KEY_ID);
@@ -125,11 +125,12 @@ test('completeAgentKeyRevocation rejects unconfirmed Rust output', async () => {
   const revoke = await import(modulePath.href + `?case=${Date.now()}-4`);
 
   assert.throws(
-    () => revoke.completeAgentKeyRevocation({
-      agent_key_id: TEST_AGENT_KEY_ID,
-      revoked: false
-    }),
-    /did not confirm revocation/
+    () =>
+      revoke.completeAgentKeyRevocation({
+        agent_key_id: TEST_AGENT_KEY_ID,
+        revoked: false,
+      }),
+    /did not confirm revocation/,
   );
 });
 

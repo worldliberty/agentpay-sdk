@@ -1,8 +1,8 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import test from 'node:test';
 
 const modulePath = new URL('../src/lib/agent-auth-rotate.ts', import.meta.url);
 const configModulePath = new URL('../packages/config/src/index.ts', import.meta.url);
@@ -42,7 +42,7 @@ test('buildRotateAgentAuthTokenAdminArgs forwards secure admin flags', async () 
     agentKeyId: TEST_AGENT_KEY_ID,
     vaultPasswordStdin: true,
     nonInteractive: true,
-    daemonSocket: '/tmp/agentpay.sock'
+    daemonSocket: '/tmp/agentpay.sock',
   });
 
   assert.deepEqual(args, [
@@ -55,7 +55,7 @@ test('buildRotateAgentAuthTokenAdminArgs forwards secure admin flags', async () 
     'rotate-agent-auth-token',
     '--agent-key-id',
     TEST_AGENT_KEY_ID,
-    '--print-agent-auth-token'
+    '--print-agent-auth-token',
   ]);
 });
 
@@ -66,9 +66,9 @@ test('buildRotateAgentAuthTokenAdminArgs rejects insecure inline vault passwords
     () =>
       rotation.buildRotateAgentAuthTokenAdminArgs({
         agentKeyId: TEST_AGENT_KEY_ID,
-        vaultPassword: 'vault-secret'
+        vaultPassword: 'vault-secret',
       }),
-    /insecure vaultPassword is disabled/
+    /insecure vaultPassword is disabled/,
   );
 });
 
@@ -86,18 +86,18 @@ test('completeAgentAuthRotation stores the rotated token and updates config', as
     {
       agent_key_id: TEST_AGENT_KEY_ID,
       agent_auth_token: TEST_AGENT_AUTH_TOKEN,
-      agent_auth_token_redacted: false
+      agent_auth_token_redacted: false,
     },
     {
       storeAgentAuthToken: (agentKeyId, token) => {
         storedCredentials = { agentKeyId, token };
-      }
-    }
+      },
+    },
   );
 
   assert.deepEqual(storedCredentials, {
     agentKeyId: TEST_AGENT_KEY_ID,
-    token: TEST_AGENT_AUTH_TOKEN
+    token: TEST_AGENT_AUTH_TOKEN,
   });
   assert.equal(result.agentKeyId, TEST_AGENT_KEY_ID);
   assert.equal(result.keychain.service, 'agentpay-agent-auth-token');
@@ -114,12 +114,13 @@ test('completeAgentAuthRotation rejects redacted Rust output', async () => {
   const rotation = await import(modulePath.href + `?case=${Date.now()}-3`);
 
   assert.throws(
-    () => rotation.completeAgentAuthRotation({
-      agent_key_id: TEST_AGENT_KEY_ID,
-      agent_auth_token: '<redacted>',
-      agent_auth_token_redacted: true
-    }),
-    /returned a redacted agent auth token/
+    () =>
+      rotation.completeAgentAuthRotation({
+        agent_key_id: TEST_AGENT_KEY_ID,
+        agent_auth_token: '<redacted>',
+        agent_auth_token_redacted: true,
+      }),
+    /returned a redacted agent auth token/,
   );
 });
 
@@ -127,12 +128,13 @@ test('completeAgentAuthRotation rejects empty rotated tokens', async () => {
   const rotation = await import(modulePath.href + `?case=${Date.now()}-empty-token`);
 
   assert.throws(
-    () => rotation.completeAgentAuthRotation({
-      agent_key_id: TEST_AGENT_KEY_ID,
-      agent_auth_token: '   ',
-      agent_auth_token_redacted: false
-    }),
-    /returned an empty agent auth token/
+    () =>
+      rotation.completeAgentAuthRotation({
+        agent_key_id: TEST_AGENT_KEY_ID,
+        agent_auth_token: '   ',
+        agent_auth_token_redacted: false,
+      }),
+    /returned an empty agent auth token/,
   );
 });
 

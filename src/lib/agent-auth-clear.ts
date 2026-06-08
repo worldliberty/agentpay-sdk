@@ -1,16 +1,14 @@
 import {
   deleteConfigKey,
-  redactConfig,
   readConfig,
-  type WlfiConfig
+  redactConfig,
+  type WlfiConfig,
 } from '../../packages/config/src/index.js';
-import {
-  assertValidAgentKeyId,
-} from './keychain.js';
 import {
   deleteStoredAgentAuthToken,
   resolveAgentAuthStorageService,
 } from './agent-auth-storage.js';
+import { assertValidAgentKeyId } from './keychain.js';
 
 export interface ClearAgentAuthTokenResult {
   agentKeyId: string;
@@ -30,7 +28,7 @@ interface ClearAgentAuthTokenDeps {
 
 export function clearAgentAuthToken(
   agentKeyId: string,
-  deps: ClearAgentAuthTokenDeps = {}
+  deps: ClearAgentAuthTokenDeps = {},
 ): ClearAgentAuthTokenResult {
   const platform = deps.platform ?? process.platform;
   const normalizedAgentKeyId = assertValidAgentKeyId(agentKeyId);
@@ -55,8 +53,8 @@ export function clearAgentAuthToken(
     agentKeyId: normalizedAgentKeyId,
     keychain: {
       removed,
-      service: resolveAgentAuthStorageService(platform, normalizedAgentKeyId)
+      service: resolveAgentAuthStorageService(platform, normalizedAgentKeyId),
     },
-    config: redactConfig(updated)
+    config: redactConfig(updated),
   };
 }

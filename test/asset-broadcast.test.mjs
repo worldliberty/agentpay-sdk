@@ -268,7 +268,9 @@ test('completeAssetBroadcast verifies then broadcasts signed raw tx', async () =
 });
 
 test('completeAssetBroadcast rejects missing raw signed transactions and tolerates missing signed tx hashes', async () => {
-  const assetBroadcast = await import(`${modulePath.href}?case=${Date.now()}-complete-missing-rawtx`);
+  const assetBroadcast = await import(
+    `${modulePath.href}?case=${Date.now()}-complete-missing-rawtx`
+  );
   const plan = {
     rpcUrl: 'https://rpc.example',
     chainId: 1,

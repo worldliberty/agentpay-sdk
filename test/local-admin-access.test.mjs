@@ -35,7 +35,7 @@ async function withMockedPrompt(answer, fn, options = {}) {
     },
     configurable: true,
   });
-  readline.createInterface = (() => {
+  readline.createInterface = () => {
     const rl = {
       output: {
         write() {
@@ -49,7 +49,7 @@ async function withMockedPrompt(answer, fn, options = {}) {
       close() {},
     };
     return rl;
-  });
+  };
   try {
     await fn({ writes: [] });
   } finally {
@@ -351,7 +351,8 @@ test('requireLocalAdminMutationAccess fails closed without a local TTY when sudo
   Object.defineProperty(process.stdout, 'isTTY', { value: false, configurable: true });
   try {
     await assert.rejects(
-      () => access.requireLocalAdminMutationAccess('agentpay admin chain add', { isRoot: () => false }),
+      () =>
+        access.requireLocalAdminMutationAccess('agentpay admin chain add', { isRoot: () => false }),
       /agentpay admin chain add requires verified root access before local admin configuration can change: Local admin password for sudo is required; rerun on a local TTY/,
     );
   } finally {
@@ -372,18 +373,26 @@ test('requireLocalAdminMutationAccess rejects whitespace-only root passwords dur
   const access = await import(`${modulePath.href}?case=${Date.now()}-default-sudo-empty-password`);
   await withMockedPrompt('   ', async () => {
     await assert.rejects(
-      () => access.requireLocalAdminMutationAccess('agentpay admin token remove', { isRoot: () => false }),
+      () =>
+        access.requireLocalAdminMutationAccess('agentpay admin token remove', {
+          isRoot: () => false,
+        }),
       /agentpay admin token remove requires verified root access before local admin configuration can change: Local admin password for sudo must not be empty or whitespace/,
     );
   });
 });
 
 test('requireLocalAdminMutationAccess rejects oversized hidden sudo prompt secrets', async () => {
-  const access = await import(`${modulePath.href}?case=${Date.now()}-default-sudo-oversized-password`);
+  const access = await import(
+    `${modulePath.href}?case=${Date.now()}-default-sudo-oversized-password`
+  );
   const oversized = 'x'.repeat(16 * 1024 + 1);
   await withMockedPrompt(oversized, async () => {
     await assert.rejects(
-      () => access.requireLocalAdminMutationAccess('agentpay admin token set-chain', { isRoot: () => false }),
+      () =>
+        access.requireLocalAdminMutationAccess('agentpay admin token set-chain', {
+          isRoot: () => false,
+        }),
       /agentpay admin token set-chain requires verified root access before local admin configuration can change: Local admin password for sudo must not exceed 16384 bytes/,
     );
   });
@@ -394,20 +403,17 @@ test('requireLocalAdminMutationAccess accepts a valid hidden prompt without echo
     const access = await import(`${modulePath.href}?case=${Date.now()}-default-sudo-success`);
     let rendered = '';
     const originalStderrWrite = process.stderr.write.bind(process.stderr);
-    process.stderr.write = ((chunk, ...args) => {
+    process.stderr.write = (chunk, ...args) => {
       rendered += String(chunk);
       return originalStderrWrite(chunk, ...args);
-    });
+    };
 
     try {
-      await withMockedPrompt(
-        'root-secret',
-        async () => {
-          await access.requireLocalAdminMutationAccess('agentpay admin chain add', {
-            isRoot: () => false,
-          });
-        },
-      );
+      await withMockedPrompt('root-secret', async () => {
+        await access.requireLocalAdminMutationAccess('agentpay admin chain add', {
+          isRoot: () => false,
+        });
+      });
     } finally {
       process.stderr.write = originalStderrWrite;
     }

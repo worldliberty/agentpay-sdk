@@ -88,7 +88,9 @@ export function resolveStoredApprovalCapability(
     return resolveApprovalCapability(null);
   }
 
-  const resolved = resolveApprovalCapability(storage.getItem(approvalCapabilityStorageKey(approvalId)));
+  const resolved = resolveApprovalCapability(
+    storage.getItem(approvalCapabilityStorageKey(approvalId)),
+  );
   if (resolved.state !== 'loaded') {
     storage.removeItem?.(approvalCapabilityStorageKey(approvalId));
   }

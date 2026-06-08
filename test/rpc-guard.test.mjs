@@ -1,5 +1,5 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 
 const modulePath = new URL('../src/lib/rpc-guard.ts', import.meta.url);
 
@@ -14,6 +14,6 @@ test('assertRpcChainIdMatches rejects mismatched chain ids', async () => {
 
   assert.throws(
     () => guard.assertRpcChainIdMatches(1, 11155111),
-    /RPC endpoint chainId 11155111 does not match expected chainId 1/
+    /RPC endpoint chainId 11155111 does not match expected chainId 1/,
   );
 });

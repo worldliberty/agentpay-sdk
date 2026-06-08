@@ -1,3 +1,5 @@
+import type { Command } from 'commander';
+import type { Address, Hex } from 'viem';
 import type { WlfiConfig } from '../../packages/config/src/index.js';
 import type {
   AssetBroadcastPlan,
@@ -7,8 +9,6 @@ import type {
   ResolveAssetBroadcastPlanDeps,
 } from '../lib/asset-broadcast.js';
 import type { ResolvedAssetMetadata, RustAmountOutputShape } from '../lib/config-amounts.js';
-import type { Command } from 'commander';
-import type { Address, Hex } from 'viem';
 
 export interface CliPluginContext {
   cli: {

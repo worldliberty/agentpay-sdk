@@ -1,7 +1,7 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
 import { constants as osConstants } from 'node:os';
+import path from 'node:path';
 import { assertValidAgentAuthToken } from './agent-auth-token.js';
 import { assertValidAgentKeyId } from './keychain.js';
 
@@ -162,13 +162,7 @@ export function readAgentAuthTokenFromSecretService(
   const normalizedAgentKeyId = assertValidAgentKeyId(agentKeyId);
   try {
     const value = runner({
-      args: [
-        'lookup',
-        'service',
-        AGENT_AUTH_TOKEN_SECRET_SERVICE,
-        'account',
-        normalizedAgentKeyId,
-      ],
+      args: ['lookup', 'service', AGENT_AUTH_TOKEN_SECRET_SERVICE, 'account', normalizedAgentKeyId],
     });
     return assertValidSecretServiceSecret(value, 'agentAuthToken');
   } catch (error) {
@@ -197,13 +191,7 @@ export function deleteAgentAuthTokenFromSecretService(
 
   try {
     runner({
-      args: [
-        'clear',
-        'service',
-        AGENT_AUTH_TOKEN_SECRET_SERVICE,
-        'account',
-        normalizedAgentKeyId,
-      ],
+      args: ['clear', 'service', AGENT_AUTH_TOKEN_SECRET_SERVICE, 'account', normalizedAgentKeyId],
     });
     return true;
   } catch (error) {

@@ -10,7 +10,9 @@ import { Separator } from '@worldlibertyfinancial/agent-ui/separator';
 import { formatApprovalAmount, formatApprovalAsset } from '@/lib/approval-display';
 import type { ApprovalRequestRecord } from '@/lib/types';
 
-function statusVariant(status: ApprovalRequestRecord['status']): 'default' | 'secondary' | 'success' | 'warning' | 'destructive' {
+function statusVariant(
+  status: ApprovalRequestRecord['status'],
+): 'default' | 'secondary' | 'success' | 'warning' | 'destructive' {
   switch (status) {
     case 'approved':
       return 'success';
@@ -61,7 +63,9 @@ export function ApprovalRequestCard({ approval }: { approval: ApprovalRequestRec
 function Detail({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-xl border border-border/70 bg-background/70 p-3">
-      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+        {label}
+      </div>
       <div className="mt-1 break-all text-sm font-medium text-foreground">{value}</div>
     </div>
   );

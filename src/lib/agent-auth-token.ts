@@ -15,7 +15,7 @@ export function assertValidAgentAuthToken(token: string, label = 'agentAuthToken
 
 export function resolveOptionalAgentAuthToken(
   token: string | null | undefined,
-  label = 'agentAuthToken'
+  label = 'agentAuthToken',
 ): string | null {
   if (token === null || token === undefined) {
     return null;

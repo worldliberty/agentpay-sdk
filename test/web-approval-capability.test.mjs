@@ -45,10 +45,7 @@ test('persistApprovalCapability stores normalized capability tokens for later pa
   });
 
   assert.equal(resolved.state, 'loaded');
-  assert.equal(
-    storage.get(capability.approvalCapabilityStorageKey('approval-1')),
-    'aa'.repeat(32),
-  );
+  assert.equal(storage.get(capability.approvalCapabilityStorageKey('approval-1')), 'aa'.repeat(32));
 });
 
 test('resolveStoredApprovalCapability loads normalized session capability values', async () => {

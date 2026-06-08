@@ -1,5 +1,5 @@
-import test from 'node:test';
 import assert from 'node:assert/strict';
+import test from 'node:test';
 
 const modulePath = new URL('../src/lib/agent-auth-forwarding.ts', import.meta.url);
 
@@ -16,12 +16,12 @@ async function withMockedProcessStdin(chunks, fn) {
       for (const chunk of chunks) {
         yield chunk;
       }
-    }
+    },
   };
 
   Object.defineProperty(process, 'stdin', {
     configurable: true,
-    value: mockStdin
+    value: mockStdin,
   });
 
   try {
@@ -42,9 +42,9 @@ test('prepareAgentAuthRelay rejects split argv tokens', async () => {
       '00000000-0000-0000-0000-000000000001',
       '--agent-auth-token',
       'agent-secret',
-      'transfer'
+      'transfer',
     ]),
-    /--agent-auth-token is disabled for security/
+    /--agent-auth-token is disabled for security/,
   );
 });
 
@@ -52,11 +52,8 @@ test('prepareAgentAuthRelay rejects inline argv tokens', async () => {
   const relay = await loadModule(`${Date.now()}-inline`);
 
   await assert.rejects(
-    relay.prepareAgentAuthRelay([
-      '--agent-auth-token=agent-secret',
-      'broadcast'
-    ]),
-    /--agent-auth-token is disabled for security/
+    relay.prepareAgentAuthRelay(['--agent-auth-token=agent-secret', 'broadcast']),
+    /--agent-auth-token is disabled for security/,
   );
 });
 
@@ -65,7 +62,7 @@ test('prepareAgentAuthRelay rejects split argv tokens without a value', async ()
 
   await assert.rejects(
     relay.prepareAgentAuthRelay(['--agent-auth-token']),
-    /--agent-auth-token requires a value/
+    /--agent-auth-token requires a value/,
   );
 });
 
@@ -77,7 +74,7 @@ test('prepareAgentAuthRelay reads agent auth tokens from stdin when requested', 
     readFromStdin: async (label) => {
       requestedLabel = label;
       return 'stdin-secret';
-    }
+    },
   });
 
   assert.equal(requestedLabel, 'agentAuthToken');
@@ -90,8 +87,8 @@ test('prepareAgentAuthRelay relays AGENTPAY_AGENT_AUTH_TOKEN through stdin and s
 
   const prepared = await relay.prepareAgentAuthRelay(['transfer'], {
     env: {
-      AGENTPAY_AGENT_AUTH_TOKEN: 'env-secret'
-    }
+      AGENTPAY_AGENT_AUTH_TOKEN: 'env-secret',
+    },
   });
 
   assert.deepEqual(prepared.args, ['--agent-auth-token-stdin', 'transfer']);
@@ -103,12 +100,8 @@ test('prepareAgentAuthRelay rejects conflicting agent auth sources', async () =>
   const relay = await loadModule(`${Date.now()}-conflict`);
 
   await assert.rejects(
-    relay.prepareAgentAuthRelay([
-      '--agent-auth-token',
-      'secret',
-      '--agent-auth-token-stdin'
-    ]),
-    /--agent-auth-token conflicts with --agent-auth-token-stdin/
+    relay.prepareAgentAuthRelay(['--agent-auth-token', 'secret', '--agent-auth-token-stdin']),
+    /--agent-auth-token conflicts with --agent-auth-token-stdin/,
   );
 });
 
@@ -120,9 +113,9 @@ test('prepareAgentAuthRelay rejects duplicate argv agent auth tokens', async () 
       '--agent-auth-token',
       'secret-one',
       '--agent-auth-token=secret-two',
-      'transfer'
+      'transfer',
     ]),
-    /--agent-auth-token may only be provided once/
+    /--agent-auth-token may only be provided once/,
   );
 });
 
@@ -133,9 +126,9 @@ test('prepareAgentAuthRelay rejects duplicate stdin flags', async () => {
     relay.prepareAgentAuthRelay([
       '--agent-auth-token-stdin',
       '--agent-auth-token-stdin',
-      'transfer'
+      'transfer',
     ]),
-    /--agent-auth-token-stdin may only be provided once/
+    /--agent-auth-token-stdin may only be provided once/,
   );
 });
 
@@ -144,9 +137,9 @@ test('prepareAgentAuthRelay rejects oversized stdin tokens', async () => {
 
   await assert.rejects(
     relay.prepareAgentAuthRelay(['--agent-auth-token-stdin'], {
-      readFromStdin: async () => 'a'.repeat(16 * 1024 + 1)
+      readFromStdin: async () => 'a'.repeat(16 * 1024 + 1),
     }),
-    /agentAuthToken must not exceed 16384 bytes/
+    /agentAuthToken must not exceed 16384 bytes/,
   );
 });
 
@@ -167,7 +160,7 @@ test('prepareAgentAuthRelay rejects oversized input from the default stdin reade
   await withMockedProcessStdin(['a'.repeat(16 * 1024 + 1)], async () => {
     await assert.rejects(
       relay.prepareAgentAuthRelay(['--agent-auth-token-stdin', 'transfer']),
-      /agentAuthToken must not exceed 16384 bytes/
+      /agentAuthToken must not exceed 16384 bytes/,
     );
   });
 });
@@ -179,7 +172,7 @@ test('prepareAgentAuthRelay ignores flags after -- terminator', async () => {
     'transfer',
     '--',
     '--agent-auth-token',
-    'agent-secret'
+    'agent-secret',
   ]);
 
   assert.deepEqual(prepared.args, ['transfer', '--', '--agent-auth-token', 'agent-secret']);
@@ -191,8 +184,8 @@ test('prepareAgentAuthRelay still relays env secrets when help flags appear afte
 
   const prepared = await relay.prepareAgentAuthRelay(['transfer', '--', '--help'], {
     env: {
-      AGENTPAY_AGENT_AUTH_TOKEN: 'env-secret'
-    }
+      AGENTPAY_AGENT_AUTH_TOKEN: 'env-secret',
+    },
   });
 
   assert.deepEqual(prepared.args, ['--agent-auth-token-stdin', 'transfer', '--', '--help']);
@@ -204,8 +197,8 @@ test('prepareAgentAuthRelay skips env relay for direct help and version invocati
 
   const helpPrepared = await relay.prepareAgentAuthRelay(['help'], {
     env: {
-      AGENTPAY_AGENT_AUTH_TOKEN: 'env-secret'
-    }
+      AGENTPAY_AGENT_AUTH_TOKEN: 'env-secret',
+    },
   });
   assert.deepEqual(helpPrepared.args, ['help']);
   assert.equal(helpPrepared.stdin, undefined);
@@ -213,8 +206,8 @@ test('prepareAgentAuthRelay skips env relay for direct help and version invocati
 
   const versionPrepared = await relay.prepareAgentAuthRelay(['transfer', '--help'], {
     env: {
-      AGENTPAY_AGENT_AUTH_TOKEN: 'env-secret'
-    }
+      AGENTPAY_AGENT_AUTH_TOKEN: 'env-secret',
+    },
   });
   assert.deepEqual(versionPrepared.args, ['transfer', '--help']);
   assert.equal(versionPrepared.stdin, undefined);
@@ -227,9 +220,9 @@ test('prepareAgentAuthRelay rejects blank env tokens when the variable is presen
   await assert.rejects(
     relay.prepareAgentAuthRelay(['transfer'], {
       env: {
-        AGENTPAY_AGENT_AUTH_TOKEN: undefined
-      }
+        AGENTPAY_AGENT_AUTH_TOKEN: undefined,
+      },
     }),
-    /agentAuthToken is required/
+    /agentAuthToken is required/,
   );
 });

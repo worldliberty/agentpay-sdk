@@ -306,10 +306,7 @@ test('createSudoSession maps signaled child exits to shell-style exit codes', as
 
 test('createSudoSession injects explicit environment assignments through sudo when requested', async () => {
   const sudo = await import(modulePath.href + `?case=${Date.now()}-sudo-env`);
-  const { calls, spawnCommand } = createSpawnStub([
-    { code: 0 },
-    { code: 0, stdout: 'ok\n' },
-  ]);
+  const { calls, spawnCommand } = createSpawnStub([{ code: 0 }, { code: 0, stdout: 'ok\n' }]);
 
   const session = sudo.createSudoSession({
     promptPassword: async () => 'root-secret',
@@ -329,10 +326,7 @@ test('createSudoSession injects explicit environment assignments through sudo wh
     calls.map((call) => [call.command, call.args]),
     [
       ['sudo', ['-S', '-p', '', '-v']],
-      [
-        'sudo',
-        ['-n', '/usr/bin/env', 'AGENTPAY_RELAY_DAEMON_TOKEN=relay-secret', '/usr/bin/true'],
-      ],
+      ['sudo', ['-n', '/usr/bin/env', 'AGENTPAY_RELAY_DAEMON_TOKEN=relay-secret', '/usr/bin/true']],
     ],
   );
 });

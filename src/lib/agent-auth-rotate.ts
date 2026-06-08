@@ -1,17 +1,12 @@
 import {
   deleteConfigKey,
-  redactConfig,
   readConfig,
+  redactConfig,
   type WlfiConfig,
-  writeConfig
+  writeConfig,
 } from '../../packages/config/src/index.js';
-import {
-  assertValidAgentKeyId,
-} from './keychain.js';
-import {
-  resolveAgentAuthStorageService,
-  storeStoredAgentAuthToken,
-} from './agent-auth-storage.js';
+import { resolveAgentAuthStorageService, storeStoredAgentAuthToken } from './agent-auth-storage.js';
+import { assertValidAgentKeyId } from './keychain.js';
 
 export interface RotateAgentAuthTokenAdminArgsInput {
   agentKeyId: string;
@@ -45,13 +40,13 @@ interface CompleteAgentAuthRotationDeps {
 }
 
 export function buildRotateAgentAuthTokenAdminArgs(
-  input: RotateAgentAuthTokenAdminArgsInput
+  input: RotateAgentAuthTokenAdminArgsInput,
 ): string[] {
   const args = ['--json', '--quiet'];
 
   if (input.vaultPassword) {
     throw new Error(
-      'insecure vaultPassword is disabled; use vaultPasswordStdin or an interactive prompt'
+      'insecure vaultPassword is disabled; use vaultPasswordStdin or an interactive prompt',
     );
   }
   if (input.vaultPasswordStdin) {
@@ -68,7 +63,7 @@ export function buildRotateAgentAuthTokenAdminArgs(
     'rotate-agent-auth-token',
     '--agent-key-id',
     assertValidAgentKeyId(input.agentKeyId),
-    '--print-agent-auth-token'
+    '--print-agent-auth-token',
   );
 
   return args;
@@ -76,7 +71,7 @@ export function buildRotateAgentAuthTokenAdminArgs(
 
 export function completeAgentAuthRotation(
   output: RotateAgentAuthTokenAdminOutput,
-  deps: CompleteAgentAuthRotationDeps = {}
+  deps: CompleteAgentAuthRotationDeps = {},
 ): CompleteAgentAuthRotationResult {
   const platform = deps.platform ?? process.platform;
   const agentKeyId = assertValidAgentKeyId(output.agent_key_id);
@@ -107,9 +102,8 @@ export function completeAgentAuthRotation(
     agentKeyId,
     keychain: {
       stored: true,
-      service:
-        resolveAgentAuthStorageService(platform, agentKeyId) ?? 'agentpay-agent-auth-token'
+      service: resolveAgentAuthStorageService(platform, agentKeyId) ?? 'agentpay-agent-auth-token',
     },
-    config: redactConfig(updated)
+    config: redactConfig(updated),
   };
 }

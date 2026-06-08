@@ -112,7 +112,11 @@ function resolveMaterialFromPrivateKey(
   };
 }
 
-function deriveKey(password: string, salt: Buffer, params: { n: number; r: number; p: number }): Buffer {
+function deriveKey(
+  password: string,
+  salt: Buffer,
+  params: { n: number; r: number; p: number },
+): Buffer {
   return crypto.scryptSync(password, salt, SCRYPT_KEYLEN, {
     N: params.n,
     r: params.r,
@@ -148,7 +152,10 @@ function assertRecord(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function readOptionalString(record: Record<string, unknown>, fieldName: string): string | undefined {
+function readOptionalString(
+  record: Record<string, unknown>,
+  fieldName: string,
+): string | undefined {
   const value = record[fieldName];
   if (value === undefined || value === null) {
     return undefined;
@@ -209,7 +216,12 @@ function parseWalletBackupFileContents(raw: string, sourcePath?: string): Wallet
     encryption: {
       algorithm: 'aes-256-gcm',
       kdf: 'scrypt',
-      saltHex: readHexField(encryption, 'saltHex', 'wallet backup encryption.saltHex', SCRYPT_SALT_BYTES),
+      saltHex: readHexField(
+        encryption,
+        'saltHex',
+        'wallet backup encryption.saltHex',
+        SCRYPT_SALT_BYTES,
+      ),
       ivHex: readHexField(encryption, 'ivHex', 'wallet backup encryption.ivHex', GCM_IV_BYTES),
       authTagHex: readHexField(encryption, 'authTagHex', 'wallet backup encryption.authTagHex', 16),
       n: SCRYPT_N,
@@ -244,7 +256,10 @@ function parseBackupPlaintext(raw: string): WalletBackupMaterial & { createdAt: 
     throw new Error('wallet backup createdAt is required');
   }
 
-  const resolved = resolveMaterialFromPrivateKey(privateKeyHex, readOptionalString(payload, 'sourceVaultKeyId'));
+  const resolved = resolveMaterialFromPrivateKey(
+    privateKeyHex,
+    readOptionalString(payload, 'sourceVaultKeyId'),
+  );
   if (resolved.address.toLowerCase() !== address.toLowerCase()) {
     throw new Error('wallet backup address does not match the encrypted private key');
   }
@@ -395,11 +410,15 @@ export function decryptWalletBackup(
   backup: WalletBackupFile,
   password: string,
 ): WalletBackupMaterial & { createdAt: string } {
-  const key = deriveKey(validateSecret(password, 'wallet backup password'), Buffer.from(backup.encryption.saltHex, 'hex'), {
-    n: backup.encryption.n,
-    r: backup.encryption.r,
-    p: backup.encryption.p,
-  });
+  const key = deriveKey(
+    validateSecret(password, 'wallet backup password'),
+    Buffer.from(backup.encryption.saltHex, 'hex'),
+    {
+      n: backup.encryption.n,
+      r: backup.encryption.r,
+      p: backup.encryption.p,
+    },
+  );
   try {
     const decipher = crypto.createDecipheriv(
       'aes-256-gcm',
@@ -419,7 +438,9 @@ export function decryptWalletBackup(
       throw new Error('wallet backup metadata vaultPublicKey does not match the encrypted payload');
     }
     if ((decrypted.sourceVaultKeyId ?? '') !== (backup.wallet.sourceVaultKeyId ?? '')) {
-      throw new Error('wallet backup metadata sourceVaultKeyId does not match the encrypted payload');
+      throw new Error(
+        'wallet backup metadata sourceVaultKeyId does not match the encrypted payload',
+      );
     }
     return decrypted;
   } catch (error) {
@@ -435,7 +456,11 @@ export function writeEncryptedWalletBackupFile(
   backup: WalletBackupFile,
   options: { overwrite?: boolean } = {},
 ): string {
-  return writeBackupFile(targetPath, `${JSON.stringify(backup, null, 2)}\n`, options.overwrite ?? false);
+  return writeBackupFile(
+    targetPath,
+    `${JSON.stringify(backup, null, 2)}\n`,
+    options.overwrite ?? false,
+  );
 }
 
 export function readWalletBackupFile(inputPath: string): WalletBackupFile & { sourcePath: string } {
@@ -451,7 +476,9 @@ export function readWalletBackupFile(inputPath: string): WalletBackupFile & { so
     throw new Error(`wallet backup '${resolvedPath}' must be a regular file`);
   }
   if (stats.size > MAX_BACKUP_FILE_BYTES) {
-    throw new Error(`wallet backup '${resolvedPath}' must not exceed ${MAX_BACKUP_FILE_BYTES} bytes`);
+    throw new Error(
+      `wallet backup '${resolvedPath}' must not exceed ${MAX_BACKUP_FILE_BYTES} bytes`,
+    );
   }
   const raw = fs.readFileSync(resolvedPath, 'utf8');
   return {
@@ -460,10 +487,7 @@ export function readWalletBackupFile(inputPath: string): WalletBackupFile & { so
   };
 }
 
-export function verifyWalletBackupFile(
-  inputPath: string,
-  password: string,
-): WalletBackupSummary {
+export function verifyWalletBackupFile(inputPath: string, password: string): WalletBackupSummary {
   const backup = readWalletBackupFile(inputPath);
   const decrypted = decryptWalletBackup(backup, password);
   return {
@@ -501,7 +525,9 @@ export async function resolveWalletBackupPassword(
     return readFromStdin('wallet backup password');
   }
   if (options.nonInteractive) {
-    throw new Error('wallet backup password is required in non-interactive mode; use --backup-password-stdin');
+    throw new Error(
+      'wallet backup password is required in non-interactive mode; use --backup-password-stdin',
+    );
   }
 
   const first = await prompt(
@@ -525,12 +551,19 @@ export async function resolveWalletBackupPassword(
 
 export function writeTemporaryWalletImportKeyFile(privateKeyHex: string): string {
   const agentpayHome = ensureAgentPayHome();
-  const resolvedPath = path.join(agentpayHome, `wallet-import-key-${process.pid}-${Date.now()}.key`);
-  fs.writeFileSync(resolvedPath, `${resolveMaterialFromPrivateKey(privateKeyHex).privateKeyHex}\n`, {
-    encoding: 'utf8',
-    mode: PRIVATE_FILE_MODE,
-    flag: 'wx',
-  });
+  const resolvedPath = path.join(
+    agentpayHome,
+    `wallet-import-key-${process.pid}-${Date.now()}.key`,
+  );
+  fs.writeFileSync(
+    resolvedPath,
+    `${resolveMaterialFromPrivateKey(privateKeyHex).privateKeyHex}\n`,
+    {
+      encoding: 'utf8',
+      mode: PRIVATE_FILE_MODE,
+      flag: 'wx',
+    },
+  );
   try {
     fs.chmodSync(resolvedPath, PRIVATE_FILE_MODE);
   } catch {}
@@ -538,7 +571,7 @@ export function writeTemporaryWalletImportKeyFile(privateKeyHex: string): string
 }
 
 export function cleanupTemporaryWalletImportKeyFile(
-  inputPath: string | null | undefined
+  inputPath: string | null | undefined,
 ): TemporaryWalletImportKeyCleanupResult {
   if (!inputPath) {
     return {

@@ -1,5 +1,5 @@
-import type { ApprovalRequestRecord } from './types.ts';
 import { listBuiltinTokens } from '../../../../packages/config/src/index.ts';
+import type { ApprovalRequestRecord } from './types.ts';
 
 interface ResolvedApprovalAsset {
   decimals: number;

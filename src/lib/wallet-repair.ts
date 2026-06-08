@@ -149,7 +149,8 @@ function repairLegacyAgentAuth(
       attempted: false,
       action: 'skipped',
       agentKeyId: resolveResultAgentKeyId(explicitAgentKeyId, before),
-      reason: 'legacy agentAuthToken cannot be repaired automatically without local credential storage access',
+      reason:
+        'legacy agentAuthToken cannot be repaired automatically without local credential storage access',
       keychain: null,
     };
   }

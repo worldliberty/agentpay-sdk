@@ -28,13 +28,13 @@ import {
   cleanupBootstrapAgentCredentialsFile,
   readBootstrapSetupFile,
 } from './bootstrap-credentials.js';
-import { canonicalPolicyChainId } from './network-selection.js';
 import {
   assertPrivateFileStats,
   assertTrustedAdminDaemonSocketPath,
   assertTrustedDirectoryPath,
   assertTrustedOwner,
 } from './fs-trust.js';
+import { canonicalPolicyChainId } from './network-selection.js';
 import { walletProfileFromBootstrapSummary } from './wallet-profile.js';
 
 const PRIVATE_DIR_MODE = 0o700;

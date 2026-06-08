@@ -1,6 +1,6 @@
 import path from 'node:path';
-import { isLinuxPlatform, isMacOsPlatform } from './platform-support.js';
 import { DAEMON_PASSWORD_KEYCHAIN_SERVICE } from './keychain.js';
+import { isLinuxPlatform, isMacOsPlatform } from './platform-support.js';
 
 export type ManagedDaemonServiceManager = 'launchd' | 'systemd';
 

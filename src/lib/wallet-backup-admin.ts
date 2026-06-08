@@ -1,12 +1,12 @@
 import type { WlfiConfig } from '../../packages/config/src/index.js';
 import { readConfig } from '../../packages/config/src/index.js';
 import { type RustBinaryName, runRustBinaryJson } from './rust.js';
-import { resolveWalletProfile } from './wallet-profile.js';
 import {
   createEncryptedWalletBackup,
   type WalletBackupSummary,
   writeEncryptedWalletBackupFile,
 } from './wallet-backup.js';
+import { resolveWalletProfile } from './wallet-profile.js';
 
 interface ExportVaultPrivateKeyAdminOutput {
   vault_key_id: string;
@@ -28,9 +28,7 @@ export interface ExportEncryptedWalletBackupDeps {
   resolveWalletProfile?: typeof resolveWalletProfile;
 }
 
-export function buildExportVaultPrivateKeyAdminArgs(input: {
-  daemonSocket: string;
-}): string[] {
+export function buildExportVaultPrivateKeyAdminArgs(input: { daemonSocket: string }): string[] {
   return [
     '--json',
     '--quiet',

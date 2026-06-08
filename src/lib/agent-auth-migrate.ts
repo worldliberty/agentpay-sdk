@@ -2,18 +2,16 @@ import {
   deleteConfigKey,
   readConfig,
   redactConfig,
+  type WlfiConfig,
   writeConfig,
-  type WlfiConfig
 } from '../../packages/config/src/index.js';
-import {
-  assertValidAgentKeyId,
-} from './keychain.js';
 import {
   describeAgentAuthStorage,
   readStoredAgentAuthToken,
   resolveAgentAuthStorageService,
   storeStoredAgentAuthToken,
 } from './agent-auth-storage.js';
+import { assertValidAgentKeyId } from './keychain.js';
 
 export interface MigrateLegacyAgentAuthInput {
   agentKeyId?: string;
@@ -52,7 +50,7 @@ function presentSecret(value: string | undefined): string | null {
 
 function resolveConfiguredAgentKeyId(
   config: WlfiConfig,
-  explicitAgentKeyId: string | undefined
+  explicitAgentKeyId: string | undefined,
 ): string | undefined {
   const configuredAgentKeyId = config.agentKeyId?.trim();
   if (!configuredAgentKeyId) {
@@ -70,26 +68,28 @@ function resolveConfiguredAgentKeyId(
         ? error.message
         : /* c8 ignore next -- assertValidAgentKeyId throws Error objects */ String(error);
     throw new Error(
-      renderedError +
-        '; pass --agent-key-id to migrate the legacy config secret explicitly'
+      renderedError + '; pass --agent-key-id to migrate the legacy config secret explicitly',
     );
   }
 }
 
 export function migrateLegacyAgentAuthToken(
   input: MigrateLegacyAgentAuthInput = {},
-  deps: MigrateLegacyAgentAuthDeps = {}
+  deps: MigrateLegacyAgentAuthDeps = {},
 ): MigrateLegacyAgentAuthResult {
   const platform = deps.platform ?? process.platform;
   if (platform !== 'darwin' && platform !== 'linux') {
-    throw new Error('legacy agent auth migration requires local credential storage on macOS or Linux');
+    throw new Error(
+      'legacy agent auth migration requires local credential storage on macOS or Linux',
+    );
   }
 
   const loadConfig = deps.readConfig ?? readConfig;
   const persistConfig = deps.writeConfig ?? writeConfig;
   const clearConfigKey = deps.deleteConfigKey ?? deleteConfigKey;
   const readAgentAuthToken =
-    deps.readAgentAuthToken ?? ((agentKeyId: string) => readStoredAgentAuthToken(agentKeyId, platform));
+    deps.readAgentAuthToken ??
+    ((agentKeyId: string) => readStoredAgentAuthToken(agentKeyId, platform));
   const storeAgentAuthToken =
     deps.storeAgentAuthToken ??
     ((agentKeyId: string, token: string) => storeStoredAgentAuthToken(agentKeyId, token, platform));
@@ -100,7 +100,7 @@ export function migrateLegacyAgentAuthToken(
 
   if (explicitAgentKeyId && configuredAgentKeyId && explicitAgentKeyId !== configuredAgentKeyId) {
     throw new Error(
-      'explicit --agent-key-id does not match the configured agentKeyId; refuse to bind a legacy config secret to a different agent'
+      'explicit --agent-key-id does not match the configured agentKeyId; refuse to bind a legacy config secret to a different agent',
     );
   }
 
@@ -128,7 +128,7 @@ export function migrateLegacyAgentAuthToken(
   } else {
     if (!input.overwriteKeychain) {
       throw new Error(
-        `${describeAgentAuthStorage(platform)} already contains a different agent auth token for this agentKeyId; rerun with --overwrite-keychain after verifying the correct credential`
+        `${describeAgentAuthStorage(platform)} already contains a different agent auth token for this agentKeyId; rerun with --overwrite-keychain after verifying the correct credential`,
       );
     }
 
@@ -149,13 +149,12 @@ export function migrateLegacyAgentAuthToken(
     agentKeyId,
     source: 'config',
     keychain: {
-      service:
-        resolveAgentAuthStorageService(platform, agentKeyId) ?? 'agentpay-agent-auth-token',
+      service: resolveAgentAuthStorageService(platform, agentKeyId) ?? 'agentpay-agent-auth-token',
       stored,
       overwritten,
       alreadyPresent,
-      matchedExisting
+      matchedExisting,
     },
-    config: redactConfig(updatedConfig)
+    config: redactConfig(updatedConfig),
   };
 }

@@ -193,10 +193,7 @@ export function installGlobalFetchProxyDispatcherFromEnv(
     const dispatcher = pool.resolveForUrl(resolveFetchTargetUrl(input));
     if (typeof input !== 'string' && !(input instanceof URL)) {
       const request = init ? new Request(input, init) : input;
-      return fetchImpl(
-        request.url,
-        await convertRequestToProxyAwareInit(request, dispatcher),
-      );
+      return fetchImpl(request.url, await convertRequestToProxyAwareInit(request, dispatcher));
     }
     return fetchImpl(input, {
       ...init,

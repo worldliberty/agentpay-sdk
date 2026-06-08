@@ -420,9 +420,7 @@ export function assertTrustedRootPrivateFilePath(
       throw new Error(`${label} '${resolvedPath}' does not exist`);
     }
     if (code === 'EACCES' || code === 'EPERM') {
-      throw new Error(
-        `${label} '${resolvedPath}' is not accessible to the current process`
-      );
+      throw new Error(`${label} '${resolvedPath}' is not accessible to the current process`);
     }
     throw error;
   }

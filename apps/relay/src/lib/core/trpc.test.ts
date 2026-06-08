@@ -134,7 +134,8 @@ describe('adminProcedure error mapping', () => {
     cache.createEncryptedUpdate.mockRejectedValue(
       new CacheError({
         code: cacheErrorCodes.invalidPayload,
-        message: "Approval 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' already has a queued operator update",
+        message:
+          "Approval 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' already has a queued operator update",
         operation: 'createEncryptedUpdate',
       }),
     );
@@ -154,7 +155,8 @@ describe('adminProcedure error mapping', () => {
       }),
     ).rejects.toMatchObject({
       code: 'CONFLICT',
-      message: "Approval 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' already has a queued operator update",
+      message:
+        "Approval 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' already has a queued operator update",
     });
   });
 
