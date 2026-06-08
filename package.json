@@ -7,6 +7,13 @@
   "bin": {
     "agentpay": "dist/cli.cjs"
   },
+  "exports": {
+    "./link": {
+      "types": "./src/lib/link.ts",
+      "import": "./dist/link.cjs",
+      "require": "./dist/link.cjs"
+    }
+  },
   "files": [
     "dist",
     "scripts",
@@ -67,6 +74,7 @@
   "dependencies": {
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
+    "@stripe/link-cli": "^0.7.1",
     "@x402/evm": "2.7.0",
     "@x402/fetch": "2.7.0",
     "cuimp": "^1.10.0",

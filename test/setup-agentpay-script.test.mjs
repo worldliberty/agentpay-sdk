@@ -11,7 +11,11 @@ const systemPath = process.env.PATH ?? '';
 const pathShimMarker = '# agentpay-sdk one-click PATH shim';
 
 function currentBundlePlatform() {
-  return process.platform === 'darwin' ? 'macos' : process.platform === 'linux' ? 'linux' : process.platform;
+  return process.platform === 'darwin'
+    ? 'macos'
+    : process.platform === 'linux'
+      ? 'linux'
+      : process.platform;
 }
 
 function currentBundleArch() {
@@ -20,18 +24,9 @@ function currentBundleArch() {
 
 function runtimeEntriesForPlatform(platform) {
   const entries = new Map([
-    [
-      'agentpay-daemon',
-      '#!/usr/bin/env bash\nset -euo pipefail\necho "fake agentpay-daemon $*"\n',
-    ],
-    [
-      'agentpay-admin',
-      '#!/usr/bin/env bash\nset -euo pipefail\necho "fake agentpay-admin $*"\n',
-    ],
-    [
-      'agentpay-agent',
-      '#!/usr/bin/env bash\nset -euo pipefail\necho "fake agentpay-agent $*"\n',
-    ],
+    ['agentpay-daemon', '#!/usr/bin/env bash\nset -euo pipefail\necho "fake agentpay-daemon $*"\n'],
+    ['agentpay-admin', '#!/usr/bin/env bash\nset -euo pipefail\necho "fake agentpay-admin $*"\n'],
+    ['agentpay-agent', '#!/usr/bin/env bash\nset -euo pipefail\necho "fake agentpay-agent $*"\n'],
   ]);
 
   if (platform === 'macos') {
@@ -124,6 +119,7 @@ async function createFakeBundle(
       "if (args[0] === '--help') { console.log('fake agentpay'); process.exit(0); }",
       "if (args[0] === '--version' || args[0] === '-V') { console.log('0.0.0-test'); process.exit(0); }",
       "if (args[0] === '__print_agentpay_home') { console.log(process.env.AGENTPAY_HOME || ''); process.exit(0); }",
+      "if (args[0] === 'link' && args[1] === 'onboard') { console.log('fake link onboard'); process.exit(0); }",
       "if (args[0] === 'admin' && args[1] === 'setup') { console.log('fake admin setup'); process.exit(0); }",
       "console.log(`fake agentpay ${args.join(' ')}`.trim());",
     ].join('\n'),
@@ -226,7 +222,7 @@ case "\${1:-}" in
   shellenv)
     cat <<EOF_BREW_SHELLENV
 export HOMEBREW_PREFIX="$prefix"
-export PATH="$prefix/bin:\$PATH"
+export PATH="$prefix/bin:$PATH"
 EOF_BREW_SHELLENV
     ;;
   --prefix)
@@ -351,6 +347,7 @@ test('installer.sh exposes a stable help entrypoint', () => {
   assert.equal(result.status, 0);
   assert.match(result.stdout, /AgentPay SDK one-click bootstrap/u);
   assert.match(result.stdout, /AGENTPAY_SDK_BUNDLE_URL/u);
+  assert.match(result.stdout, /AGENTPAY_SETUP_PAYMENT_METHOD/u);
   assert.match(result.stdout, /no local Rust build/u);
   assert.equal(result.stderr, '');
 });
@@ -367,11 +364,7 @@ test('installer can complete a fresh bundle-based install and rerun without dupl
   await fsp.mkdir(fakeBinDir, { recursive: true });
   await fsp.writeFile(
     path.join(homeDir, '.zshrc'),
-    [
-      'export PATH="$HOME/.local/bin:$PATH"',
-      'alias ll="ls -la"',
-      '',
-    ].join('\n'),
+    ['export PATH="$HOME/.local/bin:$PATH"', 'alias ll="ls -la"', ''].join('\n'),
     'utf8',
   );
   await createFakeBundle(fixtureBundleDir);
@@ -399,11 +392,12 @@ test('installer can complete a fresh bundle-based install and rerun without dupl
   assert.equal(fs.statSync(path.join(installDir, 'bin')).mode & 0o777, 0o700);
   assert.ok(fs.existsSync(path.join(installDir, 'app', 'dist', 'cli.cjs')));
   assert.ok(fs.existsSync(path.join(installDir, 'app', 'node_modules')));
-  assert.ok(
-    fs.existsSync(path.join(installDir, 'one-click-install-manifest.json')),
-  );
+  assert.ok(fs.existsSync(path.join(installDir, 'one-click-install-manifest.json')));
   assert.ok(fs.existsSync(path.join(fakeBinDir, 'agentpay')));
-  assert.match(fs.readFileSync(path.join(fakeBinDir, 'agentpay'), 'utf8'), new RegExp(pathShimMarker.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
+  assert.match(
+    fs.readFileSync(path.join(fakeBinDir, 'agentpay'), 'utf8'),
+    new RegExp(pathShimMarker.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'),
+  );
   assert.equal(fs.existsSync(path.join(installDir, 'bin')), true);
   if (process.platform === 'darwin') {
     const xattrLog = await fsp.readFile(xattrLogPath, 'utf8');
@@ -436,7 +430,11 @@ test('installer can complete a fresh bundle-based install and rerun without dupl
       },
     },
   );
-  assert.equal(directLauncherHome.status, 0, directLauncherHome.stderr || directLauncherHome.stdout);
+  assert.equal(
+    directLauncherHome.status,
+    0,
+    directLauncherHome.stderr || directLauncherHome.stdout,
+  );
   assert.equal(directLauncherHome.stdout.trim(), installDir);
 
   const shimLauncherHome = spawnSync('agentpay', ['__print_agentpay_home'], {
@@ -476,6 +474,37 @@ test('installer can complete a fresh bundle-based install and rerun without dupl
   assert.match(zshrc, /alias ll="ls -la"/u);
 });
 
+test('installer can launch Link onboarding when Fiat payment setup is selected', async () => {
+  const sandboxDir = makeTempDir('agentpay-setup-fiat-');
+  const homeDir = path.join(sandboxDir, 'home');
+  const fakeBinDir = path.join(sandboxDir, 'fake-bin');
+  const fixtureBundleDir = path.join(sandboxDir, 'fixture-bundle');
+  const archivePath = path.join(sandboxDir, 'fixture-bundle.tar.gz');
+  const installDir = path.join(sandboxDir, 'install-root');
+  await fsp.mkdir(homeDir, { recursive: true });
+  await fsp.mkdir(fakeBinDir, { recursive: true });
+  await createFakeBundle(fixtureBundleDir);
+  createBundleArchive(fixtureBundleDir, archivePath);
+  installFakeNode(fakeBinDir);
+
+  const result = runInstaller({
+    homeDir,
+    installDir,
+    fakeBinDir,
+    input: '',
+    extraEnv: {
+      AGENTPAY_SDK_BUNDLE_URL: `file://${archivePath}`,
+      AGENTPAY_SETUP_ASSUME_DEFAULTS: '1',
+      AGENTPAY_SETUP_INSTALL_SKILLS: 'no',
+      AGENTPAY_SETUP_PAYMENT_METHOD: 'fiat',
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /fake link onboard/u);
+  assert.doesNotMatch(result.stdout, /fake admin setup/u);
+});
+
 test('installer falls back to shell reload instructions when an earlier PATH entry already owns agentpay', async () => {
   const sandboxDir = makeTempDir('agentpay-setup-shim-conflict-');
   const homeDir = path.join(sandboxDir, 'home');
@@ -508,7 +537,10 @@ test('installer falls back to shell reload instructions when an earlier PATH ent
   assert.match(result.stdout, /Your current shell still needs the updated PATH:/u);
   assert.match(result.stdout, /Current-shell shim was skipped:/u);
   assert.match(result.stdout, /already exists and is not managed by this installer/u);
-  assert.doesNotMatch(fs.readFileSync(path.join(fakeBinDir, 'agentpay'), 'utf8'), new RegExp(pathShimMarker.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
+  assert.doesNotMatch(
+    fs.readFileSync(path.join(fakeBinDir, 'agentpay'), 'utf8'),
+    new RegExp(pathShimMarker.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'),
+  );
   const manifest = JSON.parse(
     await fsp.readFile(path.join(installDir, 'one-click-install-manifest.json'), 'utf8'),
   );
@@ -542,7 +574,10 @@ test('installer defaults to ~/.agentpay when no explicit install directory is pr
   });
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.match(result.stdout, new RegExp(defaultInstallDir.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
+  assert.match(
+    result.stdout,
+    new RegExp(defaultInstallDir.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'),
+  );
   assert.ok(fs.existsSync(path.join(defaultInstallDir, 'bin', 'agentpay')));
   assert.ok(fs.existsSync(path.join(defaultInstallDir, 'config.json')) === false);
 });
@@ -553,8 +588,7 @@ test('installer falls through to bundle download when published release repo and
   const fakeBinDir = path.join(sandboxDir, 'fake-bin');
   const installDir = path.join(sandboxDir, 'install-root');
   const bundleName = `agentpay-sdk-${currentBundlePlatform()}-${currentBundleArch()}.tar.gz`;
-  const unresolvedBundleUrl =
-    `https://github.com/__AGENTPAY_PUBLIC_RELEASE_REPO__/releases/download/__AGENTPAY_PUBLIC_RELEASE_TAG__/${bundleName}`;
+  const unresolvedBundleUrl = `https://github.com/__AGENTPAY_PUBLIC_RELEASE_REPO__/releases/download/__AGENTPAY_PUBLIC_RELEASE_TAG__/${bundleName}`;
   await fsp.mkdir(homeDir, { recursive: true });
   await fsp.mkdir(fakeBinDir, { recursive: true });
   installFakeCurl(fakeBinDir, {
@@ -650,13 +684,17 @@ test('installer accepts a Linux runtime bundle without macOS-only helper entries
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stdout, /AgentPay SDK install complete/u);
-  assert.match(result.stdout, /Managed wallet setup is supported on macOS and Linux/u);
+  assert.match(result.stdout, /Fiat with Link: agentpay link onboard/u);
+  assert.match(result.stdout, /Crypto wallet: agentpay admin setup/u);
   assert.ok(fs.existsSync(path.join(installDir, 'bin', 'agentpay')));
   assert.ok(fs.existsSync(path.join(installDir, 'bin', 'agentpay-daemon')));
   assert.ok(fs.existsSync(path.join(installDir, 'bin', 'agentpay-admin')));
   assert.ok(fs.existsSync(path.join(installDir, 'bin', 'agentpay-agent')));
   assert.equal(fs.existsSync(path.join(installDir, 'bin', 'agentpay-system-keychain')), false);
-  assert.equal(fs.existsSync(path.join(installDir, 'bin', 'agentpay-daemon-password-helper.sh')), true);
+  assert.equal(
+    fs.existsSync(path.join(installDir, 'bin', 'agentpay-daemon-password-helper.sh')),
+    true,
+  );
 });
 
 test('installer rejects a runtime bundle built for a different platform', async () => {
@@ -759,12 +797,8 @@ test('installer auto-installs detected Codex and generic agents skill targets', 
   });
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.ok(
-    fs.existsSync(path.join(homeDir, '.codex', 'skills', 'agentpay-sdk', 'SKILL.md')),
-  );
-  assert.ok(
-    fs.existsSync(path.join(homeDir, '.agents', 'skills', 'agentpay-sdk', 'SKILL.md')),
-  );
+  assert.ok(fs.existsSync(path.join(homeDir, '.codex', 'skills', 'agentpay-sdk', 'SKILL.md')));
+  assert.ok(fs.existsSync(path.join(homeDir, '.agents', 'skills', 'agentpay-sdk', 'SKILL.md')));
 });
 
 test('installer can install all AI integrations when requested explicitly', async () => {
@@ -801,26 +835,16 @@ test('installer can install all AI integrations when requested explicitly', asyn
   });
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
-  assert.ok(
-    fs.existsSync(path.join(homeDir, '.codex', 'skills', 'agentpay-sdk', 'SKILL.md')),
-  );
-  assert.ok(
-    fs.existsSync(path.join(homeDir, '.agents', 'skills', 'agentpay-sdk', 'SKILL.md')),
-  );
-  assert.ok(
-    fs.existsSync(path.join(homeDir, '.openclaw', 'skills', 'agentpay-sdk', 'SKILL.md')),
-  );
-  assert.ok(
-    fs.existsSync(path.join(homeDir, '.claude', 'skills', 'agentpay-sdk', 'SKILL.md')),
-  );
+  assert.ok(fs.existsSync(path.join(homeDir, '.codex', 'skills', 'agentpay-sdk', 'SKILL.md')));
+  assert.ok(fs.existsSync(path.join(homeDir, '.agents', 'skills', 'agentpay-sdk', 'SKILL.md')));
+  assert.ok(fs.existsSync(path.join(homeDir, '.openclaw', 'skills', 'agentpay-sdk', 'SKILL.md')));
+  assert.ok(fs.existsSync(path.join(homeDir, '.claude', 'skills', 'agentpay-sdk', 'SKILL.md')));
   assert.ok(fs.existsSync(path.join(workspaceDir, 'AGENTS.md')));
   assert.ok(fs.existsSync(path.join(workspaceDir, 'CLAUDE.md')));
   assert.ok(fs.existsSync(path.join(workspaceDir, 'GEMINI.md')));
   assert.ok(fs.existsSync(path.join(workspaceDir, '.github', 'copilot-instructions.md')));
   assert.ok(fs.existsSync(path.join(workspaceDir, '.clinerules', 'agentpay-sdk.md')));
-  assert.ok(
-    fs.existsSync(path.join(cursorWorkspace, '.cursor', 'rules', 'agentpay-sdk.mdc')),
-  );
+  assert.ok(fs.existsSync(path.join(cursorWorkspace, '.cursor', 'rules', 'agentpay-sdk.mdc')));
 });
 
 test('skills-only install tolerates bundles missing newer adapter templates', async () => {
@@ -857,19 +881,13 @@ test('skills-only install tolerates bundles missing newer adapter templates', as
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.match(result.stderr, /missing some optional adapters/u);
-  assert.ok(
-    fs.existsSync(path.join(homeDir, '.codex', 'skills', 'agentpay-sdk', 'SKILL.md')),
-  );
+  assert.ok(fs.existsSync(path.join(homeDir, '.codex', 'skills', 'agentpay-sdk', 'SKILL.md')));
   assert.ok(fs.existsSync(path.join(workspaceDir, 'AGENTS.md')));
   assert.ok(fs.existsSync(path.join(workspaceDir, 'CLAUDE.md')));
   assert.ok(fs.existsSync(path.join(cursorWorkspace, '.cursor', 'rules', 'agentpay-sdk.mdc')));
   assert.ok(fs.existsSync(path.join(workspaceDir, 'GEMINI.md')) === false);
-  assert.ok(
-    fs.existsSync(path.join(workspaceDir, '.github', 'copilot-instructions.md')) === false,
-  );
-  assert.ok(
-    fs.existsSync(path.join(workspaceDir, '.clinerules', 'agentpay-sdk.md')) === false,
-  );
+  assert.ok(fs.existsSync(path.join(workspaceDir, '.github', 'copilot-instructions.md')) === false);
+  assert.ok(fs.existsSync(path.join(workspaceDir, '.clinerules', 'agentpay-sdk.md')) === false);
 });
 
 test('installer fails closed when the bundle is missing a required runtime entry', async () => {

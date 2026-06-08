@@ -1,16 +1,21 @@
 ---
-description: Use the AgentPay SDK skill pack for wallet setup, funding checks, policy recipes, and transfers or approvals instead of guessing commands.
+description: Use the AgentPay SDK skill pack for Link fiat setup, wallet setup, funding checks, policy recipes, cards, and transfers or approvals instead of guessing commands.
 alwaysApply: false
 ---
 
-Load the installed `agentpay-sdk` skill when the task touches wallet operations.
+Load the installed `agentpay-sdk` skill when the task touches Link fiat setup, cards, wallet operations, or payments.
 
 Specific rules:
 
 - start with `agentpay config show --json`
+- for fiat/card payments, start with `agentpay link status --json`; if Link is not authenticated, use `agentpay link onboard`
+- list Link payment methods with `agentpay link payment-methods --json`
+- create one-time card credentials with `agentpay link card --payment-method-id <id> --merchant-name <name> --merchant-url <url> --amount <cents> --context <100+ char explanation> --output-file <PATH>` and never print full card details into chat
+- for third-party program integration, use `@worldlibertyfinancial/agentpay-sdk/link` helpers through the AgentPay Link facade
 - use `agentpay wallet --json` to determine whether a reusable wallet exists
 - if the user only asks what the skill can do, answer from `SKILL.md` and do not probe the machine first
 - never ask the user to paste `VAULT_PASSWORD` into chat
+- never ask the user to paste Link card numbers, CVCs, access tokens, refresh tokens, or full credential files into chat
 - tell the user to run `agentpay admin setup` locally when wallet metadata is unavailable and they are trying to use the wallet
 - tell the user to run `agentpay admin setup --reuse-existing-wallet` locally when the wallet exists and they need to re-run setup without changing vaults
 - after a fresh setup, tell the user to create an encrypted offline backup with `agentpay admin wallet-backup export --output <PATH>` unless they already have a verified backup

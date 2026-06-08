@@ -1,6 +1,6 @@
 ---
 name: agentpay-sdk
-description: Install and operate the AgentPay SDK. Trigger this when an agent needs to install `agentpay`, explain AgentPay SDK capabilities without probing the machine first, set up or reuse a wallet, check funding, generate funding instructions or a QR, guide the user through policy changes in the TUI or exact admin CLI when explicitly requested, route manual approvals to the local admin approval commands, execute transfers, approvals, or broadcasts using the current CLI behavior instead of stale examples, or use supported plugin-backed merchant payment flows when explicitly relevant.
+description: Install and operate the AgentPay SDK. Trigger this when an agent needs to install `agentpay`, explain AgentPay SDK capabilities without probing the machine first, bind Link for Fiat card payments, set up or reuse a Crypto wallet, check funding, generate funding instructions or a QR, guide the user through policy changes in the TUI or exact admin CLI when explicitly requested, route manual approvals to the local admin approval commands, execute transfers, approvals, or broadcasts using the current CLI behavior instead of stale examples, or use supported plugin-backed merchant payment flows when explicitly relevant.
 homepage: https://worldlibertyfinancial.com
 metadata: {"openclaw":{"skillKey":"agentpay-sdk","homepage":"https://worldlibertyfinancial.com","os":["darwin","linux"],"requires":{"bins":["agentpay"]}}}
 ---
@@ -15,6 +15,9 @@ If the user asks what this skill can do, answer from this list first. Do not pro
 
 - install `agentpay`
 - bootstrap `agentpay` and the AgentPay skill pack with the one-click installer
+- choose a payment setup path during install: Fiat with Link or Crypto with the local wallet
+- bind a Link account for Fiat payments
+- create Link spend requests and approved one-time card credentials for agent purchases
 - explain whether the wallet can be reused or needs first-run setup
 - guide the user through local wallet setup (self-custodial daemon mode)
 - export, verify, and restore encrypted offline wallet backups
@@ -34,11 +37,17 @@ If the user asks what this skill can do, answer from this list first. Do not pro
 - One-click bootstrap: `curl -fsSL https://wlfi.sh | bash`
 - One-click skills only: `curl -fsSL https://wlfi.sh | bash -s -- --skills-only`
 - One-click update: rerun `curl -fsSL https://wlfi.sh | bash`
+- Installer payment choice: use `AGENTPAY_SETUP_PAYMENT_METHOD=fiat` for Link onboarding, `AGENTPAY_SETUP_PAYMENT_METHOD=crypto` for local wallet setup, or `AGENTPAY_SETUP_PAYMENT_METHOD=none` to install only.
 - One-click packaged runtime bundles are available on macOS and Linux. Managed wallet setup is supported on both platforms after install.
 - Source install or update: from the repo checkout run `pnpm install && npm run build && npm run install:cli-launcher && npm run install:rust-binaries`
 - Managed wallet bootstrap commands such as `agentpay admin setup`, `agentpay admin tui`, `agentpay admin reset`, and `agentpay admin uninstall` are supported on macOS and Linux. The managed daemon uses `launchd` on macOS and system `systemd` on Linux. Agent auth storage uses macOS Keychain on macOS and Linux Secret Service on Linux.
+- Fiat setup and card credentials use the bundled Stripe Link CLI through `agentpay link`. Users bind their Link account with `agentpay link onboard`, approve every spend request in the Link app, and receive one-time card credentials written to a local `0600` file.
+- `@worldlibertyfinancial/agentpay-sdk/link` exposes helper functions for third-party agents that integrate through the AgentPay Link facade.
 - `agentpay wallet --json` is the wallet reuse check.
 - `agentpay admin setup` is the first-run wallet setup path on macOS and Linux.
+- `agentpay link status --json` is the Link account reuse check.
+- `agentpay link payment-methods --json` lists Link payment methods.
+- `agentpay link card ... --output-file <PATH>` creates a Link spend request, requests approval, polls, and writes full card credentials locally while stdout stays redacted.
 - Plugin-specific help lives under the current CLI. For Bitrefill, use `agentpay bitrefill --help`.
 - Browser-based relay and web approval are unsupported in this release.
 - `agentpay admin set-relay-config` and `agentpay admin get-relay-config` are legacy compatibility commands and return `unsupported`.
@@ -50,12 +59,13 @@ If the user asks what this skill can do, answer from this list first. Do not pro
 
 ## Wallet Model
 
-AgentPay uses a self-custodial local daemon wallet.
+AgentPay supports two payment setup paths.
 
-- Setup on macOS or Linux: `agentpay admin setup`
-- Local Rust daemon manages keys, policy enforcement, manual approval, and wallet backup
-- Supports `transfer`, `transfer-native`, `approve`, `broadcast`, `x402`, and `mpp`
-- Tempo session mode is available through `agentpay mpp`
+- Fiat with Link: `agentpay link onboard`, then `agentpay link card ...` for one-time cards or `agentpay link mpp ...` for Link-backed MPP/SPT flows.
+- Crypto with local wallet: `agentpay admin setup` on macOS or Linux.
+- The local Rust daemon manages crypto keys, policy enforcement, manual approval, and wallet backup.
+- Crypto supports `transfer`, `transfer-native`, `approve`, `broadcast`, `x402`, and `mpp`.
+- Tempo session mode is available through crypto `agentpay mpp`.
 
 ## Default Payment Assumption
 
@@ -68,9 +78,11 @@ AgentPay uses a self-custodial local daemon wallet.
 
 - Never ask the user to paste `VAULT_PASSWORD` into chat.
 - Never ask the user to paste a wallet backup password into chat.
+- Never ask the user to paste Link access tokens, refresh tokens, card numbers, CVCs, or full card credential files into chat.
 - Never ask the user to paste plugin session material into chat, including Bitrefill cookies, captcha tokens, or browser session material.
 - Never collect or store the vault password inside the agent.
 - If a flow needs vault input, move the user to a secure local prompt.
+- If a flow needs Link authentication, move the user to `agentpay link onboard` or a third-party integration that calls `onboardLinkAccount`; the user approves the connection in Link.
 - For first-run setup, tell the user to run `agentpay admin setup` locally and follow the secure prompt there.
 - After first-run setup, strongly prefer `agentpay admin wallet-backup export --output <PATH>` unless the user already has a verified backup.
 - For daemon recovery with an existing wallet, tell the user to run `agentpay admin setup --reuse-existing-wallet` locally.
@@ -82,21 +94,26 @@ AgentPay uses a self-custodial local daemon wallet.
 
 ## Deterministic Flow
 
-1. Classify the request as explain capabilities, install, setup wallet, back up wallet, restore wallet, fund wallet, set policy, send native asset, send ERC-20, approve allowance, broadcast raw tx, pay MPP API, plugin-backed merchant payment, or uninstall.
+1. Classify the request as explain capabilities, install, choose payment method, setup Fiat Link, create Link card, setup crypto wallet, back up wallet, restore wallet, fund wallet, set policy, send native asset, send ERC-20, approve allowance, broadcast raw tx, pay MPP API, plugin-backed merchant payment, or uninstall.
 2. If the user is only asking what this skill can do, answer from `What This Skill Covers` and stop there.
-3. For wallet or payment work, start with `agentpay config show --json`.
-4. Run `agentpay wallet --json` to check wallet status.
-5. If the wallet is unavailable and the task needs one, tell the user to run `agentpay admin setup` locally.
-6. If the wallet exists but the user needs to re-run setup without changing vaults, use `agentpay admin setup --reuse-existing-wallet`.
-7. If the user needs disaster recovery on a new machine and has an encrypted backup, use `agentpay admin setup --restore-wallet-from <PATH>`.
-8. For policy configuration, default to `agentpay admin tui`.
-9. If a request is queued for manual approval, tell the user it is waiting for approval and use the local admin CLI approval commands.
-10. For `transfer --broadcast`, `transfer-native --broadcast`, `approve --broadcast`, and `bitrefill buy --broadcast`, tell the user to keep that original command running while they approve it.
-11. For plugin-backed merchant payments, use the relevant current CLI plugin flow. If the user is specifically using Bitrefill, or the request is to pay a traditional merchant that only accepts cards and Bitrefill is the supported path, use Bitrefill.
-12. If the user did not specify network or asset for a payment, fill in `bsc` and `USD1` before asking follow-up questions.
-13. Before any outbound action, check funding.
-14. If funding is missing, stop and ask the user to top up the wallet.
-15. Only then run the exact current CLI command.
+3. If the user wants Fiat or card-based agent payments, start with `agentpay link status --json`.
+4. If Link is not authenticated, use `agentpay link onboard`.
+5. List payment methods with `agentpay link payment-methods --json` and use the selected `id` as `--payment-method-id`.
+6. For a card purchase, use `agentpay link card --payment-method-id <id> --merchant-name <name> --merchant-url <url> --amount <cents> --context <100+ char explanation> --output-file <PATH>`. Do not print full card details into chat.
+7. If the user wants third-party program integration, use the `@worldlibertyfinancial/agentpay-sdk/link` helpers so the integration stays on the AgentPay Link facade.
+8. For crypto wallet or onchain payment work, start with `agentpay config show --json`.
+9. Run `agentpay wallet --json` to check wallet status.
+10. If the wallet is unavailable and the task needs crypto, tell the user to run `agentpay admin setup` locally.
+11. If the wallet exists but the user needs to re-run setup without changing vaults, use `agentpay admin setup --reuse-existing-wallet`.
+12. If the user needs disaster recovery on a new machine and has an encrypted backup, use `agentpay admin setup --restore-wallet-from <PATH>`.
+13. For policy configuration, default to `agentpay admin tui`.
+14. If a request is queued for manual approval, tell the user it is waiting for approval and use the local admin CLI approval commands.
+15. For `transfer --broadcast`, `transfer-native --broadcast`, `approve --broadcast`, and `bitrefill buy --broadcast`, tell the user to keep that original command running while they approve it.
+16. For plugin-backed merchant payments, prefer Link cards for Fiat card payments; use Bitrefill only when the user specifically wants Bitrefill or a gift/prepaid-card route.
+17. If the user did not specify network or asset for a crypto payment, fill in `bsc` and `USD1` before asking follow-up questions.
+18. Before any outbound crypto action, check funding.
+19. If crypto funding is missing, stop and ask the user to top up the wallet.
+20. Only then run the exact current CLI command.
 
 ## Funding Rule
 
@@ -129,6 +146,11 @@ AgentPay uses a self-custodial local daemon wallet.
 ## Current Command Shapes
 
 - Wallet check: `agentpay wallet --json`
+- Link account check: `agentpay link status --json`
+- Link onboarding: `agentpay link onboard`
+- Link payment methods: `agentpay link payment-methods --json`
+- Link card: `agentpay link card --payment-method-id <id> --merchant-name <name> --merchant-url <url> --amount <cents> --context <100+ char explanation> --output-file <PATH>`
+- Link advanced passthrough: `agentpay link spend-request ...`, `agentpay link mpp ...`, `agentpay link serve ...`
 - Setup on macOS or Linux: `agentpay admin setup`
 - Reuse existing wallet during setup recovery: `agentpay admin setup --reuse-existing-wallet`
 - Restore wallet from encrypted backup: `agentpay admin setup --restore-wallet-from <PATH>`
@@ -177,7 +199,7 @@ AgentPay uses a self-custodial local daemon wallet.
 - For `transfer --broadcast`, `transfer-native --broadcast`, `approve --broadcast`, and `bitrefill buy --broadcast`, tell the user not to rerun the original command after approval. The CLI polls every 2 seconds for up to 5 minutes and continues automatically if the same approval request is approved.
 - If the original broadcast command is already gone after approval, use `agentpay admin resume-manual-approval-request --approval-request-id <UUID>`.
 - `agentpay broadcast` and other non-auto-waiting flows still print approval details and exit.
-- If the user explicitly asks for raw CLI commands, use:
+- If the user explicitly asks for exact CLI commands, use:
   - `agentpay admin list-manual-approval-requests`
   - `agentpay admin approve-manual-approval-request --approval-request-id <UUID>`
   - `agentpay admin resume-manual-approval-request --approval-request-id <UUID>`

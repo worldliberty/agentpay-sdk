@@ -5,6 +5,7 @@ INSTALL_DIR_DEFAULT="${AGENTPAY_SETUP_DIR:-$HOME/.agentpay}"
 ASSUME_DEFAULTS="${AGENTPAY_SETUP_ASSUME_DEFAULTS:-0}"
 INSTALL_SKILLS_MODE="${AGENTPAY_SETUP_INSTALL_SKILLS:-auto}"
 RUN_ADMIN_SETUP_DEFAULT="${AGENTPAY_SETUP_RUN_ADMIN_SETUP:-}"
+PAYMENT_METHOD_DEFAULT="${AGENTPAY_SETUP_PAYMENT_METHOD:-}"
 CURSOR_WORKSPACE_DEFAULT="${AGENTPAY_SETUP_CURSOR_WORKSPACE:-}"
 WORKSPACE_DEFAULT="${AGENTPAY_SETUP_WORKSPACE:-}"
 BUNDLE_URL_OVERRIDE="${AGENTPAY_SDK_BUNDLE_URL:-${AGENTPAY_SDK_ARCHIVE_URL:-}}"
@@ -124,8 +125,9 @@ Optional environment overrides:
   AGENTPAY_SETUP_AUTO_CONTINUE_SECONDS seconds before default path/selection prompts auto-continue
   AGENTPAY_SETUP_MODE             full or skills-only
   AGENTPAY_SETUP_INSTALL_SKILLS   auto, yes, or no
+  AGENTPAY_SETUP_PAYMENT_METHOD   auto, fiat, crypto, or none; default prompts when local and skips otherwise
   AGENTPAY_SETUP_WORKSPACE        explicit workspace path for AGENTS/CLAUDE/GEMINI/Copilot skill adapters
-  AGENTPAY_SETUP_RUN_ADMIN_SETUP  yes or no; default is no
+  AGENTPAY_SETUP_RUN_ADMIN_SETUP  legacy yes or no alias; yes maps to crypto setup
   AGENTPAY_SETUP_CURSOR_WORKSPACE explicit Cursor workspace path for adapter install
 EOF_USAGE
 }
@@ -508,6 +510,7 @@ validate_installer_modes() {
   INSTALLER_MODE="$(normalize_lowercase_env "$INSTALLER_MODE")"
   INSTALL_SKILLS_MODE="$(normalize_lowercase_env "$INSTALL_SKILLS_MODE")"
   LEGACY_RELAY_MODE="$(normalize_lowercase_env "$LEGACY_RELAY_MODE")"
+  PAYMENT_METHOD_DEFAULT="$(normalize_lowercase_env "$PAYMENT_METHOD_DEFAULT")"
 
   case "$ASSUME_DEFAULTS" in
     0|1|yes|no|true|false)
@@ -545,6 +548,14 @@ validate_installer_modes() {
       ;;
   esac
 
+  case "$PAYMENT_METHOD_DEFAULT" in
+    ""|auto|fiat|crypto|none|no|skip|later)
+      ;;
+    *)
+      die "AGENTPAY_SETUP_PAYMENT_METHOD must be one of: auto, fiat, crypto, none."
+      ;;
+  esac
+
   if [[ -n "$LEGACY_RELAY_MODE" ]] && [[ "$LEGACY_RELAY_MODE" != "skip" ]]; then
     die "Relay setup is not part of the one-click installer. Leave AGENTPAY_SETUP_RELAY_MODE unset or set it to skip."
   fi
@@ -568,6 +579,12 @@ validate_installer_modes() {
         die "AGENTPAY_SETUP_RUN_ADMIN_SETUP must be yes or no."
         ;;
     esac
+
+    case "$PAYMENT_METHOD_DEFAULT" in
+      fiat|crypto)
+        die "AGENTPAY_SETUP_PAYMENT_METHOD=$PAYMENT_METHOD_DEFAULT cannot be used with --skills-only."
+        ;;
+    esac
   fi
 }
 
@@ -587,6 +604,82 @@ resolve_run_admin_setup_default() {
   fi
 
   printf 'no\n'
+}
+
+resolve_payment_setup_mode() {
+  local requested="${PAYMENT_METHOD_DEFAULT:-}"
+  local legacy_run_setup="${RUN_ADMIN_SETUP_DEFAULT:-}"
+  local reply=""
+
+  if [[ -n "$requested" ]]; then
+    requested="$(normalize_lowercase_env "$requested")"
+    case "$requested" in
+      fiat|crypto)
+        printf '%s\n' "$requested"
+        return
+        ;;
+      none|no|skip|later)
+        printf 'none\n'
+        return
+        ;;
+      auto|"")
+        ;;
+      *)
+        die "AGENTPAY_SETUP_PAYMENT_METHOD must be one of: auto, fiat, crypto, none."
+        ;;
+    esac
+  fi
+
+  if [[ -n "$legacy_run_setup" ]]; then
+    legacy_run_setup="$(normalize_lowercase_env "$legacy_run_setup")"
+    case "$legacy_run_setup" in
+      yes)
+        printf 'crypto\n'
+        return
+        ;;
+      no)
+        printf 'none\n'
+        return
+        ;;
+      *)
+        die "AGENTPAY_SETUP_RUN_ADMIN_SETUP must be yes or no."
+        ;;
+    esac
+  fi
+
+  if [[ "$ASSUME_DEFAULTS" == "1" ]]; then
+    printf 'none\n'
+    return
+  fi
+
+  if (( HAS_LOCAL_TTY == 0 )); then
+    printf 'none\n'
+    return
+  fi
+
+  {
+    printf '\nChoose payment setup\n\n'
+    printf '  1. Fiat with Link (bind Link account, agent pays with one-time cards)\n'
+    printf '  2. Crypto with USDC/USD1 wallet (local self-custodial daemon)\n'
+    printf '  3. Later\n\n'
+  } >&$PROMPT_OUT_FD
+
+  reply="$(trim_ascii_whitespace "$(read_prompt_with_default_reply "Payment setup" "3" "Skipping payment setup for now.")")"
+  case "${reply:-3}" in
+    1|f|F|fiat|FIAT|link|Link)
+      printf 'fiat\n'
+      ;;
+    2|c|C|crypto|CRYPTO|usdc|USDC|usd1|USD1)
+      printf 'crypto\n'
+      ;;
+    3|l|L|later|Later|none|None|skip|Skip|no|No)
+      printf 'none\n'
+      ;;
+    *)
+      warn "Unknown payment setup selection: ${reply:-empty}; skipping payment setup."
+      printf 'none\n'
+      ;;
+  esac
 }
 
 resolve_runtime_bundle_asset_name() {
@@ -1887,7 +1980,7 @@ maybe_warn_about_missing_adapter_templates() {
 
 maybe_run_admin_setup() {
   local run_setup
-  run_setup="$(resolve_run_admin_setup_default)"
+  run_setup="${1:-$(resolve_run_admin_setup_default)}"
 
   if [[ "$run_setup" == "no" ]]; then
     say "Skipping wallet setup during one-click install. Run agentpay admin setup when you are ready to create or attach a wallet."
@@ -1904,6 +1997,16 @@ maybe_run_admin_setup() {
 
   say "Starting agentpay admin setup now."
   agentpay admin setup </dev/tty >/dev/tty 2>/dev/tty
+}
+
+maybe_run_link_onboarding() {
+  say "Starting Link fiat onboarding now."
+  if (( HAS_LOCAL_TTY == 1 )); then
+    agentpay link onboard </dev/tty >/dev/tty 2>/dev/tty
+    return
+  fi
+
+  agentpay link onboard
 }
 
 print_summary() {
@@ -1925,8 +2028,9 @@ Run now in this shell:
 Current-shell shim:
   $CURRENT_SHELL_SHIM_PATH
 
-Managed wallet setup is supported on macOS and Linux.
-Run agentpay admin setup when you are ready to create or attach a wallet.
+Payment setup options:
+  Fiat with Link: agentpay link onboard
+  Crypto wallet: agentpay admin setup
 EOF_SUMMARY
       return
     fi
@@ -1950,8 +2054,9 @@ Current-shell shim was skipped:
 Or run AgentPay directly right now without reloading the shell:
   "$RUNTIME_DIR/bin/agentpay" --help
 
-Managed wallet setup is supported on macOS and Linux.
-Run agentpay admin setup when you are ready to create or attach a wallet.
+Payment setup options:
+  Fiat with Link: agentpay link onboard
+  Crypto wallet: agentpay admin setup
 EOF_SUMMARY
     return
   fi
@@ -1976,11 +2081,9 @@ Current-shell shim:
 Future shells are configured via:
   source "$SHELL_RC_PATH"
 
-Managed wallet setup is supported on macOS and Linux.
-
-When you are ready to create or attach a wallet:
-  1. Run agentpay admin setup
-  2. Complete the secure local password prompts there
+Payment setup options:
+  Fiat with Link: agentpay link onboard
+  Crypto wallet: agentpay admin setup
 EOF_SUMMARY
     return
   fi
@@ -2004,12 +2107,9 @@ Current-shell shim was skipped:
 Or run AgentPay directly right now without reloading the shell:
   "$RUNTIME_DIR/bin/agentpay" --help
 
-Managed wallet setup is supported on macOS and Linux.
-
-When you are ready to create or attach a wallet:
-  1. Reload your shell with: source "$SHELL_RC_PATH"
-  2. Run agentpay admin setup
-  3. Complete the secure local password prompts there
+Payment setup options:
+  Fiat with Link after reloading your shell: agentpay link onboard
+  Crypto wallet after reloading your shell: agentpay admin setup
 EOF_SUMMARY
 }
 
@@ -2102,10 +2202,16 @@ main() {
   step "Recording one-click install metadata" "If manifest writing failed, check filesystem permissions under the install directory and rerun."
   write_install_manifest
 
-  if [[ "$(resolve_run_admin_setup_default)" == "yes" ]]; then
-    step "Wallet setup" "If admin setup fails, rerun agentpay admin setup after fixing the reported issue."
-    maybe_run_admin_setup
-  fi
+  case "$(resolve_payment_setup_mode)" in
+    fiat)
+      step "Fiat payment setup" "If Link onboarding fails, rerun agentpay link onboard after fixing the reported issue."
+      maybe_run_link_onboarding
+      ;;
+    crypto)
+      step "Crypto wallet setup" "If admin setup fails, rerun agentpay admin setup after fixing the reported issue."
+      maybe_run_admin_setup yes
+      ;;
+  esac
 
   print_summary
 }
