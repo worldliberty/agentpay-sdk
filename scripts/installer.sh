@@ -11,6 +11,16 @@ WORKSPACE_DEFAULT="${AGENTPAY_SETUP_WORKSPACE:-}"
 BUNDLE_URL_OVERRIDE="${AGENTPAY_SDK_BUNDLE_URL:-${AGENTPAY_SDK_ARCHIVE_URL:-}}"
 PUBLIC_RELEASE_REPO="${AGENTPAY_PUBLIC_RELEASE_REPO:-__AGENTPAY_PUBLIC_RELEASE_REPO__}"
 PUBLIC_RELEASE_TAG="${AGENTPAY_PUBLIC_RELEASE_TAG:-__AGENTPAY_PUBLIC_RELEASE_TAG__}"
+# The release workflow templates the repo, tag, and per-arch bundle digests below at publish time.
+# The digests only apply to bundles downloaded from that exact repo and tag.
+TEMPLATED_RELEASE_REPO="__AGENTPAY_PUBLIC_RELEASE_REPO__"
+TEMPLATED_RELEASE_TAG="__AGENTPAY_PUBLIC_RELEASE_TAG__"
+PUBLIC_BUNDLE_SHA256_MACOS_ARM64="__AGENTPAY_PUBLIC_BUNDLE_SHA256_MACOS_ARM64__"
+PUBLIC_BUNDLE_SHA256_MACOS_X64="__AGENTPAY_PUBLIC_BUNDLE_SHA256_MACOS_X64__"
+PUBLIC_BUNDLE_SHA256_LINUX_X64="__AGENTPAY_PUBLIC_BUNDLE_SHA256_LINUX_X64__"
+PUBLIC_BUNDLE_SHA256_LINUX_ARM64="__AGENTPAY_PUBLIC_BUNDLE_SHA256_LINUX_ARM64__"
+BUNDLE_SHA256_OVERRIDE="${AGENTPAY_SDK_BUNDLE_SHA256:-}"
+BUNDLE_VERIFIED=0
 LEGACY_RELAY_MODE="${AGENTPAY_SETUP_RELAY_MODE:-}"
 INSTALLER_MODE_DEFAULT="${AGENTPAY_SETUP_MODE:-full}"
 AUTO_CONTINUE_SECONDS="${AGENTPAY_SETUP_AUTO_CONTINUE_SECONDS:-8}"
@@ -27,6 +37,7 @@ PROMPT_OUT_FD=2
 HAS_LOCAL_TTY=0
 INHERITED_PATH="${PATH:-}"
 SHELL_RC_PATH=""
+SHELL_RELOAD_COMMAND=""
 INSTALLED_SKILL_TARGETS=()
 INSTALLED_CURSOR_ARTIFACTS=()
 INSTALLED_PATH_SHIMS=()
@@ -118,6 +129,8 @@ What `--skills-only` does:
 Optional environment overrides:
   AGENTPAY_SDK_BUNDLE_URL         reachable .tar/.tar.gz bundle to install
   AGENTPAY_SDK_ARCHIVE_URL        legacy alias for AGENTPAY_SDK_BUNDLE_URL
+  AGENTPAY_SDK_BUNDLE_SHA256      expected SHA-256 of the bundle; required for https:// bundle
+                                  URL overrides and for repo/tag overrides
   AGENTPAY_PUBLIC_RELEASE_REPO    GitHub owner/repo that hosts AgentPay SDK bundles
   AGENTPAY_PUBLIC_RELEASE_TAG     GitHub release tag to download AgentPay SDK bundles from
   AGENTPAY_SETUP_DIR              install directory root
@@ -166,6 +179,12 @@ command_exists() {
 
 clear_macos_quarantine() {
   if [[ "$(uname -s)" != "Darwin" ]]; then
+    return
+  fi
+
+  # Gatekeeper quarantine is only cleared for content that came from a verified bundle.
+  if [[ "$BUNDLE_VERIFIED" != "1" ]]; then
+    warn "Leaving the macOS quarantine attribute in place because the bundle was not verified."
     return
   fi
 
@@ -469,7 +488,7 @@ ensure_homebrew() {
     die "Homebrew bootstrap requires a local TTY. Install Homebrew manually first, then rerun this installer from a local terminal."
   fi
 
-  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/tty >/dev/tty 2>/dev/tty
+  /bin/bash -c "$(curl --proto '=https' --tlsv1.2 -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" </dev/tty >/dev/tty 2>/dev/tty
   load_brew_shellenv
   command_exists brew || die "Homebrew install finished, but brew is still unavailable on PATH."
 }
@@ -703,11 +722,7 @@ resolve_default_bundle_url() {
   local asset_name
   release_repo="$PUBLIC_RELEASE_REPO"
   release_tag="$PUBLIC_RELEASE_TAG"
-  if installer_mode_is_skills_only; then
-    asset_name="agentpay-sdk-$(resolve_skill_bundle_platform_label)-$(host_arch_label).tar.gz"
-  else
-    asset_name="$(resolve_runtime_bundle_asset_name)"
-  fi
+  asset_name="$(resolve_default_bundle_asset_name)"
   printf 'https://github.com/%s/releases/download/%s/%s\n' "$release_repo" "$release_tag" "$asset_name"
 }
 
@@ -818,15 +833,118 @@ resolve_archive_root() {
   return 1
 }
 
+resolve_default_bundle_asset_name() {
+  if installer_mode_is_skills_only; then
+    printf 'agentpay-sdk-%s-%s.tar.gz\n' "$(resolve_skill_bundle_platform_label)" "$(host_arch_label)"
+  else
+    resolve_runtime_bundle_asset_name
+  fi
+}
+
+pinned_bundle_sha256_for_asset() {
+  case "$1" in
+    agentpay-sdk-macos-arm64.tar.gz) printf '%s\n' "$PUBLIC_BUNDLE_SHA256_MACOS_ARM64" ;;
+    agentpay-sdk-macos-x64.tar.gz) printf '%s\n' "$PUBLIC_BUNDLE_SHA256_MACOS_X64" ;;
+    agentpay-sdk-linux-x64.tar.gz) printf '%s\n' "$PUBLIC_BUNDLE_SHA256_LINUX_X64" ;;
+    agentpay-sdk-linux-arm64.tar.gz) printf '%s\n' "$PUBLIC_BUNDLE_SHA256_LINUX_ARM64" ;;
+    *) printf '\n' ;;
+  esac
+}
+
+is_sha256_hex() {
+  [[ "$1" =~ ^[0-9a-f]{64}$ ]]
+}
+
+# Prints the expected bundle digest, or nothing when an explicitly local file:// bundle is used
+# without one. Dies when an https:// bundle has no trustworthy digest.
+resolve_expected_bundle_sha256() {
+  local bundle_url="$1"
+  local digest=""
+
+  if [[ -n "$BUNDLE_SHA256_OVERRIDE" ]]; then
+    digest="$(normalize_lowercase_env "$BUNDLE_SHA256_OVERRIDE")"
+    is_sha256_hex "$digest" || die "AGENTPAY_SDK_BUNDLE_SHA256 must be a 64-character hex SHA-256 digest."
+    printf '%s\n' "$digest"
+    return 0
+  fi
+
+  if [[ -n "$BUNDLE_URL_OVERRIDE" ]]; then
+    if [[ "$bundle_url" == file://* ]]; then
+      return 0
+    fi
+    die "AGENTPAY_SDK_BUNDLE_URL points at a remote bundle without a pinned digest. Set AGENTPAY_SDK_BUNDLE_SHA256 to the bundle's SHA-256 from the release SHA256SUMS."
+  fi
+
+  if [[ "$PUBLIC_RELEASE_REPO" != "$TEMPLATED_RELEASE_REPO" ]] || [[ "$PUBLIC_RELEASE_TAG" != "$TEMPLATED_RELEASE_TAG" ]]; then
+    die "AGENTPAY_PUBLIC_RELEASE_REPO/AGENTPAY_PUBLIC_RELEASE_TAG differ from the release this installer was published for, so its pinned digests do not apply. Set AGENTPAY_SDK_BUNDLE_SHA256 to the bundle's SHA-256 from that release's SHA256SUMS."
+  fi
+
+  digest="$(pinned_bundle_sha256_for_asset "$(resolve_default_bundle_asset_name)")"
+  if ! is_sha256_hex "$digest"; then
+    die "This installer has no published SHA-256 digest for $(resolve_default_bundle_asset_name). Download the installer from a published AgentPay SDK release, or set AGENTPAY_SDK_BUNDLE_SHA256 explicitly."
+  fi
+  printf '%s\n' "$digest"
+}
+
+compute_file_sha256() {
+  local file_path="$1"
+  if command_exists shasum; then
+    shasum -a 256 "$file_path" | awk '{ print $1 }'
+  elif command_exists sha256sum; then
+    sha256sum "$file_path" | awk '{ print $1 }'
+  else
+    die "Neither shasum nor sha256sum is available, so the downloaded AgentPay SDK bundle cannot be verified."
+  fi
+}
+
+download_bundle() {
+  local bundle_url="$1"
+  local archive_path="$2"
+
+  case "$bundle_url" in
+    https://*)
+      run_with_retry "$RETRY_ATTEMPTS" "$RETRY_DELAY_SECONDS" \
+        curl --proto '=https' --tlsv1.2 -fsSL "$bundle_url" -o "$archive_path"
+      ;;
+    file://*)
+      run_with_retry "$RETRY_ATTEMPTS" "$RETRY_DELAY_SECONDS" \
+        curl --proto '=file' -fsSL "$bundle_url" -o "$archive_path"
+      ;;
+    *)
+      die "Refusing to download the AgentPay SDK bundle over an unsupported scheme: $bundle_url (use https:// or file://)."
+      ;;
+  esac
+}
+
 install_bundle_archive() {
   local bundle_url="$1"
-  local temp_dir archive_path bundle_root
+  local temp_dir archive_path bundle_root expected_sha256 actual_sha256
   temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/agentpay-sdk-bundle.XXXXXX")"
   archive_path="$temp_dir/bundle.tar.gz"
 
-  if ! run_with_retry "$RETRY_ATTEMPTS" "$RETRY_DELAY_SECONDS" curl -fsSL "$bundle_url" -o "$archive_path"; then
+  if ! download_bundle "$bundle_url" "$archive_path"; then
     rm -rf "$temp_dir"
     die "Could not download the AgentPay SDK bundle from $bundle_url. Check the URL or publish a reachable release artifact."
+  fi
+
+  # Verify before extraction: nothing from an unverified archive touches the filesystem.
+  expected_sha256="$(resolve_expected_bundle_sha256 "$bundle_url")" || {
+    rm -rf "$temp_dir"
+    exit 1
+  }
+  if [[ -n "$expected_sha256" ]]; then
+    actual_sha256="$(compute_file_sha256 "$archive_path")" || {
+      rm -rf "$temp_dir"
+      exit 1
+    }
+    if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+      rm -rf "$temp_dir"
+      die "SHA-256 mismatch for the AgentPay SDK bundle from $bundle_url (expected $expected_sha256, got $actual_sha256). Refusing to extract it."
+    fi
+    BUNDLE_VERIFIED=1
+    say "Verified bundle SHA-256: $actual_sha256"
+  else
+    warn "Installing the local bundle $bundle_url without SHA-256 verification. Set AGENTPAY_SDK_BUNDLE_SHA256 to verify it."
   fi
 
   tar -xf "$archive_path" -C "$temp_dir"
@@ -842,14 +960,93 @@ install_bundle_archive() {
   BUNDLE_ROOT="$bundle_root"
 }
 
+# Prints the physical path of $1, resolving symlinks in the deepest existing ancestor.
+physical_path() {
+  local target="$1"
+  local suffix=""
+
+  target="${target%/}"
+  [[ -n "$target" ]] || target="/"
+  while [[ ! -d "$target" ]]; do
+    suffix="/$(basename "$target")$suffix"
+    target="$(dirname "$target")"
+  done
+  target="$(cd "$target" && pwd -P)"
+  if [[ "$target" == "/" ]]; then
+    printf '%s\n' "${suffix:-/}"
+  else
+    printf '%s\n' "$target$suffix"
+  fi
+}
+
+# Directories the installer must never own, because it deletes and replaces content inside them.
+path_is_protected_destination() {
+  local candidate home_path
+  candidate="$(physical_path "$1")"
+  home_path="$(physical_path "$HOME")"
+
+  [[ "$candidate" == "$home_path" ]] && return 0
+  case "$candidate" in
+    /|/usr|/usr/*|/opt|/bin|/sbin|/etc|/var|/tmp|/private|/private/etc|/private/var|/private/tmp|/System|/System/*|/Library|/Applications|/Users|/home|/root)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+directory_is_nonempty() {
+  local dir="$1"
+  [[ -d "$dir" ]] || return 1
+  [[ -n "$(ls -A "$dir" 2>/dev/null)" ]]
+}
+
+install_dir_is_recognized() {
+  local dir="$1"
+  # A previous one-click install, or a source install made by `npm run install:rust-binaries`.
+  [[ -f "$dir/one-click-install-manifest.json" ]] ||
+    [[ -x "$dir/bin/agentpay-daemon" ]] ||
+    [[ -x "$dir/bin/agentpay-admin" ]]
+}
+
+skill_pack_dir_is_recognized() {
+  local dir="$1"
+  [[ -f "$dir/SKILL.md" ]] && grep -qi 'agentpay' "$dir/SKILL.md"
+}
+
+assert_safe_install_dir() {
+  local dir="$1"
+  if path_is_protected_destination "$dir"; then
+    die "Refusing to install into $dir: it is \$HOME, /, a system directory, or under /usr. Choose a dedicated directory such as $HOME/.agentpay."
+  fi
+  if directory_is_nonempty "$dir" && ! install_dir_is_recognized "$dir"; then
+    die "Refusing to install into $dir: it is not empty and does not contain one-click-install-manifest.json from an earlier AgentPay install. Choose an empty or dedicated directory."
+  fi
+}
+
+assert_safe_skill_pack_destination() {
+  local destination="$1"
+  if path_is_protected_destination "$destination"; then
+    die "Refusing to install the AgentPay skill pack into $destination: it is \$HOME, /, a system directory, or under /usr."
+  fi
+  if directory_is_nonempty "$destination" && ! skill_pack_dir_is_recognized "$destination"; then
+    die "Refusing to replace $destination: it is not empty and is not an AgentPay skill pack. Choose a dedicated agentpay-sdk directory."
+  fi
+  if [[ -e "$destination" ]] && [[ ! -d "$destination" ]]; then
+    die "Refusing to replace $destination: it exists and is not a directory."
+  fi
+}
+
 choose_install_dir() {
   if [[ "$ASSUME_DEFAULTS" != "1" ]]; then
     say "Choose the local AgentPay install directory. Press Enter to keep the default."
   fi
   INSTALL_DIR="$(prompt_with_default "Install directory for AgentPay local files" "$INSTALL_DIR_DEFAULT")"
   INSTALL_DIR="${INSTALL_DIR/#\~/$HOME}"
+  [[ "$INSTALL_DIR" == /* ]] || INSTALL_DIR="$PWD/$INSTALL_DIR"
+  assert_safe_install_dir "$INSTALL_DIR"
   mkdir -p "$(dirname "$INSTALL_DIR")"
   INSTALL_DIR="$(cd "$(dirname "$INSTALL_DIR")" && pwd)/$(basename "$INSTALL_DIR")"
+  assert_safe_install_dir "$INSTALL_DIR"
   mkdir -p "$INSTALL_DIR"
   RUNTIME_DIR="$INSTALL_DIR"
   say "Using install directory: $INSTALL_DIR"
@@ -861,11 +1058,24 @@ escape_posix_shell_argument() {
 
 write_shell_exports() {
   local rc_file tmp_file
+  if [[ "$(basename "${SHELL:-zsh}")" == "fish" ]]; then
+    export AGENTPAY_HOME="$RUNTIME_DIR"
+    export PATH="$RUNTIME_DIR/bin:$PATH"
+    SHELL_RC_PATH=""
+    SHELL_RELOAD_COMMAND="set -gx AGENTPAY_HOME $(escape_posix_shell_argument "$RUNTIME_DIR"); fish_add_path \$AGENTPAY_HOME/bin  # fish: add to ~/.config/fish/config.fish"
+    warn "fish is not supported for automatic shell setup, so no shell config was changed."
+    warn "Add these lines to ~/.config/fish/config.fish yourself:"
+    warn "  set -gx AGENTPAY_HOME $(escape_posix_shell_argument "$RUNTIME_DIR")"
+    warn "  fish_add_path \$AGENTPAY_HOME/bin"
+    return
+  fi
+
   rc_file="$(shell_rc_file)"
   SHELL_RC_PATH="$rc_file"
-  tmp_file="$(mktemp)"
+  SHELL_RELOAD_COMMAND="source $(escape_posix_shell_argument "$rc_file")"
   mkdir -p "$(dirname "$rc_file")"
   touch "$rc_file"
+  tmp_file="$(mktemp "${TMPDIR:-/tmp}/agentpay-shell-rc.XXXXXX")"
 
   awk '
     BEGIN { skip = 0 }
@@ -881,7 +1091,10 @@ export PATH="\$AGENTPAY_HOME/bin:\$PATH"
 # <<< agentpay-sdk <<<
 EOF_EXPORTS
 
-  mv "$tmp_file" "$rc_file"
+  # Write through the existing path instead of renaming over it, so a symlinked rc file keeps
+  # pointing at its target and the file keeps its owner and mode.
+  cat "$tmp_file" >"$rc_file"
+  rm -f "$tmp_file"
   export AGENTPAY_HOME="$RUNTIME_DIR"
   export PATH="$RUNTIME_DIR/bin:$PATH"
 }
@@ -1052,6 +1265,7 @@ install_runtime_from_bundle() {
 
 install_skill_pack() {
   local destination="$1"
+  assert_safe_skill_pack_destination "$destination"
   mkdir -p "$(dirname "$destination")"
   rm -rf "$destination"
   cp -R "$BUNDLE_ROOT/skills/agentpay-sdk" "$destination"
@@ -2046,7 +2260,7 @@ AgentPay SDK runtime:
   $RUNTIME_DIR
 
 Your current shell still needs the updated PATH:
-  source "$SHELL_RC_PATH"
+  $SHELL_RELOAD_COMMAND
 
 Current-shell shim was skipped:
   ${CURRENT_SHELL_SHIM_WARNING:-unable to place agentpay into an existing PATH entry}
@@ -2079,7 +2293,7 @@ Current-shell shim:
   $CURRENT_SHELL_SHIM_PATH
 
 Future shells are configured via:
-  source "$SHELL_RC_PATH"
+  $SHELL_RELOAD_COMMAND
 
 Payment setup options:
   Fiat with Link: agentpay link onboard
@@ -2099,7 +2313,7 @@ AgentPay SDK runtime:
   $RUNTIME_DIR
 
 Your current shell still needs the updated PATH:
-  source "$SHELL_RC_PATH"
+  $SHELL_RELOAD_COMMAND
 
 Current-shell shim was skipped:
   ${CURRENT_SHELL_SHIM_WARNING:-unable to place agentpay into an existing PATH entry}

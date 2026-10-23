@@ -320,11 +320,59 @@ where
     let relay_task = relay_sync::spawn_relay_sync_task(Arc::clone(&daemon), signer_backend_label);
     server
         .run_until_shutdown(daemon, async {
-            let _ = tokio::signal::ctrl_c().await;
+            wait_for_shutdown_signal().await;
             relay_task.abort();
         })
         .await
         .context("daemon server loop failed")
+}
+
+/// Resolves on the first of SIGINT, SIGTERM, or SIGHUP so that launchd/systemd stop requests
+/// take the same graceful worker-join path as an interactive Ctrl-C.
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(stream) => Some(stream),
+            Err(error) => {
+                eprintln!("warning: failed to install SIGTERM handler: {error}");
+                None
+            }
+        };
+        let mut sighup = match signal(SignalKind::hangup()) {
+            Ok(stream) => Some(stream),
+            Err(error) => {
+                eprintln!("warning: failed to install SIGHUP handler: {error}");
+                None
+            }
+        };
+        let sigterm_recv = async {
+            match sigterm.as_mut() {
+                Some(stream) => {
+                    stream.recv().await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        let sighup_recv = async {
+            match sighup.as_mut() {
+                Some(stream) => {
+                    stream.recv().await;
+                }
+                None => std::future::pending::<()>().await,
+            }
+        };
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm_recv => {}
+            _ = sighup_recv => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 #[async_trait]
@@ -547,9 +595,16 @@ fn acquire_state_file_lock(path: &Path) -> Result<StateFileLock> {
         use std::os::fd::AsRawFd;
         // SAFETY: valid fd for advisory lock in-process lifetime.
         unsafe {
-            if libc::flock(file.as_raw_fd(), libc::LOCK_EX) != 0 {
+            if libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) != 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::WouldBlock {
+                    return Err(anyhow!(
+                        "another agentpay daemon already holds the state lock on {}; stop it before starting a new daemon",
+                        lock_path.display()
+                    ));
+                }
                 return Err(anyhow!(
-                    "failed to acquire state lock on {}",
+                    "failed to acquire state lock on {}: {error}",
                     lock_path.display()
                 ));
             }
@@ -1282,6 +1337,26 @@ mod tests {
         let lock_file = lock_path(&state_path);
         assert!(lock_file.exists());
         drop(lock);
+
+        std::fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acquire_state_file_lock_fails_fast_when_already_held() {
+        let root = temp_path("agentpay-daemon-lock-held");
+        let state_path = root.join("daemon-state.enc");
+
+        let first = acquire_state_file_lock(&state_path).expect("first lock");
+        let err = match acquire_state_file_lock(&state_path) {
+            Ok(_) => panic!("second lock must not block or succeed"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("already holds the state lock"));
+        drop(first);
+
+        let again = acquire_state_file_lock(&state_path).expect("lock after release");
+        drop(again);
 
         std::fs::remove_dir_all(&root).expect("cleanup");
     }

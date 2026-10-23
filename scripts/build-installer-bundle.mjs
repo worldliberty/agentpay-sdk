@@ -56,6 +56,7 @@ function parseArgs(argv) {
           ].join('\n') + '\n',
         );
         process.exit(0);
+        break;
       default:
         die(`Unknown option: ${argument}`);
     }

@@ -22,7 +22,7 @@ export interface ApprovalRequestRecord {
 }
 
 export interface EncryptedApprovalUpdateEnvelope {
-  algorithm: 'x25519-xchacha20poly1305-v1';
+  algorithm: 'x25519-hkdf-xchacha20poly1305-v2';
   ephemeralPublicKey: string;
   nonce: string;
   ciphertext: string;
@@ -41,4 +41,5 @@ export interface SecureApprovalLinkRecord {
   approvalId: string;
   approvalUrl: string;
   daemonId: string;
+  daemonPublicKey: string;
 }

@@ -12,7 +12,7 @@ use vault_daemon::{DaemonError, KeyManagerDaemonApi};
 use vault_domain::{
     action_from_erc20_calldata, AgentAction, AgentCredentials, BroadcastTx, DomainError,
     Eip3009Transfer, Eip712TypedData, EvmAddress, NonceReleaseRequest, NonceReservation,
-    NonceReservationRequest, Permit2Permit, SignRequest, Signature, SolanaAddress,
+    NonceReservationRequest, Permit2Permit, RailgunAddress, SignRequest, Signature, SolanaAddress,
     SolanaNonceAccountCreate, SolanaSolTransfer, SolanaSplTransfer, SolanaTokenProgram,
     TempoSessionOpenTransaction, TempoSessionTopUpTransaction, TempoSessionVoucher,
 };
@@ -147,6 +147,44 @@ pub trait AgentOperations: Send + Sync {
         chain_id: u64,
         token: EvmAddress,
         calldata: Vec<u8>,
+    ) -> Result<Signature, AgentSdkError>;
+
+    /// Requests authorization for a Railgun shield (public ERC-20 → shielded pool).
+    ///
+    /// Authorizes the policy-side transition only. The outer EVM contract call
+    /// that actually moves the tokens still flows through [`AgentOperations::broadcast_tx`]
+    /// and requires the railgun-prover sidecar (Track 4) to assemble.
+    async fn shield(
+        &self,
+        chain_id: u64,
+        token: EvmAddress,
+        to_railgun_address: RailgunAddress,
+        amount_wei: u128,
+    ) -> Result<Signature, AgentSdkError>;
+
+    /// Requests authorization for a Railgun unshield (shielded pool → public address).
+    ///
+    /// `via_broadcaster` indicates whether the outer EVM tx will be relayed
+    /// through a Waku broadcaster (hides gas-payer identity). Self-broadcast
+    /// paths additionally require [`AgentOperations::broadcast_tx`] for the
+    /// outer signature.
+    async fn unshield(
+        &self,
+        chain_id: u64,
+        token: EvmAddress,
+        to: EvmAddress,
+        amount_wei: u128,
+        via_broadcaster: bool,
+    ) -> Result<Signature, AgentSdkError>;
+
+    /// Requests authorization for a Railgun shielded-to-shielded private transfer.
+    async fn private_transfer(
+        &self,
+        chain_id: u64,
+        token: EvmAddress,
+        to_railgun_address: RailgunAddress,
+        amount_wei: u128,
+        via_broadcaster: bool,
     ) -> Result<Signature, AgentSdkError>;
 
     /// Requests signature authorization for a raw broadcast transaction.
@@ -427,6 +465,58 @@ where
         self.sign_action(action).await
     }
 
+    async fn shield(
+        &self,
+        chain_id: u64,
+        token: EvmAddress,
+        to_railgun_address: RailgunAddress,
+        amount_wei: u128,
+    ) -> Result<Signature, AgentSdkError> {
+        self.sign_action(AgentAction::Shield {
+            chain_id,
+            token,
+            to_railgun_address,
+            amount_wei,
+        })
+        .await
+    }
+
+    async fn unshield(
+        &self,
+        chain_id: u64,
+        token: EvmAddress,
+        to: EvmAddress,
+        amount_wei: u128,
+        via_broadcaster: bool,
+    ) -> Result<Signature, AgentSdkError> {
+        self.sign_action(AgentAction::Unshield {
+            chain_id,
+            token,
+            to,
+            amount_wei,
+            via_broadcaster,
+        })
+        .await
+    }
+
+    async fn private_transfer(
+        &self,
+        chain_id: u64,
+        token: EvmAddress,
+        to_railgun_address: RailgunAddress,
+        amount_wei: u128,
+        via_broadcaster: bool,
+    ) -> Result<Signature, AgentSdkError> {
+        self.sign_action(AgentAction::PrivateTransfer {
+            chain_id,
+            token,
+            to_railgun_address,
+            amount_wei,
+            via_broadcaster,
+        })
+        .await
+    }
+
     async fn broadcast_tx(&self, mut tx: BroadcastTx) -> Result<Signature, AgentSdkError> {
         let requested_nonce = tx.nonce;
         let reservation = self
@@ -580,6 +670,22 @@ mod tests {
             Err(DaemonError::Transport("not used".to_string()))
         }
 
+        async fn railgun_master_public_key(
+            &self,
+            _session: &AdminSession,
+            _vault_key_id: Uuid,
+        ) -> Result<String, DaemonError> {
+            Err(DaemonError::Transport("not used".to_string()))
+        }
+
+        async fn railgun_viewing_public_key(
+            &self,
+            _session: &AdminSession,
+            _vault_key_id: Uuid,
+        ) -> Result<vault_domain::RailgunViewingPublicKeys, DaemonError> {
+            Err(DaemonError::Transport("not used".to_string()))
+        }
+
         async fn create_agent_key(
             &self,
             _session: &AdminSession,
@@ -706,7 +812,7 @@ mod tests {
 
     fn sample_admin_session() -> AdminSession {
         AdminSession {
-            vault_password: "vault-password".to_string(),
+            vault_password: "vault-password".to_string().into(),
             lease: Lease {
                 lease_id: Uuid::new_v4(),
                 issued_at: OffsetDateTime::UNIX_EPOCH,
@@ -1056,7 +1162,7 @@ mod tests {
                 .parse()
                 .expect("to"),
             value_wei: 0,
-            data_hex: "0xdeadbeef".to_string(),
+            data_hex: "0x".to_string(),
             gas_limit: 50_000,
             max_fee_per_gas_wei: 1_000_000_000,
             max_priority_fee_per_gas_wei: 1_000_000_000,
@@ -1096,7 +1202,7 @@ mod tests {
                 .parse()
                 .expect("to"),
             value_wei: 0,
-            data_hex: "0xdeadbeef".to_string(),
+            data_hex: "0x".to_string(),
             gas_limit: 50_000,
             max_fee_per_gas_wei: 1_000_000_000,
             max_priority_fee_per_gas_wei: 1_000_000_000,

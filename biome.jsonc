@@ -1,7 +1,17 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.3.0/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.4.6/schema.json",
   "files": {
-    "includes": ["**", "!dist", "!.turbo", "!target", "!node_modules", "!.next", "!.serverless"]
+    "includes": [
+      "**",
+      "!**/dist",
+      "!**/next-env.d.ts",
+      "!**/node_modules",
+      "!**/.next",
+      "!**/.turbo",
+      "!**/target",
+      "!**/.serverless",
+      "!**/coverage"
+    ]
   },
   "formatter": {
     "enabled": true,
@@ -17,10 +27,24 @@
       "trailingCommas": "all"
     }
   },
+  "css": {
+    "parser": {
+      "tailwindDirectives": true
+    }
+  },
   "linter": {
     "enabled": true,
     "rules": {
       "recommended": true
     }
-  }
+  },
+  "overrides": [
+    {
+      // Vendored upstream QR encoder; keep byte-for-byte to simplify future syncs.
+      "includes": ["skills/agentpay-sdk/scripts/vendor/qrcodegen.mjs"],
+      "linter": {
+        "enabled": false
+      }
+    }
+  ]
 }

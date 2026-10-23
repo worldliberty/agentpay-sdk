@@ -703,8 +703,8 @@ test('resolveWalletProfileWithBalances suppresses native balances on tempo chain
       },
     },
     {
-      getNativeBalance: async (rpcUrl, address) => {
-        nativeCalls.push({ rpcUrl, address });
+      getNativeBalance: async (rpcUrl, address, decimals) => {
+        nativeCalls.push({ rpcUrl, address, decimals });
         return {
           raw: 42424242424242424242n,
           formatted: '42424242.424242',

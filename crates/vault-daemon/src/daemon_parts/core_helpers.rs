@@ -4,6 +4,17 @@ struct AdminAuthState {
     locked_until: Option<OffsetDateTime>,
 }
 
+/// Origin of an admin password attempt.
+///
+/// Local peers (admin CLI over the unix socket / XPC) and relay-sourced
+/// approval decisions keep independent lockout counters so a flood of bad
+/// relay payloads can never lock the local administrator out of the daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdminAuthSource {
+    Local,
+    Relay,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 enum RecoverableAgentRequest {
     Sign {
@@ -32,6 +43,23 @@ struct RecoverableAgentResult {
     request: RecoverableAgentRequest,
     recover_until: OffsetDateTime,
     response: RecoverableAgentResponse,
+}
+
+/// Upper bound on Tempo session channels tracked in daemon state. The oldest
+/// channels (by open time) are evicted first.
+const MAX_TRACKED_TEMPO_CHANNELS: usize = 1024;
+
+/// Daemon-side record of a Tempo session channel opened through this daemon.
+///
+/// Vouchers skip spending-window limits because the channel deposit was already
+/// charged when the open/top-up transaction was signed. This record ties every
+/// voucher and top-up back to the agent key that opened the channel and caps
+/// voucher amounts at what that agent actually deposited.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct TempoChannelRecord {
+    agent_key_id: Uuid,
+    deposited_total_wei: u128,
+    opened_at: OffsetDateTime,
 }
 
 enum ManualApprovalResolution {
@@ -72,7 +100,9 @@ where
     relay_config: Arc<RwLock<RelayConfig>>,
     relay_private_key_hex: Arc<RwLock<Zeroizing<String>>>,
     admin_auth_state: Arc<RwLock<AdminAuthState>>,
+    relay_auth_state: Arc<RwLock<AdminAuthState>>,
     recoverable_agent_results: Arc<RwLock<HashMap<Uuid, RecoverableAgentResult>>>,
+    tempo_channels: Arc<RwLock<HashMap<String, TempoChannelRecord>>>,
     state_store: Option<EncryptedStateStore>,
     signing_guard: tokio::sync::Mutex<()>,
     state_persist_guard: tokio::sync::Mutex<()>,
@@ -92,13 +122,7 @@ where
         validate_admin_password(admin_password)?;
         let admin_password_hash = hash_password(admin_password, &config)?;
         let state = prepare_loaded_state(PersistedDaemonState::default())?;
-        Self::new_with_loaded_state(
-            signer_backend,
-            admin_password_hash,
-            config,
-            state,
-            None,
-        )
+        Self::new_with_loaded_state(signer_backend, admin_password_hash, config, state, None)
     }
 
     /// Builds daemon with encrypted persistent state on local filesystem.
@@ -145,7 +169,22 @@ where
         }
         Ok(Self {
             signer_backend,
-            policy_engine: PolicyEngine,
+            // Enforce Railgun's PoI standby window between shield and any
+            // private-transfer / third-party unshield. Public Waku
+            // broadcasters refuse to relay non-PoI transactions, so skipping
+            // the window would burn shielded balance with no on-chain effect.
+            //
+            // Ops can override at daemon startup via `AGENTPAY_POI_STANDBY_SECONDS`:
+            //   - unset   → 3600s (Railgun spec default)
+            //   - 0       → disabled (no standby enforcement; ops/testing only)
+            //   - N>0     → N seconds standby
+            // The value is read once at construction; restart the daemon to
+            // change it. Persistent runtime override deferred until there's
+            // an ops need that env-var rotation doesn't cover.
+            policy_engine: match resolve_poi_standby_duration() {
+                Some(duration) => PolicyEngine::with_poi_standby(duration),
+                None => PolicyEngine::default(),
+            },
             admin_password_hash,
             config,
             leases: Arc::new(RwLock::new(state.leases)),
@@ -162,7 +201,9 @@ where
             relay_config: Arc::new(RwLock::new(state.relay_config)),
             relay_private_key_hex: Arc::new(RwLock::new(state.relay_private_key_hex)),
             admin_auth_state: Arc::new(RwLock::new(AdminAuthState::default())),
+            relay_auth_state: Arc::new(RwLock::new(AdminAuthState::default())),
             recoverable_agent_results: Arc::new(RwLock::new(state.recoverable_agent_results)),
+            tempo_channels: Arc::new(RwLock::new(state.tempo_channels)),
             state_store,
             signing_guard: tokio::sync::Mutex::new(()),
             state_persist_guard: tokio::sync::Mutex::new(()),
@@ -294,7 +335,36 @@ where
                 let mut session = session;
                 let result = async {
                     Ok(DaemonRpcResponse::PublicKey(
-                        self.solana_public_key_hex(&session, vault_key_id)
+                        self.solana_public_key_hex(&session, vault_key_id).await?,
+                    ))
+                }
+                .await;
+                session.zeroize_secrets();
+                result
+            }
+            DaemonRpcRequest::RailgunMasterPublicKey {
+                session,
+                vault_key_id,
+            } => {
+                let mut session = session;
+                let result = async {
+                    Ok(DaemonRpcResponse::PublicKey(
+                        self.railgun_master_public_key(&session, vault_key_id)
+                            .await?,
+                    ))
+                }
+                .await;
+                session.zeroize_secrets();
+                result
+            }
+            DaemonRpcRequest::RailgunViewingPublicKey {
+                session,
+                vault_key_id,
+            } => {
+                let mut session = session;
+                let result = async {
+                    Ok(DaemonRpcResponse::RailgunViewingPublicKey(
+                        self.railgun_viewing_public_key(&session, vault_key_id)
                             .await?,
                     ))
                 }
@@ -408,8 +478,23 @@ where
         }
     }
 
-    fn authenticate(&self, session: &AdminSession, now: OffsetDateTime) -> Result<(), DaemonError> {
-        self.authenticate_password(&session.vault_password)?;
+    async fn authenticate(
+        &self,
+        session: &AdminSession,
+        now: OffsetDateTime,
+    ) -> Result<(), DaemonError> {
+        self.authenticate_with_source(session, now, AdminAuthSource::Local)
+            .await
+    }
+
+    async fn authenticate_with_source(
+        &self,
+        session: &AdminSession,
+        now: OffsetDateTime,
+        source: AdminAuthSource,
+    ) -> Result<(), DaemonError> {
+        self.authenticate_password(&session.vault_password, source)
+            .await?;
 
         let lease = self
             .leases
@@ -426,37 +511,58 @@ where
         Ok(())
     }
 
-    fn authenticate_password(&self, vault_password: &str) -> Result<(), DaemonError> {
+    async fn authenticate_password(
+        &self,
+        vault_password: &str,
+        source: AdminAuthSource,
+    ) -> Result<(), DaemonError> {
         let now = OffsetDateTime::now_utc();
-        self.enforce_admin_auth_lockout(now)?;
+        self.enforce_admin_auth_lockout(now, source)?;
 
         if vault_password.len() > MAX_AUTH_SECRET_BYTES {
-            self.record_failed_admin_auth(now)?;
+            self.record_failed_admin_auth(now, source)?;
             return Err(DaemonError::AuthenticationFailed);
         }
 
-        let parsed = PasswordHash::new(&self.admin_password_hash)
-            .map_err(|err| DaemonError::PasswordHash(format!("invalid hash in memory: {err}")))?;
-
-        let verification_result = Argon2::default()
-            .verify_password(vault_password.as_bytes(), &parsed)
-            .map_err(|_| DaemonError::AuthenticationFailed);
+        // Argon2 verification is deliberately expensive; run it on the blocking
+        // pool so a burst of bad passwords cannot stall the async executor that
+        // serves agent signing traffic.
+        let password_hash = self.admin_password_hash.clone();
+        let candidate = Zeroizing::new(vault_password.as_bytes().to_vec());
+        let verification_result =
+            tokio::task::spawn_blocking(move || verify_admin_password(&password_hash, &candidate))
+                .await
+                .map_err(|err| {
+                    DaemonError::PasswordHash(format!("password verification task failed: {err}"))
+                })?;
 
         match verification_result {
             Ok(()) => {
-                self.reset_admin_auth_state()?;
+                self.reset_admin_auth_state(source)?;
                 Ok(())
             }
-            Err(err) => {
-                self.record_failed_admin_auth(now)?;
+            Err(err @ DaemonError::AuthenticationFailed) => {
+                self.record_failed_admin_auth(now, source)?;
                 Err(err)
             }
+            Err(err) => Err(err),
         }
     }
 
-    fn enforce_admin_auth_lockout(&self, now: OffsetDateTime) -> Result<(), DaemonError> {
+    fn admin_auth_state_for(&self, source: AdminAuthSource) -> &Arc<RwLock<AdminAuthState>> {
+        match source {
+            AdminAuthSource::Local => &self.admin_auth_state,
+            AdminAuthSource::Relay => &self.relay_auth_state,
+        }
+    }
+
+    fn enforce_admin_auth_lockout(
+        &self,
+        now: OffsetDateTime,
+        source: AdminAuthSource,
+    ) -> Result<(), DaemonError> {
         let mut state = self
-            .admin_auth_state
+            .admin_auth_state_for(source)
             .write()
             .map_err(|_| DaemonError::LockPoisoned)?;
 
@@ -471,9 +577,9 @@ where
         Ok(())
     }
 
-    fn reset_admin_auth_state(&self) -> Result<(), DaemonError> {
+    fn reset_admin_auth_state(&self, source: AdminAuthSource) -> Result<(), DaemonError> {
         let mut state = self
-            .admin_auth_state
+            .admin_auth_state_for(source)
             .write()
             .map_err(|_| DaemonError::LockPoisoned)?;
         state.failed_attempts = 0;
@@ -481,9 +587,13 @@ where
         Ok(())
     }
 
-    fn record_failed_admin_auth(&self, now: OffsetDateTime) -> Result<(), DaemonError> {
+    fn record_failed_admin_auth(
+        &self,
+        now: OffsetDateTime,
+        source: AdminAuthSource,
+    ) -> Result<(), DaemonError> {
         let mut state = self
-            .admin_auth_state
+            .admin_auth_state_for(source)
             .write()
             .map_err(|_| DaemonError::LockPoisoned)?;
 
@@ -577,7 +687,7 @@ where
             .map_err(|_| DaemonError::PayloadActionMismatch)?;
         payload_action
             .validate()
-            .map_err(|_| DaemonError::PayloadActionMismatch)?;
+            .map_err(|error| DaemonError::InvalidAction(error.to_string()))?;
         if payload_action != request.action {
             return Err(DaemonError::PayloadActionMismatch);
         }
@@ -586,8 +696,158 @@ where
         if request.payload != canonical_payload {
             return Err(DaemonError::PayloadActionMismatch);
         }
+        self.ensure_tempo_payer_is_wallet(&agent_key, &payload_action)?;
+        self.ensure_tempo_channel_authorized(&agent_key, &payload_action)?;
 
         Ok((agent_key, payload_action))
+    }
+
+    /// Tempo session actions name the channel payer explicitly; it must be the
+    /// wallet that signs, so an agent cannot fund or vouch for someone else's channel.
+    fn ensure_tempo_payer_is_wallet(
+        &self,
+        agent_key: &AgentKey,
+        action: &AgentAction,
+    ) -> Result<(), DaemonError> {
+        let Some(payer) = action.tempo_payer() else {
+            return Ok(());
+        };
+        let public_key_hex = self
+            .vault_keys
+            .read()
+            .map_err(|_| DaemonError::LockPoisoned)?
+            .get(&agent_key.vault_key_id)
+            .map(|vault_key| vault_key.public_key_hex.clone())
+            .ok_or(DaemonError::UnknownVaultKey(agent_key.vault_key_id))?;
+        let wallet = ethereum_address_from_public_key_hex(&public_key_hex)?;
+        if !wallet.eq_ignore_ascii_case(payer.as_str()) {
+            return Err(DaemonError::InvalidAction(
+                "tempo session payer must be the signing wallet address".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Ties Tempo session top-ups and vouchers to the channel registry.
+    ///
+    /// Vouchers bypass spending-window limits, so they are only accepted for a
+    /// channel this daemon opened for the same agent key, and only up to the
+    /// total that agent deposited into it. Top-ups must target a channel the
+    /// same agent opened, and an open may not take over a channel already
+    /// registered to another agent key.
+    fn ensure_tempo_channel_authorized(
+        &self,
+        agent_key: &AgentKey,
+        action: &AgentAction,
+    ) -> Result<(), DaemonError> {
+        let Some(channel_id_hex) = tempo_channel_key(action)? else {
+            return Ok(());
+        };
+        let channels = self
+            .tempo_channels
+            .read()
+            .map_err(|_| DaemonError::LockPoisoned)?;
+        let record = channels.get(&channel_id_hex);
+        if let AgentAction::TempoSessionOpenTransaction { .. } = action {
+            return match record {
+                Some(record) if record.agent_key_id != agent_key.id => {
+                    Err(DaemonError::InvalidAction(format!(
+                        "tempo session channel {channel_id_hex} is already registered to a \
+                         different agent key"
+                    )))
+                }
+                _ => Ok(()),
+            };
+        }
+        let Some(record) = record else {
+            return Err(DaemonError::InvalidAction(format!(
+                "tempo session channel {channel_id_hex} is unknown to this daemon; the channel \
+                 must be opened through this daemon before it can be topped up or vouched for"
+            )));
+        };
+        if record.agent_key_id != agent_key.id {
+            return Err(DaemonError::InvalidAction(format!(
+                "tempo session channel {channel_id_hex} was opened by a different agent key"
+            )));
+        }
+        if let AgentAction::TempoSessionVoucher { authorization } = action {
+            if authorization.cumulative_amount_wei > record.deposited_total_wei {
+                return Err(DaemonError::InvalidAction(format!(
+                    "tempo session voucher cumulative amount {} exceeds the {} deposited into \
+                     channel {channel_id_hex} through this daemon",
+                    authorization.cumulative_amount_wei, record.deposited_total_wei
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Records the deposit carried by a signed Tempo session open or top-up.
+    fn record_tempo_channel_deposit(
+        &self,
+        agent_key_id: Uuid,
+        action: &AgentAction,
+        now: OffsetDateTime,
+    ) -> Result<(), DaemonError> {
+        let deposit_wei = match action {
+            AgentAction::TempoSessionOpenTransaction { authorization } => authorization.deposit_wei,
+            AgentAction::TempoSessionTopUpTransaction { authorization } => {
+                authorization.additional_deposit_wei
+            }
+            _ => return Ok(()),
+        };
+        let Some(channel_id_hex) = tempo_channel_key(action)? else {
+            return Ok(());
+        };
+        let mut channels = self
+            .tempo_channels
+            .write()
+            .map_err(|_| DaemonError::LockPoisoned)?;
+        match (action, channels.get_mut(&channel_id_hex)) {
+            (AgentAction::TempoSessionOpenTransaction { .. }, Some(record))
+                if record.agent_key_id == agent_key_id =>
+            {
+                // Re-signing an open (e.g. a retried broadcast) replaces the same
+                // initial deposit instead of adding to it.
+                record.deposited_total_wei = record.deposited_total_wei.max(deposit_wei);
+            }
+            (AgentAction::TempoSessionOpenTransaction { .. }, _) => {
+                Self::trim_tempo_channels(
+                    &mut channels,
+                    MAX_TRACKED_TEMPO_CHANNELS.saturating_sub(1),
+                );
+                channels.insert(
+                    channel_id_hex,
+                    TempoChannelRecord {
+                        agent_key_id,
+                        deposited_total_wei: deposit_wei,
+                        opened_at: now,
+                    },
+                );
+            }
+            (_, Some(record)) if record.agent_key_id == agent_key_id => {
+                record.deposited_total_wei = record.deposited_total_wei.saturating_add(deposit_wei);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Evicts the oldest tracked Tempo channels (by open time, then channel id
+    /// for determinism) until at most `max_entries` remain.
+    fn trim_tempo_channels(channels: &mut HashMap<String, TempoChannelRecord>, max_entries: usize) {
+        if channels.len() <= max_entries {
+            return;
+        }
+        let excess = channels.len() - max_entries;
+        let mut ordered = channels
+            .iter()
+            .map(|(channel_id, record)| (record.opened_at, channel_id.clone()))
+            .collect::<Vec<_>>();
+        ordered.sort_unstable();
+        for (_, channel_id) in ordered.into_iter().take(excess) {
+            channels.remove(&channel_id);
+        }
     }
 
     fn explain_authorized_request(
@@ -612,9 +872,9 @@ where
             .read()
             .map_err(|_| DaemonError::LockPoisoned)?
             .iter()
-            .filter(|event| {
-                Self::spend_event_is_within_retention_window(event, retention_start, now)
-            })
+            // Future-dated spends (wall clock stepped backwards) stay in the
+            // evaluated history so a clock step can never reset a budget.
+            .filter(|event| Self::spend_event_is_retained(event, retention_start))
             .cloned()
             .collect();
 
@@ -724,11 +984,36 @@ where
         now: OffsetDateTime,
     ) -> Result<(), DaemonError> {
         self.prune_recoverable_agent_results(now)?;
-        self.recoverable_agent_results
+        let mut results = self
+            .recoverable_agent_results
             .write()
-            .map_err(|_| DaemonError::LockPoisoned)?
-            .insert(request_id, result);
+            .map_err(|_| DaemonError::LockPoisoned)?;
+        // Reserve room for the new entry so agent-driven retries can never grow
+        // this table without bound; the oldest results are evicted first.
+        let capacity_for_new_entry = self.config.max_recoverable_agent_results.saturating_sub(1);
+        Self::trim_recoverable_agent_results(&mut results, capacity_for_new_entry);
+        results.insert(request_id, result);
         Ok(())
+    }
+
+    /// Evicts the oldest recoverable results (by `recover_until`, then request id
+    /// for determinism) until at most `max_entries` remain.
+    fn trim_recoverable_agent_results(
+        results: &mut HashMap<Uuid, RecoverableAgentResult>,
+        max_entries: usize,
+    ) {
+        if results.len() <= max_entries {
+            return;
+        }
+        let excess = results.len() - max_entries;
+        let mut ordered = results
+            .iter()
+            .map(|(request_id, entry)| (entry.recover_until, *request_id))
+            .collect::<Vec<_>>();
+        ordered.sort_unstable();
+        for (_, request_id) in ordered.into_iter().take(excess) {
+            results.remove(&request_id);
+        }
     }
 
     fn record_recoverable_signature(
@@ -1018,9 +1303,7 @@ where
         self.spend_log
             .write()
             .map_err(|_| DaemonError::LockPoisoned)?
-            .retain(|event| {
-                Self::spend_event_is_within_retention_window(event, retention_start, now)
-            });
+            .retain(|event| Self::spend_event_is_retained(event, retention_start));
         Ok(())
     }
 
@@ -1057,7 +1340,8 @@ where
             let Some(chain_heads) = nonce_heads.get(vault_key_id) else {
                 return false;
             };
-            chain_gaps.retain(|chain_id, gaps| chain_heads.contains_key(chain_id) && !gaps.is_empty());
+            chain_gaps
+                .retain(|chain_id, gaps| chain_heads.contains_key(chain_id) && !gaps.is_empty());
             !chain_gaps.is_empty()
         });
     }
@@ -1142,14 +1426,23 @@ where
         );
 
         let retention_start = Self::spend_log_retention_start(now);
-        state.spend_log.retain(|event| {
-            Self::spend_event_is_within_retention_window(event, retention_start, now)
-        });
+        state
+            .spend_log
+            .retain(|event| Self::spend_event_is_retained(event, retention_start));
 
         let cutoffs = Self::manual_approval_retention_cutoffs_for_config(config, now)?;
         state.manual_approval_requests.retain(|_, request| {
             Self::manual_approval_request_retained_with_cutoffs(request, &cutoffs)
         });
+
+        state
+            .recoverable_agent_results
+            .retain(|_, entry| entry.recover_until > now);
+        Self::trim_recoverable_agent_results(
+            &mut state.recoverable_agent_results,
+            config.max_recoverable_agent_results,
+        );
+        Self::trim_tempo_channels(&mut state.tempo_channels, MAX_TRACKED_TEMPO_CHANNELS);
         Ok(())
     }
 
@@ -1212,13 +1505,14 @@ where
         Ok(())
     }
 
-    fn spend_event_is_within_retention_window(
-        event: &SpendEvent,
-        retention_start: OffsetDateTime,
-        now: OffsetDateTime,
-    ) -> bool {
-        event.at >= retention_start && event.at <= now
+    /// Both pruning and policy evaluation only drop spends older than the
+    /// retention window. Future-dated events are kept and counted on purpose:
+    /// a backward wall-clock step must neither erase nor hide recent spends
+    /// that still count against daily/weekly limits.
+    fn spend_event_is_retained(event: &SpendEvent, retention_start: OffsetDateTime) -> bool {
+        event.at >= retention_start
     }
+
     fn ensure_nonce_reservation(
         &self,
         agent_key_id: Uuid,
@@ -1295,6 +1589,21 @@ where
                 ManualApprovalStatus::Completed => {
                     unreachable!("manual approval reuse filter must exclude completed requests")
                 }
+            });
+        }
+
+        let max_pending = self.config.max_pending_manual_approval_requests_per_agent;
+        let pending_for_agent = requests
+            .values()
+            .filter(|request| {
+                request.agent_key_id == agent_key.id
+                    && request.status == ManualApprovalStatus::Pending
+            })
+            .count();
+        if pending_for_agent >= max_pending {
+            return Err(DaemonError::TooManyPendingManualApprovalRequests {
+                agent_key_id: agent_key.id,
+                max_pending,
             });
         }
 
@@ -1418,31 +1727,41 @@ where
         decision: ManualApprovalDecision,
         rejection_reason: Option<String>,
     ) -> Result<ManualApprovalRequest, DaemonError> {
-        let lease = self.issue_lease(vault_password).await?;
+        let lease = self
+            .issue_lease_with_source(vault_password, AdminAuthSource::Relay)
+            .await?;
         let session = AdminSession {
-            vault_password: vault_password.to_string(),
+            vault_password: Zeroizing::new(vault_password.to_string()),
             lease,
         };
-        self.decide_manual_approval_request(
+        self.decide_manual_approval_request_with_source(
             &session,
             approval_request_id,
             decision,
             rejection_reason,
+            AdminAuthSource::Relay,
         )
         .await
     }
 
+    /// Decrypts a relay manual-approval envelope
+    /// (`x25519-hkdf-xchacha20poly1305-v2`).
+    ///
+    /// The AEAD key is HKDF-SHA256 over the X25519 shared secret, bound to both
+    /// public keys, and the ciphertext is bound to `approval_id|daemon_id` via AAD.
     pub fn decrypt_relay_envelope(
         &self,
         algorithm: &str,
         encapsulated_key_hex: &str,
         nonce_hex: &str,
         ciphertext_hex: &str,
+        approval_id: &str,
+        daemon_id: &str,
     ) -> Result<Vec<u8>, DaemonError> {
-        use chacha20poly1305::aead::Aead;
+        use chacha20poly1305::aead::{Aead, Payload};
         use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
 
-        if algorithm.trim() != "x25519-xchacha20poly1305-v1" {
+        if algorithm.trim() != RELAY_ENVELOPE_ALGORITHM {
             return Err(DaemonError::InvalidRelayConfig(format!(
                 "unsupported relay encryption algorithm: {algorithm}"
             )));
@@ -1481,14 +1800,20 @@ where
         peer_public.copy_from_slice(&encapsulated_key);
         let secret = relay_static_secret_from_hex(&private_key_hex, "relay private key")
             .map_err(DaemonError::InvalidRelayConfig)?;
-        let peer = x25519_dalek::PublicKey::from(peer_public);
-        let shared_secret = secret.diffie_hellman(&peer);
-        let cipher = XChaCha20Poly1305::new(shared_secret.as_bytes().into());
+        let daemon_public = x25519_dalek::PublicKey::from(&secret);
+        let shared_secret = secret.diffie_hellman(&x25519_dalek::PublicKey::from(peer_public));
+        let key = relay_envelope_key(&shared_secret, &peer_public, daemon_public.as_bytes())
+            .map_err(DaemonError::InvalidRelayConfig)?;
+        let aad = relay_envelope_aad(approval_id, daemon_id);
+        let cipher = XChaCha20Poly1305::new((&*key).into());
 
         cipher
             .decrypt(
                 chacha20poly1305::XNonce::from_slice(&nonce),
-                ciphertext.as_ref(),
+                Payload {
+                    msg: ciphertext.as_ref(),
+                    aad: &aad,
+                },
             )
             .map_err(|_| {
                 DaemonError::InvalidRelayConfig(
@@ -1520,6 +1845,7 @@ where
             .map_err(DaemonError::Signer)?;
 
         Ok(PersistedDaemonState {
+            schema_version: persistence::SchemaVersion::default(),
             leases,
             policies,
             vault_keys,
@@ -1579,11 +1905,17 @@ where
                 .read()
                 .map_err(|_| DaemonError::LockPoisoned)?
                 .clone(),
+            tempo_channels: self
+                .tempo_channels
+                .read()
+                .map_err(|_| DaemonError::LockPoisoned)?
+                .clone(),
         })
     }
 
     fn restore_state(&self, snapshot: PersistedDaemonState) -> Result<(), DaemonError> {
         let PersistedDaemonState {
+            schema_version: _,
             leases,
             policies,
             vault_keys,
@@ -1599,6 +1931,7 @@ where
             manual_approval_requests,
             relay_config,
             relay_private_key_hex,
+            tempo_channels,
         } = snapshot;
         self.signer_backend
             .restore_persistable_key_material(&software_signer_private_keys)
@@ -1656,6 +1989,10 @@ where
             .relay_private_key_hex
             .write()
             .map_err(|_| DaemonError::LockPoisoned)? = relay_private_key_hex;
+        *self
+            .tempo_channels
+            .write()
+            .map_err(|_| DaemonError::LockPoisoned)? = tempo_channels;
         Ok(())
     }
 
@@ -1834,7 +2171,9 @@ where
         let recent_blockhash = transfer
             .recent_blockhash
             .parse::<solana_sdk::hash::Hash>()
-            .map_err(|_| map_domain_to_signer_error(vault_domain::DomainError::InvalidSolanaRecentBlockhash))?;
+            .map_err(|_| {
+                map_domain_to_signer_error(vault_domain::DomainError::InvalidSolanaRecentBlockhash)
+            })?;
         let amount = u64::try_from(transfer.amount_wei)
             .map_err(|_| map_domain_to_signer_error(vault_domain::DomainError::AmountOutOfRange))?;
         let transfer_fee = transfer
@@ -1907,7 +2246,9 @@ where
         let recent_blockhash = transfer
             .recent_blockhash
             .parse::<solana_sdk::hash::Hash>()
-            .map_err(|_| map_domain_to_signer_error(vault_domain::DomainError::InvalidSolanaRecentBlockhash))?;
+            .map_err(|_| {
+                map_domain_to_signer_error(vault_domain::DomainError::InvalidSolanaRecentBlockhash)
+            })?;
         let lamports = u64::try_from(transfer.amount_wei)
             .map_err(|_| map_domain_to_signer_error(vault_domain::DomainError::AmountOutOfRange))?;
 
@@ -1925,7 +2266,9 @@ where
         if let Some(price) = transfer.compute_unit_price_micro_lamports {
             instructions.push(set_solana_compute_unit_price_instruction(price));
         }
-        instructions.push(solana_system_transfer_instruction(&fee_payer, &to, lamports));
+        instructions.push(solana_system_transfer_instruction(
+            &fee_payer, &to, lamports,
+        ));
 
         self.sign_solana_instructions(vault_key, fee_payer, recent_blockhash, instructions)
             .await
@@ -2026,15 +2369,81 @@ where
             v: None,
             raw_tx_hex: None,
             tx_hash_hex: None,
-            raw_tx_base64: Some(
-                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, raw_tx),
-            ),
+            raw_tx_base64: Some(base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                raw_tx,
+            )),
             tx_id: Some(tx_id),
         })
     }
 }
 
 const DEFAULT_RELAY_URL: &str = "http://localhost:8787";
+
+/// Algorithm identifier for relay manual-approval envelopes.
+pub const RELAY_ENVELOPE_ALGORITHM: &str = "x25519-hkdf-xchacha20poly1305-v2";
+const RELAY_ENVELOPE_HKDF_INFO_PREFIX: &[u8] = b"agentpay-relay-v2";
+
+/// Derives the relay envelope AEAD key:
+/// `HKDF-SHA256(ikm = shared, salt = empty, info = "agentpay-relay-v2" || ephemeral_pk || daemon_pk)`.
+///
+/// Rejects non-contributory (low-order / all-zero) shared secrets.
+pub fn relay_envelope_key(
+    shared_secret: &x25519_dalek::SharedSecret,
+    ephemeral_public: &[u8; 32],
+    daemon_public: &[u8; 32],
+) -> Result<Zeroizing<[u8; 32]>, String> {
+    if !shared_secret.was_contributory() {
+        return Err("relay encapsulated key produced a non-contributory shared secret".to_string());
+    }
+    let mut info = Vec::with_capacity(RELAY_ENVELOPE_HKDF_INFO_PREFIX.len() + 64);
+    info.extend_from_slice(RELAY_ENVELOPE_HKDF_INFO_PREFIX);
+    info.extend_from_slice(ephemeral_public);
+    info.extend_from_slice(daemon_public);
+    let mut key = Zeroizing::new([0u8; 32]);
+    hkdf::Hkdf::<sha2::Sha256>::new(None, shared_secret.as_bytes())
+        .expand(&info, key.as_mut())
+        .map_err(|_| "relay envelope key derivation failed".to_string())?;
+    Ok(key)
+}
+
+/// Additional authenticated data for relay envelopes: `approval_id || "|" || daemon_id`.
+#[must_use]
+pub fn relay_envelope_aad(approval_id: &str, daemon_id: &str) -> Vec<u8> {
+    format!("{approval_id}|{daemon_id}").into_bytes()
+}
+
+/// Seals a relay envelope with an explicit ephemeral secret and nonce.
+///
+/// Mirrors `apps/web/src/lib/crypto.ts`; used by tests and tooling. Returns
+/// `(ephemeral_public_key, ciphertext)`.
+pub fn seal_relay_envelope(
+    daemon_public: &[u8; 32],
+    ephemeral_secret: &x25519_dalek::StaticSecret,
+    nonce: &[u8; 24],
+    approval_id: &str,
+    daemon_id: &str,
+    plaintext: &[u8],
+) -> Result<([u8; 32], Vec<u8>), String> {
+    use chacha20poly1305::aead::{Aead, Payload};
+    use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
+
+    let ephemeral_public = *x25519_dalek::PublicKey::from(ephemeral_secret).as_bytes();
+    let shared_secret =
+        ephemeral_secret.diffie_hellman(&x25519_dalek::PublicKey::from(*daemon_public));
+    let key = relay_envelope_key(&shared_secret, &ephemeral_public, daemon_public)?;
+    let aad = relay_envelope_aad(approval_id, daemon_id);
+    let ciphertext = XChaCha20Poly1305::new((&*key).into())
+        .encrypt(
+            chacha20poly1305::XNonce::from_slice(nonce),
+            Payload {
+                msg: plaintext,
+                aad: &aad,
+            },
+        )
+        .map_err(|_| "failed to encrypt relay envelope".to_string())?;
+    Ok((ephemeral_public, ciphertext))
+}
 
 fn relay_static_secret_from_hex(
     private_key_hex: &str,
@@ -2055,12 +2464,11 @@ fn relay_static_secret_from_hex(
 }
 
 fn decode_public_key_hex_32(public_key_hex: &str) -> Result<[u8; 32], DaemonError> {
-    let bytes =
-        hex::decode(public_key_hex.trim().trim_start_matches("0x")).map_err(|_| {
-            DaemonError::Signer(SignerError::Internal(
-                "Solana public key is not valid hex".to_string(),
-            ))
-        })?;
+    let bytes = hex::decode(public_key_hex.trim().trim_start_matches("0x")).map_err(|_| {
+        DaemonError::Signer(SignerError::Internal(
+            "Solana public key is not valid hex".to_string(),
+        ))
+    })?;
     <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
         DaemonError::Signer(SignerError::Internal(
             "Solana public key is not a 32-byte ed25519 key".to_string(),
@@ -2068,7 +2476,9 @@ fn decode_public_key_hex_32(public_key_hex: &str) -> Result<[u8; 32], DaemonErro
     })
 }
 
-fn decode_solana_pubkey(address: &vault_domain::SolanaAddress) -> Result<solana_sdk::pubkey::Pubkey, DaemonError> {
+fn decode_solana_pubkey(
+    address: &vault_domain::SolanaAddress,
+) -> Result<solana_sdk::pubkey::Pubkey, DaemonError> {
     address
         .to_bytes()
         .map(solana_sdk::pubkey::Pubkey::new_from_array)
@@ -2266,9 +2676,7 @@ fn set_solana_compute_unit_limit_instruction(limit: u32) -> solana_sdk::instruct
     }
 }
 
-fn set_solana_compute_unit_price_instruction(
-    price: u64,
-) -> solana_sdk::instruction::Instruction {
+fn set_solana_compute_unit_price_instruction(price: u64) -> solana_sdk::instruction::Instruction {
     let mut data = vec![3u8];
     data.extend_from_slice(&price.to_le_bytes());
     solana_sdk::instruction::Instruction {
@@ -2320,6 +2728,14 @@ fn ethereum_address_from_public_key_hex(public_key_hex: &str) -> Result<String, 
     Ok(format!("0x{}", hex::encode(address)))
 }
 
+/// Builds the approval deep link consumed by the web approval console.
+///
+/// The capability token, daemon id and daemon X25519 public key travel in the
+/// URL fragment (never the query string) so they are not sent to the frontend
+/// host, do not land in server access logs, and are only readable by the
+/// client-side approval page:
+///
+/// `<frontend>/approvals/<approvalId>#approvalCapability=<token>&daemonId=<daemonId>&daemonKey=<hex X25519 public key>`
 fn manual_approval_frontend_url(
     relay_config: &RelayConfig,
     approval_request_id: Uuid,
@@ -2331,21 +2747,99 @@ fn manual_approval_frontend_url(
         .or(relay_config.relay_url.as_ref())
         .map(|frontend_url| {
             let daemon_id = relay_config.daemon_id_hex.trim();
-            if daemon_id.is_empty() {
-                format!(
-                    "{}/approvals/{approval_request_id}?approvalCapability={approval_capability}",
-                    frontend_url.trim_end_matches('/')
-                )
-            } else {
-                format!(
-                    "{}/approvals/{approval_request_id}?daemonId={daemon_id}&approvalCapability={approval_capability}",
-                    frontend_url.trim_end_matches('/')
-                )
-            }
+            let daemon_key = relay_config.daemon_public_key_hex.trim();
+            format!(
+                "{}/approvals/{approval_request_id}#approvalCapability={approval_capability}&daemonId={daemon_id}&daemonKey={daemon_key}",
+                frontend_url.trim_end_matches('/')
+            )
         })
+}
+
+const POI_STANDBY_ENV: &str = "AGENTPAY_POI_STANDBY_SECONDS";
+
+/// Reads `AGENTPAY_POI_STANDBY_SECONDS` and returns the configured Railgun
+/// PoI standby. `None` means "enforcement disabled" (ops opt-out); `Some(d)`
+/// means enforce that duration. Defaults to [`vault_policy::RAILGUN_POI_STANDBY`]
+/// (1 hour, matches the Railgun spec) when the env var is unset or malformed.
+///
+/// Malformed input (non-integer or negative) falls back to the default with
+/// a tracing-style stderr warning rather than panicking — daemon startup
+/// should never be gated on a typo'd env var.
+fn resolve_poi_standby_duration() -> Option<time::Duration> {
+    let Ok(raw) = std::env::var(POI_STANDBY_ENV) else {
+        return Some(vault_policy::RAILGUN_POI_STANDBY);
+    };
+    resolve_poi_standby_from_str(&raw)
+}
+
+fn resolve_poi_standby_from_str(raw: &str) -> Option<time::Duration> {
+    match raw.trim().parse::<u64>() {
+        Ok(0) => None, // Disabled by explicit ops override.
+        Ok(seconds) => Some(time::Duration::seconds(seconds as i64)),
+        Err(_) => {
+            eprintln!(
+                "warning: {POI_STANDBY_ENV}={raw:?} is not a valid u64 seconds value; \
+                 falling back to the {}s default",
+                vault_policy::RAILGUN_POI_STANDBY.whole_seconds(),
+            );
+            Some(vault_policy::RAILGUN_POI_STANDBY)
+        }
+    }
+}
+
+#[cfg(test)]
+mod poi_standby_tests {
+    use super::*;
+
+    // Pure-function helper tests don't touch the process env, so they run
+    // concurrently with other suites without coordination.
+
+    #[test]
+    fn explicit_zero_disables_standby() {
+        assert_eq!(resolve_poi_standby_from_str("0"), None);
+        // Whitespace tolerance — ops scripts often inject trailing newlines.
+        assert_eq!(resolve_poi_standby_from_str(" 0\n"), None);
+    }
+
+    #[test]
+    fn positive_seconds_round_trip() {
+        assert_eq!(
+            resolve_poi_standby_from_str("7200"),
+            Some(time::Duration::seconds(7200)),
+        );
+        assert_eq!(
+            resolve_poi_standby_from_str("1"),
+            Some(time::Duration::seconds(1)),
+        );
+    }
+
+    #[test]
+    fn malformed_falls_back_to_default() {
+        assert_eq!(
+            resolve_poi_standby_from_str("garbage"),
+            Some(vault_policy::RAILGUN_POI_STANDBY),
+        );
+        // Negative numbers don't parse as u64 → fallback path.
+        assert_eq!(
+            resolve_poi_standby_from_str("-1"),
+            Some(vault_policy::RAILGUN_POI_STANDBY),
+        );
+    }
 }
 
 fn payload_hash_hex(payload: &[u8]) -> String {
     let digest = Sha256::digest(payload);
     hex::encode(digest)
+}
+
+/// Verifies `candidate` against the stored Argon2 PHC string.
+///
+/// Kept as a free function so it can run on the blocking thread pool without
+/// borrowing the daemon.
+fn verify_admin_password(password_hash: &str, candidate: &[u8]) -> Result<(), DaemonError> {
+    let parsed = PasswordHash::new(password_hash)
+        .map_err(|err| DaemonError::PasswordHash(format!("invalid hash in memory: {err}")))?;
+    Argon2::default()
+        .verify_password(candidate, &parsed)
+        .map_err(|_| DaemonError::AuthenticationFailed)
 }

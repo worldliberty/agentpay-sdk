@@ -17,6 +17,12 @@ use vault_domain::{
     EntityScope, ManualApprovalDecision, ManualApprovalStatus, PolicyType, SpendingPolicy,
 };
 use vault_signer::VaultSignerBackend;
+use zeroize::Zeroizing;
+
+/// Upper bound for a whole relay HTTP exchange so a stalled relay cannot wedge the sync loop.
+const RELAY_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// Upper bound for establishing the TCP/TLS connection to the relay.
+const RELAY_HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 const DEFAULT_RELAY_POLL_LIMIT: u32 = 25;
 const DEFAULT_RELAY_LEASE_SECONDS: u32 = 30;
@@ -174,7 +180,7 @@ struct RelayFeedbackRequest<'a> {
     update_id: &'a str,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RelayManualApprovalUpdatePayload {
     approval_id: String,
@@ -182,7 +188,20 @@ struct RelayManualApprovalUpdatePayload {
     decision: RelayDecision,
     #[serde(default)]
     note: Option<String>,
-    vault_password: String,
+    #[serde(with = "vault_domain::serde_helpers::zeroizing_string")]
+    vault_password: Zeroizing<String>,
+}
+
+impl std::fmt::Debug for RelayManualApprovalUpdatePayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RelayManualApprovalUpdatePayload")
+            .field("approval_id", &self.approval_id)
+            .field("daemon_id", &self.daemon_id)
+            .field("decision", &self.decision)
+            .field("note", &self.note)
+            .field("vault_password", &"<redacted>")
+            .finish()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -293,6 +312,8 @@ where
 {
     let client = Client::builder()
         .user_agent(format!("agentpay-daemon/{}", env!("CARGO_PKG_VERSION")))
+        .timeout(RELAY_HTTP_TIMEOUT)
+        .connect_timeout(RELAY_HTTP_CONNECT_TIMEOUT)
         .build()
         .context("failed to initialize relay sync HTTP client")?;
     let registered_at = format_time(OffsetDateTime::now_utc())?;
@@ -536,11 +557,25 @@ where
         };
     }
 
+    // The envelope AAD binds the ciphertext to the relay-declared approval target and this
+    // daemon, so a ciphertext cannot be replayed against another approval or daemon.
+    let Some(target_approval_request_id) = update.target_approval_request_id.as_deref() else {
+        return ProcessedFeedback {
+            details: None,
+            message: Some(
+                "relay manual approval update is missing targetApprovalRequestId".to_string(),
+            ),
+            status: "rejected",
+        };
+    };
+
     let plaintext = match daemon.decrypt_relay_envelope(
         &update.payload.algorithm,
         &update.payload.encapsulated_key_base64,
         &update.payload.nonce_base64,
         &update.payload.ciphertext_base64,
+        target_approval_request_id,
+        expected_daemon_id,
     ) {
         Ok(value) => value,
         Err(error) => {
@@ -552,6 +587,7 @@ where
         }
     };
 
+    let plaintext = Zeroizing::new(plaintext);
     let payload = match serde_json::from_slice::<RelayManualApprovalUpdatePayload>(&plaintext) {
         Ok(value) => value,
         Err(error) => {
@@ -753,7 +789,11 @@ fn relay_policy_limits(policy: &SpendingPolicy) -> RelayPolicyLimits {
         PolicyType::DailyMaxSpending
         | PolicyType::WeeklyMaxSpending
         | PolicyType::PerTxMaxSpending
-        | PolicyType::ManualApproval => RelayPolicyLimits {
+        | PolicyType::ManualApproval
+        | PolicyType::PerTxMaxShieldAmount
+        | PolicyType::DailyMaxShieldAmount
+        | PolicyType::PerTxMaxUnshieldAmount
+        | PolicyType::DailyMaxUnshieldAmount => RelayPolicyLimits {
             amount_max_wei: Some(policy.max_amount_wei.to_string()),
             ..Default::default()
         },
@@ -890,6 +930,10 @@ fn policy_name(policy: &SpendingPolicy) -> &'static str {
         PolicyType::PerChainMaxGasSpend => "per_chain_max_gas_spend",
         PolicyType::ManualApproval => "manual_approval",
         PolicyType::Eip712Signing => "eip712_signing",
+        PolicyType::PerTxMaxShieldAmount => "per_tx_max_shield_amount",
+        PolicyType::DailyMaxShieldAmount => "daily_max_shield_amount",
+        PolicyType::PerTxMaxUnshieldAmount => "per_tx_max_unshield_amount",
+        PolicyType::DailyMaxUnshieldAmount => "daily_max_unshield_amount",
     }
 }
 
@@ -911,6 +955,9 @@ fn action_name(action: &AgentAction) -> &'static str {
         AgentAction::TempoSessionVoucher { .. } => "tempo_session_voucher",
         AgentAction::Eip712TypedData { .. } => "eip712_typed_data",
         AgentAction::BroadcastTx { .. } => "broadcast_tx",
+        AgentAction::Shield { .. } => "railgun_shield",
+        AgentAction::Unshield { .. } => "railgun_unshield",
+        AgentAction::PrivateTransfer { .. } => "railgun_private_transfer",
     }
 }
 
@@ -947,8 +994,6 @@ mod tests {
         resolve_relay_daemon_token_with, submit_feedback, ProcessedFeedback, RelayEncryptedPayload,
         RelayEncryptedUpdateRecord,
     };
-    use chacha20poly1305::aead::Aead;
-    use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
     use reqwest::Client;
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
@@ -1053,6 +1098,25 @@ mod tests {
         });
 
         (format!("http://{}", addr), rx, handle)
+    }
+
+    #[test]
+    fn relay_update_payload_debug_redacts_vault_password() {
+        let payload: super::RelayManualApprovalUpdatePayload =
+            serde_json::from_value(serde_json::json!({
+                "approvalId": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "daemonId": "daemon-1",
+                "decision": "approve",
+                "vaultPassword": "super-secret-relay-password",
+            }))
+            .expect("payload");
+        assert_eq!(
+            payload.vault_password.as_str(),
+            "super-secret-relay-password"
+        );
+        let rendered = format!("{payload:?}");
+        assert!(!rendered.contains("super-secret-relay-password"));
+        assert!(rendered.contains("<redacted>"));
     }
 
     #[test]
@@ -1231,23 +1295,31 @@ mod tests {
         }
     }
 
-    fn encrypt_payload(daemon_public_key_hex: &str, plaintext: &[u8]) -> RelayEncryptedPayload {
+    fn encrypt_payload(
+        daemon_public_key_hex: &str,
+        approval_id: &str,
+        daemon_id: &str,
+        plaintext: &[u8],
+    ) -> RelayEncryptedPayload {
         let public_bytes = hex::decode(daemon_public_key_hex).expect("decode daemon public key");
-        let peer_public = x25519_dalek::PublicKey::from(
-            <[u8; 32]>::try_from(public_bytes.as_slice()).expect("public key bytes"),
-        );
+        let daemon_public =
+            <[u8; 32]>::try_from(public_bytes.as_slice()).expect("public key bytes");
         let secret = x25519_dalek::StaticSecret::from([7u8; 32]);
-        let shared_secret = secret.diffie_hellman(&peer_public);
-        let cipher = XChaCha20Poly1305::new(shared_secret.as_bytes().into());
         let nonce = [9u8; 24];
-        let ciphertext = cipher
-            .encrypt(chacha20poly1305::XNonce::from_slice(&nonce), plaintext)
-            .expect("encrypt payload");
+        let (ephemeral_public, ciphertext) = vault_daemon::seal_relay_envelope(
+            &daemon_public,
+            &secret,
+            &nonce,
+            approval_id,
+            daemon_id,
+            plaintext,
+        )
+        .expect("encrypt payload");
 
         RelayEncryptedPayload {
-            algorithm: "x25519-xchacha20poly1305-v1".to_string(),
+            algorithm: vault_daemon::RELAY_ENVELOPE_ALGORITHM.to_string(),
             ciphertext_base64: hex::encode(ciphertext),
-            encapsulated_key_base64: hex::encode(x25519_dalek::PublicKey::from(&secret).as_bytes()),
+            encapsulated_key_base64: hex::encode(ephemeral_public),
             nonce_base64: hex::encode(nonce),
         }
     }
@@ -1264,13 +1336,6 @@ mod tests {
             r#type: "manual_approval_decision".to_string(),
             update_id: "update-1".to_string(),
         }
-    }
-
-    fn test_runtime() -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime")
     }
 
     #[test]
@@ -1856,7 +1921,7 @@ mod tests {
 
     #[tokio::test]
     async fn poll_updates_posts_expected_request_and_deserializes_response() {
-        let response_body = r#"{"items":[{"claimToken":"claim-token","daemonId":"daemon-1","payload":{"algorithm":"x25519-xchacha20poly1305-v1","ciphertextBase64":"aa","encapsulatedKeyBase64":"bb","nonceBase64":"cc"},"type":"manual_approval_decision","updateId":"update-1"}]}"#;
+        let response_body = r#"{"items":[{"claimToken":"claim-token","daemonId":"daemon-1","payload":{"algorithm":"x25519-hkdf-xchacha20poly1305-v2","ciphertextBase64":"aa","encapsulatedKeyBase64":"bb","nonceBase64":"cc"},"type":"manual_approval_decision","updateId":"update-1"}]}"#;
         let (base_url, request_rx, handle) =
             spawn_single_response_server("200 OK", &response_body).await;
         let client = Client::new();
@@ -1935,7 +2000,7 @@ mod tests {
                 ..sample_update_record(
                     &expected_daemon_id,
                     RelayEncryptedPayload {
-                        algorithm: "x25519-xchacha20poly1305-v1".to_string(),
+                        algorithm: "x25519-hkdf-xchacha20poly1305-v2".to_string(),
                         ciphertext_base64: String::new(),
                         encapsulated_key_base64: String::new(),
                         nonce_base64: String::new(),
@@ -1958,7 +2023,7 @@ mod tests {
                 ..sample_update_record(
                     &expected_daemon_id,
                     RelayEncryptedPayload {
-                        algorithm: "x25519-xchacha20poly1305-v1".to_string(),
+                        algorithm: "x25519-hkdf-xchacha20poly1305-v2".to_string(),
                         ciphertext_base64: String::new(),
                         encapsulated_key_base64: String::new(),
                         nonce_base64: String::new(),
@@ -1973,14 +2038,83 @@ mod tests {
             .as_deref()
             .is_some_and(|value| value.contains("unsupported relay update type")));
 
+        let nil_approval_id = Uuid::nil().to_string();
+        let missing_target = process_update(
+            &daemon,
+            &expected_daemon_id,
+            &sample_update_record(
+                &expected_daemon_id,
+                encrypt_payload(
+                    &snapshot.relay_config.daemon_public_key_hex,
+                    &nil_approval_id,
+                    &expected_daemon_id,
+                    br#"{"not":"a manual approval payload"}"#,
+                ),
+            ),
+        )
+        .await;
+        assert_eq!(missing_target.status, "rejected");
+        assert!(missing_target
+            .message
+            .as_deref()
+            .is_some_and(|value| value.contains("missing targetApprovalRequestId")));
+
+        // AAD binds the ciphertext to approval id and daemon id: a different target or a
+        // ciphertext sealed for another daemon id must not decrypt.
+        let aad_mismatch = process_update(
+            &daemon,
+            &expected_daemon_id,
+            &RelayEncryptedUpdateRecord {
+                target_approval_request_id: Some(Uuid::new_v4().to_string()),
+                ..sample_update_record(
+                    &expected_daemon_id,
+                    encrypt_payload(
+                        &snapshot.relay_config.daemon_public_key_hex,
+                        &nil_approval_id,
+                        &expected_daemon_id,
+                        br#"{}"#,
+                    ),
+                )
+            },
+        )
+        .await;
+        assert_eq!(aad_mismatch.status, "failed");
+        assert!(aad_mismatch
+            .message
+            .as_deref()
+            .is_some_and(|value| value.contains("failed to decrypt relay update payload")));
+        let daemon_aad_mismatch = process_update(
+            &daemon,
+            &expected_daemon_id,
+            &RelayEncryptedUpdateRecord {
+                target_approval_request_id: Some(nil_approval_id.clone()),
+                ..sample_update_record(
+                    &expected_daemon_id,
+                    encrypt_payload(
+                        &snapshot.relay_config.daemon_public_key_hex,
+                        &nil_approval_id,
+                        "other-daemon",
+                        br#"{}"#,
+                    ),
+                )
+            },
+        )
+        .await;
+        assert_eq!(daemon_aad_mismatch.status, "failed");
+
         let invalid_json_payload = encrypt_payload(
             &snapshot.relay_config.daemon_public_key_hex,
+            &nil_approval_id,
+            &expected_daemon_id,
             br#"{"not":"a manual approval payload"}"#,
         );
         let invalid_json = process_update(
             &daemon,
             &expected_daemon_id,
-            &sample_update_record(&expected_daemon_id, invalid_json_payload),
+            &RelayEncryptedUpdateRecord {
+                target_approval_request_id: Some(nil_approval_id.clone()),
+                ..sample_update_record(&expected_daemon_id, invalid_json_payload)
+            },
         )
         .await;
         assert_eq!(invalid_json.status, "failed");
@@ -1991,6 +2125,8 @@ mod tests {
 
         let wrong_payload_daemon = encrypt_payload(
             &snapshot.relay_config.daemon_public_key_hex,
+            &nil_approval_id,
+            &expected_daemon_id,
             &serde_json::to_vec(&serde_json::json!({
                 "approvalId": Uuid::nil().to_string(),
                 "daemonId": "wrong-daemon",
@@ -2002,13 +2138,19 @@ mod tests {
         let wrong_payload_daemon = process_update(
             &daemon,
             &expected_daemon_id,
-            &sample_update_record(&expected_daemon_id, wrong_payload_daemon),
+            &RelayEncryptedUpdateRecord {
+                target_approval_request_id: Some(nil_approval_id.clone()),
+                ..sample_update_record(&expected_daemon_id, wrong_payload_daemon)
+            },
         )
         .await;
         assert_eq!(wrong_payload_daemon.status, "rejected");
 
+        let mismatched_target = Uuid::new_v4().to_string();
         let target_mismatch_payload = encrypt_payload(
             &snapshot.relay_config.daemon_public_key_hex,
+            &mismatched_target,
+            &expected_daemon_id,
             &serde_json::to_vec(&serde_json::json!({
                 "approvalId": Uuid::nil().to_string(),
                 "daemonId": expected_daemon_id,
@@ -2021,7 +2163,7 @@ mod tests {
             &daemon,
             &expected_daemon_id,
             &RelayEncryptedUpdateRecord {
-                target_approval_request_id: Some(Uuid::new_v4().to_string()),
+                target_approval_request_id: Some(mismatched_target),
                 ..sample_update_record(&expected_daemon_id, target_mismatch_payload)
             },
         )
@@ -2030,6 +2172,8 @@ mod tests {
 
         let invalid_approval_id_payload = encrypt_payload(
             &snapshot.relay_config.daemon_public_key_hex,
+            "not-a-uuid",
+            &expected_daemon_id,
             &serde_json::to_vec(&serde_json::json!({
                 "approvalId": "not-a-uuid",
                 "daemonId": expected_daemon_id,
@@ -2041,7 +2185,10 @@ mod tests {
         let invalid_approval_id = process_update(
             &daemon,
             &expected_daemon_id,
-            &sample_update_record(&expected_daemon_id, invalid_approval_id_payload),
+            &RelayEncryptedUpdateRecord {
+                target_approval_request_id: Some("not-a-uuid".to_string()),
+                ..sample_update_record(&expected_daemon_id, invalid_approval_id_payload)
+            },
         )
         .await;
         assert_eq!(invalid_approval_id.status, "failed");

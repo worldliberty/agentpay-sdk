@@ -43,7 +43,7 @@ test('readAgentAuthTokenFromKeychain returns null for missing entries', async ()
   assert.equal(token, null);
 });
 
-test('storeAgentAuthTokenInKeychain uses stable service and direct argv updates', async () => {
+test('storeAgentAuthTokenInKeychain uses a stable service and keeps the secret off argv', async () => {
   const keychain = await import(`${modulePath.href}?case=${Date.now()}-2`);
   const calls = [];
   keychain.storeAgentAuthTokenInKeychain(TEST_AGENT_KEY_ID, 'secret-token', (command) => {
@@ -51,20 +51,17 @@ test('storeAgentAuthTokenInKeychain uses stable service and direct argv updates'
     return '';
   });
 
+  const secretHex = Buffer.from('secret-token', 'utf8').toString('hex');
   assert.deepEqual(calls, [
     {
-      args: [
-        'add-generic-password',
-        '-U',
-        '-s',
-        keychain.AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE,
-        '-a',
-        TEST_AGENT_KEY_ID,
-        '-X',
-        Buffer.from('secret-token', 'utf8').toString('hex'),
-      ],
+      args: ['-i'],
+      input: `add-generic-password -U -s "${keychain.AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE}" -a "${TEST_AGENT_KEY_ID}" -X ${secretHex}\n`,
     },
   ]);
+  assert.equal(
+    calls[0].args.some((arg) => arg.includes(secretHex)),
+    false,
+  );
 });
 
 test('deleteAgentAuthTokenFromKeychain reports false when entry is absent', async () => {
@@ -99,16 +96,8 @@ test('storeDaemonPasswordInKeychain preserves spaces and rejects control charact
 
   assert.deepEqual(calls, [
     {
-      args: [
-        'add-generic-password',
-        '-U',
-        '-s',
-        keychain.DAEMON_PASSWORD_KEYCHAIN_SERVICE,
-        '-a',
-        'Jane Doe',
-        '-X',
-        Buffer.from('vault-secret', 'utf8').toString('hex'),
-      ],
+      args: ['-i'],
+      input: `add-generic-password -U -s "${keychain.DAEMON_PASSWORD_KEYCHAIN_SERVICE}" -a "Jane Doe" -X ${Buffer.from('vault-secret', 'utf8').toString('hex')}\n`,
     },
   ]);
 
@@ -294,4 +283,38 @@ test('default security runner maps signaled security exits to shell-style exit c
       },
     );
   });
+});
+
+test('quoteSecurityInteractiveArg escapes quotes and backslashes and rejects control characters', async () => {
+  const keychain = await import(`${modulePath.href}?case=${Date.now()}-quote-interactive`);
+
+  assert.equal(keychain.quoteSecurityInteractiveArg('Jane Doe'), '"Jane Doe"');
+  assert.equal(keychain.quoteSecurityInteractiveArg('a"b\\c'), '"a\\"b\\\\c"');
+  assert.throws(
+    () => keychain.quoteSecurityInteractiveArg('line\nbreak'),
+    /must not contain control characters/u,
+  );
+});
+
+test('default security runner feeds add-generic-password through security -i stdin', async () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-keychain-capture-'));
+  const argvCapture = path.join(tempRoot, 'argv.txt');
+  const stdinCapture = path.join(tempRoot, 'stdin.txt');
+  try {
+    await withMockSecurityOnPath(
+      `printf '%s\\n' "$@" > '${argvCapture}'\ncat > '${stdinCapture}'\nexit 0`,
+      async () => {
+        const keychain = await import(`${modulePath.href}?case=${Date.now()}-interactive-stdin`);
+        keychain.storeDaemonPasswordInKeychain('Jane Doe', 'vault-secret');
+      },
+    );
+    const secretHex = Buffer.from('vault-secret', 'utf8').toString('hex');
+    assert.equal(fs.readFileSync(argvCapture, 'utf8'), '-i\n');
+    assert.equal(
+      fs.readFileSync(stdinCapture, 'utf8'),
+      `add-generic-password -U -s "agentpay-daemon-password" -a "Jane Doe" -X ${secretHex}\n`,
+    );
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 });

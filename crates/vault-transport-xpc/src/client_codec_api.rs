@@ -507,6 +507,42 @@ impl KeyManagerDaemonApi for XpcDaemonClient {
         }
     }
 
+    async fn railgun_master_public_key(
+        &self,
+        session: &AdminSession,
+        vault_key_id: Uuid,
+    ) -> Result<String, DaemonError> {
+        match self.call_rpc(DaemonRpcRequest::RailgunMasterPublicKey {
+            session: session.clone(),
+            vault_key_id,
+        }) {
+            Ok(DaemonRpcResponse::PublicKey(public_key)) => Ok(public_key),
+            Ok(_) => Err(DaemonError::Transport(
+                "unexpected response type".to_string(),
+            )),
+            Err(XpcTransportError::Daemon(err)) => Err(err),
+            Err(err) => Err(DaemonError::Transport(err.to_string())),
+        }
+    }
+
+    async fn railgun_viewing_public_key(
+        &self,
+        session: &AdminSession,
+        vault_key_id: Uuid,
+    ) -> Result<vault_domain::RailgunViewingPublicKeys, DaemonError> {
+        match self.call_rpc(DaemonRpcRequest::RailgunViewingPublicKey {
+            session: session.clone(),
+            vault_key_id,
+        }) {
+            Ok(DaemonRpcResponse::RailgunViewingPublicKey(keys)) => Ok(keys),
+            Ok(_) => Err(DaemonError::Transport(
+                "unexpected response type".to_string(),
+            )),
+            Err(XpcTransportError::Daemon(err)) => Err(err),
+            Err(err) => Err(DaemonError::Transport(err.to_string())),
+        }
+    }
+
     async fn rotate_agent_auth_token(
         &self,
         session: &AdminSession,

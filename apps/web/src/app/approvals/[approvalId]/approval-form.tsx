@@ -12,20 +12,25 @@ import {
 import { Input } from '@worldlibertyfinancial/agent-ui/input';
 import { Label } from '@worldlibertyfinancial/agent-ui/label';
 import { Textarea } from '@worldlibertyfinancial/agent-ui/textarea';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  APPROVAL_CAPABILITY_QUERY_KEY,
   APPROVAL_CAPABILITY_SYNC_CHANNEL,
+  type ApprovalCapabilityState,
   CONSUMED_APPROVAL_CAPABILITY_REASON,
   clearApprovalCapability,
   createApprovalCapabilitySyncMessage,
+  DAEMON_ID_MISMATCH_REASON,
+  DAEMON_KEY_MISMATCH_REASON,
+  daemonKeysMatch,
   INVALID_APPROVAL_CAPABILITY_REASON,
   MISSING_APPROVAL_CAPABILITY_REASON,
   parseApprovalCapabilitySyncMessage,
+  parseApprovalLinkFragment,
   persistApprovalCapability,
-  resolveApprovalCapability,
+  persistApprovalDaemonKey,
   resolveStoredApprovalCapability,
+  resolveStoredApprovalDaemonKey,
 } from '@/lib/approval-capability';
 import { clientConfig } from '@/lib/config';
 import { encryptApprovalUpdate } from '@/lib/crypto';
@@ -47,16 +52,14 @@ export function ApprovalForm({
 }) {
   const pathname = usePathname();
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const initialCapability = useMemo(
-    () => resolveApprovalCapability(searchParams.getAll(APPROVAL_CAPABILITY_QUERY_KEY)),
-    [searchParams],
-  );
   const [liveApproval, setLiveApproval] = useState(approval);
-  const [approvalCapability, setApprovalCapability] = useState<string | null>(
-    initialCapability.value,
-  );
-  const [approvalCapabilityState, setApprovalCapabilityState] = useState(initialCapability.state);
+  const [approvalCapability, setApprovalCapability] = useState<string | null>(null);
+  const [approvalCapabilityState, setApprovalCapabilityState] =
+    useState<ApprovalCapabilityState>('missing');
+  // Daemon X25519 key taken from the CLI-issued link (or an admin-issued
+  // replacement). Encryption only proceeds when the relay advertises this key.
+  const [pinnedDaemonKey, setPinnedDaemonKey] = useState<string | null>(null);
+  const [linkDaemonMismatch, setLinkDaemonMismatch] = useState(false);
   const [vaultPassword, setVaultPassword] = useState('');
   const [relayAdminToken, setRelayAdminToken] = useState('');
   const [note, setNote] = useState('');
@@ -73,6 +76,9 @@ export function ApprovalForm({
 
   const currentApproval = liveApproval;
   const daemonMismatch = Boolean(daemon && daemon.daemonId !== currentApproval.daemonId);
+  const daemonKeyMismatch = Boolean(
+    daemon && pinnedDaemonKey && !daemonKeysMatch(pinnedDaemonKey, daemon.daemonPublicKey),
+  );
   const noteTooLong = note.length > MAX_OPERATOR_NOTE_CHARS;
   const capabilityReason =
     approvalCapabilityState === 'invalid'
@@ -90,59 +96,58 @@ export function ApprovalForm({
       return;
     }
 
-    if (initialCapability.state === 'loaded' && initialCapability.value) {
-      persistApprovalCapability(
-        approval.approvalId,
-        initialCapability.value,
-        window.sessionStorage,
-      );
-      if (!approvalCapability || approvalCapabilityState !== 'loaded') {
-        setApprovalCapability(initialCapability.value);
-        setApprovalCapabilityState('loaded');
-      }
-      return;
+    // Secure links carry their secrets in the fragment, which never reaches the
+    // frontend host. Read it once, then scrub it (and any legacy query string)
+    // from the address bar and history.
+    const fragment = parseApprovalLinkFragment(window.location.hash);
+    if (fragment.present || window.location.search) {
+      window.history.replaceState(window.history.state, '', pathname);
     }
 
-    if (initialCapability.state === 'invalid') {
-      setApprovalCapabilityState('invalid');
-      setApprovalCapability(null);
-      return;
-    }
-
-    if (!approvalCapability) {
-      const storedCapability = resolveStoredApprovalCapability(
-        approval.approvalId,
-        window.sessionStorage,
-      );
-      if (storedCapability.state === 'loaded' && storedCapability.value) {
-        setApprovalCapability(storedCapability.value);
-        setApprovalCapabilityState('loaded');
+    if (fragment.present) {
+      if (fragment.capability.state !== 'loaded' || !fragment.capability.value) {
+        clearApprovalCapability(approval.approvalId, window.sessionStorage);
+        setApprovalCapability(null);
+        setPinnedDaemonKey(null);
+        setApprovalCapabilityState('invalid');
         return;
       }
-    }
 
-    if (approvalCapabilityState === 'consumed') {
+      if (fragment.daemonId !== approval.daemonId.toLowerCase()) {
+        clearApprovalCapability(approval.approvalId, window.sessionStorage);
+        setApprovalCapability(null);
+        setPinnedDaemonKey(null);
+        setLinkDaemonMismatch(true);
+        setApprovalCapabilityState('invalid');
+        return;
+      }
+
+      persistApprovalCapability(
+        approval.approvalId,
+        fragment.capability.value,
+        window.sessionStorage,
+      );
+      persistApprovalDaemonKey(approval.approvalId, fragment.daemonKey, window.sessionStorage);
+      setApprovalCapability(fragment.capability.value);
+      setPinnedDaemonKey(fragment.daemonKey);
+      setApprovalCapabilityState('loaded');
       return;
     }
 
-    if (approvalCapabilityState !== 'missing') {
-      setApprovalCapabilityState('missing');
+    const storedCapability = resolveStoredApprovalCapability(
+      approval.approvalId,
+      window.sessionStorage,
+    );
+    const storedDaemonKey = resolveStoredApprovalDaemonKey(
+      approval.approvalId,
+      window.sessionStorage,
+    );
+    if (storedCapability.state === 'loaded' && storedCapability.value && storedDaemonKey) {
+      setApprovalCapability(storedCapability.value);
+      setPinnedDaemonKey(storedDaemonKey);
+      setApprovalCapabilityState('loaded');
     }
-  }, [
-    approval.approvalId,
-    approvalCapability,
-    approvalCapabilityState,
-    initialCapability.state,
-    initialCapability.value,
-  ]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || !window.location.search) {
-      return;
-    }
-
-    window.history.replaceState(window.history.state, '', `${pathname}${window.location.hash}`);
-  }, [pathname]);
+  }, [approval.approvalId, approval.daemonId, pathname]);
 
   useEffect(() => {
     if (typeof window === 'undefined' || typeof window.BroadcastChannel === 'undefined') {
@@ -165,11 +170,16 @@ export function ApprovalForm({
           window.sessionStorage,
         );
         setApprovalCapability(clearedCapability.value);
+        setPinnedDaemonKey(null);
         setApprovalCapabilityState(clearedCapability.state);
         setVaultPassword('');
         setConfirmedDetails(false);
         setError(null);
         setStatus('This secure approval link was already consumed in another tab.');
+        return;
+      }
+
+      if (!message.daemonKey) {
         return;
       }
 
@@ -182,7 +192,10 @@ export function ApprovalForm({
         return;
       }
 
+      persistApprovalDaemonKey(approval.approvalId, message.daemonKey, window.sessionStorage);
       setApprovalCapability(persistedCapability.value);
+      setPinnedDaemonKey(message.daemonKey);
+      setLinkDaemonMismatch(false);
       setApprovalCapabilityState('loaded');
       setError(null);
       setStatus('A fresh secure approval link was issued in another tab for this approval.');
@@ -208,6 +221,14 @@ export function ApprovalForm({
       return 'Relay daemon metadata does not match this approval request.';
     }
 
+    if (linkDaemonMismatch) {
+      return DAEMON_ID_MISMATCH_REASON;
+    }
+
+    if (daemonKeyMismatch) {
+      return DAEMON_KEY_MISMATCH_REASON;
+    }
+
     if (currentApproval.status !== 'pending') {
       return `This approval is already ${currentApproval.status}. Submit a new request instead of reusing this link.`;
     }
@@ -224,7 +245,7 @@ export function ApprovalForm({
       return CONSUMED_APPROVAL_CAPABILITY_REASON;
     }
 
-    if (!approvalCapability) {
+    if (!approvalCapability || !pinnedDaemonKey) {
       return MISSING_APPROVAL_CAPABILITY_REASON;
     }
 
@@ -251,8 +272,11 @@ export function ApprovalForm({
     confirmedDetails,
     currentApproval.status,
     daemon,
+    daemonKeyMismatch,
     daemonMismatch,
+    linkDaemonMismatch,
     noteTooLong,
+    pinnedDaemonKey,
     refreshingApproval,
     submitting,
     vaultPassword,
@@ -325,8 +349,14 @@ export function ApprovalForm({
       return;
     }
 
-    if (!approvalCapability) {
+    if (!approvalCapability || !pinnedDaemonKey) {
       setError(MISSING_APPROVAL_CAPABILITY_REASON);
+      return;
+    }
+
+    // Never encrypt the vault password to a key the CLI-issued link did not name.
+    if (!daemonKeysMatch(pinnedDaemonKey, daemon.daemonPublicKey)) {
+      setError(DAEMON_KEY_MISMATCH_REASON);
       return;
     }
 
@@ -349,7 +379,7 @@ export function ApprovalForm({
     setError(null);
 
     try {
-      const envelope = encryptApprovalUpdate(daemon.daemonPublicKey, {
+      const envelope = encryptApprovalUpdate(pinnedDaemonKey, {
         approvalId: currentApproval.approvalId,
         daemonId: currentApproval.daemonId,
         decision,
@@ -393,6 +423,7 @@ export function ApprovalForm({
         createApprovalCapabilitySyncMessage(currentApproval.approvalId, null, 'consumed'),
       );
       setApprovalCapability(clearedCapability.value);
+      setPinnedDaemonKey(null);
       setApprovalCapabilityState(clearedCapability.state);
       setStatus(`Encrypted ${decision} update submitted to relay. Refreshing relay status…`);
       setNote('');
@@ -439,19 +470,38 @@ export function ApprovalForm({
         currentApproval.approvalId,
         relayAdminToken,
       );
+      if (recovered.daemonId.toLowerCase() !== currentApproval.daemonId.toLowerCase()) {
+        throw new Error(DAEMON_ID_MISMATCH_REASON);
+      }
+      if (daemon && !daemonKeysMatch(recovered.daemonPublicKey, daemon.daemonPublicKey)) {
+        throw new Error(DAEMON_KEY_MISMATCH_REASON);
+      }
+
       const persisted = persistApprovalCapability(
         currentApproval.approvalId,
         recovered.approvalCapability,
         window.sessionStorage,
       );
-      if (persisted.state !== 'loaded' || !persisted.value) {
+      const persistedDaemonKey = persistApprovalDaemonKey(
+        currentApproval.approvalId,
+        recovered.daemonPublicKey,
+        window.sessionStorage,
+      );
+      if (persisted.state !== 'loaded' || !persisted.value || !persistedDaemonKey) {
         throw new Error('relay returned an invalid secure approval capability');
       }
 
       capabilitySyncChannelRef.current?.postMessage(
-        createApprovalCapabilitySyncMessage(currentApproval.approvalId, persisted.value, 'loaded'),
+        createApprovalCapabilitySyncMessage(
+          currentApproval.approvalId,
+          persisted.value,
+          'loaded',
+          persistedDaemonKey,
+        ),
       );
       setApprovalCapability(persisted.value);
+      setPinnedDaemonKey(persistedDaemonKey);
+      setLinkDaemonMismatch(false);
       setApprovalCapabilityState('loaded');
       setRelayAdminToken('');
       setStatus(
@@ -508,7 +558,7 @@ export function ApprovalForm({
           </Badge>
           {approvalCapability ? (
             <p className="text-muted-foreground">
-              Secure query parameters are scrubbed from the address bar after load.
+              Secure link parameters are scrubbed from the address bar after load.
             </p>
           ) : null}
         </div>

@@ -11,6 +11,7 @@ import {
   type WlfiConfig,
   writeConfig,
 } from '../../packages/config/src/index.js';
+import { parseNestedAdminCommand } from './admin-passthrough.js';
 import { resolveAgentAuthStorageMetadata } from './agent-auth-storage.js';
 import { cleanupBootstrapAgentCredentialsFile } from './bootstrap-credentials.js';
 import {
@@ -26,6 +27,7 @@ import {
   LAUNCHD_RUNNER_SCRIPT_NAME,
   resolveLaunchDaemonHelperScriptPath,
 } from './launchd-assets.js';
+import { assertNotInvokedViaSudo } from './local-admin-access.js';
 import {
   resolveManagedDaemonCredentialHelperPath,
   resolveManagedDaemonPlatformSpec,
@@ -40,12 +42,12 @@ import {
   SYSTEMD_RUNNER_SCRIPT_NAME,
 } from './systemd-assets.js';
 import {
-  cleanupTemporaryWalletImportKeyFile,
   decryptWalletBackup,
   defaultWalletBackupOutputPath,
   readWalletBackupFile,
   resolveWalletBackupPassword,
-  writeTemporaryWalletImportKeyFile,
+  sweepStaleTemporaryWalletImportKeyFiles,
+  type TemporaryWalletImportKeyCleanupResult,
 } from './wallet-backup.js';
 import { exportEncryptedWalletBackup } from './wallet-backup-admin.js';
 import { deriveWalletAddress, resolveWalletProfile } from './wallet-profile.js';
@@ -69,11 +71,9 @@ const DEFAULT_SIGNER_BACKEND = 'software';
 const DEFAULT_MANAGED_BIN_DIR = MANAGED_DAEMON_SPEC.managedBinDir;
 const DEFAULT_MANAGED_DAEMON_SOCKET = MANAGED_DAEMON_SPEC.daemonSocket;
 const DEFAULT_MANAGED_STATE_FILE = MANAGED_DAEMON_SPEC.stateFile;
-const DEFAULT_MANAGED_KEYCHAIN_HELPER = path.join(
-  DEFAULT_MANAGED_BIN_DIR,
-  MANAGED_DAEMON_SPEC.sourceCredentialHelperName,
-);
 const MAX_SECRET_STDIN_BYTES = 16 * 1024;
+// The Rust admin reads a restored wallet key from this inherited pipe (`runRustBinary` extraInputFd3).
+const WALLET_IMPORT_KEY_PIPE_FD = 3;
 const DEFAULT_LAUNCH_DAEMON_PLIST = MANAGED_DAEMON_SPEC.serviceFile;
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const REDACTED_SECRET_PLACEHOLDER = '<redacted>';
@@ -479,24 +479,30 @@ function renderWalletBackupCommand(outputPath: string): string {
   return `agentpay admin wallet-backup export --output ${JSON.stringify(path.resolve(outputPath))}`;
 }
 
-async function resolvePostSetupWalletBackupRequest(input: {
-  options: Pick<
-    AdminSetupOptions,
-    'backupOutput' | 'backupOverwrite' | 'nonInteractive' | 'restoreWalletFrom'
-  >;
-  createdFreshWallet: boolean;
-}): Promise<PostSetupWalletBackupRequest | null> {
-  if (input.options.backupOutput) {
-    return {
-      outputPath: path.resolve(input.options.backupOutput),
-      overwrite: Boolean(input.options.backupOverwrite),
-    };
-  }
-
-  if (!input.createdFreshWallet || input.options.nonInteractive) {
+function resolvePostSetupWalletBackupRequest(
+  options: Pick<AdminSetupOptions, 'backupOutput' | 'backupOverwrite'>,
+): PostSetupWalletBackupRequest | null {
+  if (!options.backupOutput) {
     return null;
   }
-  return null;
+  return {
+    outputPath: path.resolve(options.backupOutput),
+    overwrite: Boolean(options.backupOverwrite),
+  };
+}
+
+function reportStaleTemporaryWalletImportKeySweep(
+  results: TemporaryWalletImportKeyCleanupResult[],
+): void {
+  for (const result of results) {
+    if (result.action === 'deleted' && result.path) {
+      process.stderr.write(
+        `warning: removed stale temporary wallet import key file ${result.path} left by an earlier setup run\n`,
+      );
+    } else if (result.action === 'failed' && result.error) {
+      process.stderr.write(`warning: ${result.error}\n`);
+    }
+  }
 }
 
 function resolveDaemonSocket(optionValue: string | undefined): string {
@@ -614,9 +620,7 @@ export function createAdminSetupPlan(
         attachBootstrapPolicies: options.attachBootstrapPolicies,
         existingVaultKeyId: reusableWallet?.existingVaultKeyId,
         existingVaultPublicKey: reusableWallet?.existingVaultPublicKey,
-        importVaultPrivateKeyFile: options.restoreWalletFrom
-          ? '<decrypted from backup at runtime>'
-          : undefined,
+        importVaultPrivateKeyFd: options.restoreWalletFrom ? WALLET_IMPORT_KEY_PIPE_FD : undefined,
         bootstrapOutputPath: options.bootstrapOutput,
         deleteBootstrapOutput: options.deleteBootstrapOutput,
       },
@@ -777,6 +781,8 @@ export function formatAdminCommandOutput(
   if (solanaAddress) {
     solanaAddressLine = `solana address: ${solanaAddress}`;
   }
+  const railgunAddress = String(prepared.railgunAddress ?? '').trim();
+  const railgunAddressLine = railgunAddress ? `railgun address: ${railgunAddress}` : null;
 
   const daemonSocket = String(daemon.daemonSocket ?? config.daemonSocket ?? '').trim();
   const stateFile = String(daemon.stateFile ?? config.stateFile ?? '').trim();
@@ -806,6 +812,7 @@ export function formatAdminCommandOutput(
       : null,
     addressLine,
     solanaAddressLine,
+    railgunAddressLine,
     typeof prepared.vaultKeyId === 'string' && prepared.vaultKeyId.trim()
       ? `vault key id: ${prepared.vaultKeyId}`
       : null,
@@ -1166,17 +1173,19 @@ async function managedStateAcceptsRequestedVaultPassword(
     'admin_uid="$3"',
     'agent_uid="$4"',
     'signer_backend="$5"',
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: shell parameter expansion inside a generated shell script
     'temp_root="$(mktemp -d "${TMPDIR:-/tmp}/agentpay-managed-state-probe-XXXXXX")"',
     'trap \'rm -rf "$temp_root"\' EXIT',
     'daemon_socket="$temp_root/daemon.sock"',
-    '"$daemon_bin" \\',
+    // A pipe keeps the password off disk; bash here-strings can spill to a $TMPDIR temp file.
+    'printf \'%s\\n\' "$vault_password" | "$daemon_bin" \\',
     '  --non-interactive \\',
     '  --vault-password-stdin \\',
     '  --state-file "$state_file" \\',
     '  --daemon-socket "$daemon_socket" \\',
     '  --signer-backend "$signer_backend" \\',
     '  --allow-admin-euid "$admin_uid" \\',
-    '  --allow-agent-euid "$agent_uid" <<<"$vault_password" &',
+    '  --allow-agent-euid "$agent_uid" &',
     'child="$!"',
     'for _ in $(seq 1 20); do',
     '  if ! kill -0 "$child" 2>/dev/null; then',
@@ -1193,7 +1202,7 @@ async function managedStateAcceptsRequestedVaultPassword(
   const result = await sudoSession.run(
     [
       '/bin/bash',
-      '-lc',
+      '-c',
       probeScript,
       '--',
       installPreconditions.daemonBin,
@@ -1261,6 +1270,31 @@ async function assertManagedStateMatchesRequestedVaultPasswordBeforeInstall(
   verifyProgress.succeed('Requested vault password unlocks the existing managed daemon state');
 }
 
+type DaemonSocketUnavailableCode = 'ENOENT' | 'ECONNREFUSED';
+
+/**
+ * Thrown when the managed daemon socket is simply not there yet (missing path or nothing is
+ * listening). Trust violations and Rust admin failures use ordinary errors so setup surfaces
+ * them instead of treating them as "no daemon, reinstall".
+ */
+export class DaemonSocketUnavailableError extends Error {
+  readonly code: DaemonSocketUnavailableCode;
+
+  constructor(message: string, code: DaemonSocketUnavailableCode) {
+    super(message);
+    this.name = 'DaemonSocketUnavailableError';
+    this.code = code;
+  }
+}
+
+export function isDaemonSocketUnavailableError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const code = (error as { code?: unknown }).code;
+  return code === 'ENOENT' || code === 'ECONNREFUSED';
+}
+
 async function waitForTrustedDaemonSocket(targetPath: string, timeoutMs = 15_000): Promise<void> {
   async function canConnect(socketPath: string): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
@@ -1299,9 +1333,24 @@ async function waitForTrustedDaemonSocket(targetPath: string, timeoutMs = 15_000
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
-  const resolvedPath = assertTrustedAdminDaemonSocketPath(targetPath);
-  if (!(await canConnect(resolvedPath))) {
-    throw new Error(`daemon socket '${resolvedPath}' is present but not accepting connections yet`);
+  const resolvedPath = path.resolve(targetPath);
+  try {
+    fs.lstatSync(resolvedPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new DaemonSocketUnavailableError(
+        `daemon socket '${resolvedPath}' does not exist`,
+        'ENOENT',
+      );
+    }
+    throw error;
+  }
+  const trustedPath = assertTrustedAdminDaemonSocketPath(resolvedPath);
+  if (!(await canConnect(trustedPath))) {
+    throw new DaemonSocketUnavailableError(
+      `daemon socket '${trustedPath}' is present but not accepting connections yet`,
+      'ECONNREFUSED',
+    );
   }
 }
 
@@ -1414,6 +1463,37 @@ function isManagedDaemonInstallCurrent(
   ].every((value) => plistContainsValue(plistContents, value));
 }
 
+/**
+ * Secrets for the root install helper travel on stdin, one per line (line 1: vault password,
+ * optional line 2: relay daemon token enabled by `--relay-token-stdin`). Nothing secret may be
+ * placed on the sudo argv or in the helper's environment, where `ps` exposes it to every user.
+ */
+export function buildManagedDaemonInstallSecretTransport(input: {
+  vaultPassword: string;
+  relayDaemonToken?: string;
+}): { flags: string[]; stdin: string } {
+  const vaultPassword = validateSecret(input.vaultPassword, 'vault password');
+  const relayDaemonToken = input.relayDaemonToken?.trim() || undefined;
+  if (!relayDaemonToken) {
+    return {
+      flags: ['--vault-password-stdin'],
+      stdin: `${vaultPassword}\n`,
+    };
+  }
+  if (/[\r\n]/u.test(vaultPassword)) {
+    throw new Error(
+      'vault password must not contain newlines when AGENTPAY_RELAY_DAEMON_TOKEN is also supplied',
+    );
+  }
+  if (/[\r\n]/u.test(relayDaemonToken)) {
+    throw new Error('AGENTPAY_RELAY_DAEMON_TOKEN must not contain newlines');
+  }
+  return {
+    flags: ['--vault-password-stdin', '--relay-token-stdin'],
+    stdin: `${vaultPassword}\n${relayDaemonToken}\n`,
+  };
+}
+
 async function installLaunchDaemon(
   config: WlfiConfig,
   daemonSocket: string,
@@ -1425,7 +1505,10 @@ async function installLaunchDaemon(
     daemonSocket,
     stateFile,
   );
-  const relayDaemonToken = process.env.AGENTPAY_RELAY_DAEMON_TOKEN?.trim();
+  const secretTransport = buildManagedDaemonInstallSecretTransport({
+    vaultPassword,
+    relayDaemonToken: process.env.AGENTPAY_RELAY_DAEMON_TOKEN,
+  });
   const installArgs =
     process.platform === 'linux'
       ? [
@@ -1450,7 +1533,7 @@ async function installLaunchDaemon(
           String(process.getuid?.() ?? process.geteuid?.() ?? 0),
           '--allow-agent-euid',
           String(process.getuid?.() ?? process.geteuid?.() ?? 0),
-          '--vault-password-stdin',
+          ...secretTransport.flags,
         ]
       : [
           installPreconditions.installScript,
@@ -1476,16 +1559,11 @@ async function installLaunchDaemon(
           String(process.getuid?.() ?? process.geteuid?.() ?? 0),
           '--allow-agent-euid',
           String(process.getuid?.() ?? process.geteuid?.() ?? 0),
-          '--vault-password-stdin',
+          ...secretTransport.flags,
         ];
 
   const installResult = await sudoSession.run(installArgs, {
-    env: relayDaemonToken
-      ? {
-          AGENTPAY_RELAY_DAEMON_TOKEN: relayDaemonToken,
-        }
-      : undefined,
-    stdin: `${vaultPassword}\n`,
+    stdin: secretTransport.stdin,
     inheritOutput: true,
   });
   if (installResult.code !== 0) {
@@ -1515,6 +1593,7 @@ async function installLaunchDaemon(
 }
 
 async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
+  assertNotInvokedViaSudo('agentpay admin setup');
   assertManagedDaemonPlatform(
     '`agentpay admin setup`',
     'The current setup flow installs a root-managed daemon and imports credentials into local credential storage.',
@@ -1533,6 +1612,8 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
   if (options.chainName && !options.network) {
     throw new Error('--chain-name requires --network');
   }
+
+  reportStaleTemporaryWalletImportKeySweep(sweepStaleTemporaryWalletImportKeyFiles());
 
   const config = readConfig();
   const daemonSocket = resolveDaemonSocket(options.daemonSocket);
@@ -1560,7 +1641,6 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
       )
     : null;
   const showProgress = !options.json;
-  let temporaryImportKeyFile: string | null = null;
 
   const existingDaemonProgress = createProgress('Checking existing daemon', showProgress);
   const plistContents =
@@ -1612,7 +1692,11 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
         'Existing daemon is running but needs password recovery or reinstall',
       );
     }
-  } catch {
+  } catch (error) {
+    if (!isDaemonSocketUnavailableError(error)) {
+      existingDaemonProgress.fail();
+      throw error;
+    }
     existingDaemonProgress.succeed('No ready daemon detected; checking installation state');
   }
 
@@ -1781,15 +1865,78 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
   );
 
   const bootstrapOutput = resolveWalletSetupBootstrapOutputPath(options.bootstrapOutput);
+  const bootstrapInvocation = buildAdminSetupBootstrapInvocation({
+    vaultPassword,
+    daemonSocket,
+    perTxMaxWei: options.perTxMaxWei,
+    dailyMaxWei: options.dailyMaxWei,
+    weeklyMaxWei: options.weeklyMaxWei,
+    maxGasPerChainWei: options.maxGasPerChainWei,
+    dailyMaxTxCount: options.dailyMaxTxCount,
+    perTxMaxFeePerGasWei: options.perTxMaxFeePerGasWei,
+    perTxMaxPriorityFeePerGasWei: options.perTxMaxPriorityFeePerGasWei,
+    perTxMaxCalldataBytes: options.perTxMaxCalldataBytes,
+    token: options.token,
+    allowNativeEth: options.allowNativeEth,
+    network: resolvedNetworkId !== undefined ? String(resolvedNetworkId) : undefined,
+    recipient: options.recipient,
+    attachPolicyId: options.attachPolicyId,
+    attachBootstrapPolicies: options.attachBootstrapPolicies,
+    existingVaultKeyId: reusableWallet?.existingVaultKeyId,
+    existingVaultPublicKey: reusableWallet?.existingVaultPublicKey,
+    importVaultPrivateKeyHex: restoredBackupMaterial?.privateKeyHex,
+    bootstrapOutputPath: bootstrapOutput.path,
+  });
+
+  const bootstrapProgress = createProgress('Setting up wallet access', showProgress);
   try {
-    if (restoredBackupMaterial) {
-      temporaryImportKeyFile = writeTemporaryWalletImportKeyFile(
-        restoredBackupMaterial.privateKeyHex,
+    await runRustBinary('agentpay-admin', bootstrapInvocation.args, config, {
+      stdin: bootstrapInvocation.stdin,
+      extraInputFd3: bootstrapInvocation.extraInputFd3,
+      preSuppliedSecretStdin: 'vaultPassword',
+      scrubSensitiveEnv: true,
+    });
+  } catch (error) {
+    bootstrapProgress.fail();
+    try {
+      const cleanup = cleanupBootstrapAgentCredentialsFile(
+        bootstrapOutput.path,
+        resolveWalletSetupCleanupAction(
+          bootstrapOutput.autoGenerated,
+          options.deleteBootstrapOutput ?? false,
+        ),
+      );
+      if (cleanup.action === 'failed') {
+        console.error(
+          `warning: failed to scrub bootstrap output after setup failure: ${cleanup.error}`,
+        );
+      }
+    } catch (error) {
+      console.error(
+        `warning: failed to scrub bootstrap output after setup failure: ${renderError(error)}`,
       );
     }
+    if (error instanceof RustBinaryExitError) {
+      const output = error.stderr || error.stdout;
+      if (output) {
+        process.stderr.write(output.endsWith('\n') ? output : `${output}\n`);
+      }
+      process.exitCode = error.code;
+      return;
+    }
+    throw error;
+  }
+  bootstrapProgress.succeed('Bootstrap completed');
 
-    const bootstrapInvocation = buildAdminSetupBootstrapInvocation({
-      vaultPassword,
+  const finalizeProgress = createProgress('Importing agent token and saving config', showProgress);
+  let summary: CompleteWalletSetupResult;
+  try {
+    summary = completeWalletSetup({
+      bootstrapOutputPath: bootstrapOutput.path,
+      cleanupAction: resolveWalletSetupCleanupAction(
+        bootstrapOutput.autoGenerated,
+        options.deleteBootstrapOutput ?? false,
+      ),
       daemonSocket,
       perTxMaxWei: options.perTxMaxWei,
       dailyMaxWei: options.dailyMaxWei,
@@ -1801,185 +1948,135 @@ async function runAdminSetup(options: AdminSetupOptions): Promise<void> {
       perTxMaxCalldataBytes: options.perTxMaxCalldataBytes,
       token: options.token,
       allowNativeEth: options.allowNativeEth,
-      network: resolvedNetworkId !== undefined ? String(resolvedNetworkId) : undefined,
+      network: resolvedNetworkId,
       recipient: options.recipient,
       attachPolicyId: options.attachPolicyId,
       attachBootstrapPolicies: options.attachBootstrapPolicies,
-      existingVaultKeyId: reusableWallet?.existingVaultKeyId,
-      existingVaultPublicKey: reusableWallet?.existingVaultPublicKey,
-      importVaultPrivateKeyFile: temporaryImportKeyFile ?? undefined,
-      bootstrapOutputPath: bootstrapOutput.path,
+      rpcUrl: options.rpcUrl,
+      chainName: resolvedChainName,
     });
+    finalizeProgress.succeed('Agent token imported and config saved');
+  } catch (error) {
+    finalizeProgress.fail();
+    throw error;
+  }
 
-    const bootstrapProgress = createProgress('Setting up wallet access', showProgress);
-    try {
-      await runRustBinary('agentpay-admin', bootstrapInvocation.args, config, {
-        stdin: bootstrapInvocation.stdin,
-        preSuppliedSecretStdin: 'vaultPassword',
-        scrubSensitiveEnv: true,
-      });
-    } catch (error) {
-      bootstrapProgress.fail();
-      try {
-        const cleanup = cleanupBootstrapAgentCredentialsFile(
-          bootstrapOutput.path,
-          resolveWalletSetupCleanupAction(
-            bootstrapOutput.autoGenerated,
-            options.deleteBootstrapOutput ?? false,
-          ),
-        );
-        if (cleanup.action === 'failed') {
-          console.error(
-            `warning: failed to scrub bootstrap output after setup failure: ${cleanup.error}`,
-          );
-        }
-      } catch (error) {
-        console.error(
-          `warning: failed to scrub bootstrap output after setup failure: ${renderError(error)}`,
-        );
-      }
-      if (error instanceof RustBinaryExitError) {
-        const output = error.stderr || error.stdout;
-        if (output) {
-          process.stderr.write(output.endsWith('\n') ? output : `${output}\n`);
-        }
-        process.exitCode = error.code;
-        return;
-      }
-      throw error;
-    }
-    bootstrapProgress.succeed('Bootstrap completed');
-
-    const finalizeProgress = createProgress(
-      'Importing agent token and saving config',
-      showProgress,
+  // Track 6: derive the Railgun shielded address for the freshly provisioned
+  // wallet. While Track 2 Phase B is still pending the daemon backends return
+  // SignerError::Unsupported with a `Track 2 Phase B` marker; we treat that
+  // as "not ready yet" and log a warning rather than failing the setup.
+  const railgunDerivation = await deriveRailgunPublicKeyDuringSetup({
+    vaultPassword,
+    daemonSocket,
+    vaultKeyId: summary.vaultKeyId,
+    config,
+  });
+  let railgunAddress: string | undefined;
+  if (railgunDerivation.status === 'pending-phase-b') {
+    console.warn(
+      'Railgun shielded address will be derivable once Track 2 Phase B lands. Setup otherwise succeeded.',
     );
-    let summary: CompleteWalletSetupResult;
-    try {
-      summary = completeWalletSetup({
-        bootstrapOutputPath: bootstrapOutput.path,
-        cleanupAction: resolveWalletSetupCleanupAction(
-          bootstrapOutput.autoGenerated,
-          options.deleteBootstrapOutput ?? false,
-        ),
-        daemonSocket,
-        perTxMaxWei: options.perTxMaxWei,
-        dailyMaxWei: options.dailyMaxWei,
-        weeklyMaxWei: options.weeklyMaxWei,
-        maxGasPerChainWei: options.maxGasPerChainWei,
-        dailyMaxTxCount: options.dailyMaxTxCount,
-        perTxMaxFeePerGasWei: options.perTxMaxFeePerGasWei,
-        perTxMaxPriorityFeePerGasWei: options.perTxMaxPriorityFeePerGasWei,
-        perTxMaxCalldataBytes: options.perTxMaxCalldataBytes,
-        token: options.token,
-        allowNativeEth: options.allowNativeEth,
-        network: resolvedNetworkId,
-        recipient: options.recipient,
-        attachPolicyId: options.attachPolicyId,
-        attachBootstrapPolicies: options.attachBootstrapPolicies,
-        rpcUrl: options.rpcUrl,
-        chainName: resolvedChainName,
-      });
-      finalizeProgress.succeed('Agent token imported and config saved');
-    } catch (error) {
-      finalizeProgress.fail();
-      throw error;
-    }
-
-    const persistedConfig = writeConfig({
-      daemonSocket,
-      stateFile,
-      ...(defaultActiveChain
-        ? {
-            chainId: defaultActiveChain.chainId,
-            chainName: defaultActiveChain.chainName,
-            ...(defaultActiveChain.rpcUrl ? { rpcUrl: defaultActiveChain.rpcUrl } : {}),
-          }
-        : {}),
-    });
-
-    const walletAddress = deriveWalletAddress(summary.vaultPublicKey, summary.vaultKeyAlgorithm);
-    let walletBackup: WalletBackupExportResult | undefined;
-    const walletBackupRequest = walletAddress
-      ? await resolvePostSetupWalletBackupRequest({
-          options,
-          createdFreshWallet,
-        })
-      : options.backupOutput
-        ? {
-            outputPath: path.resolve(options.backupOutput),
-            overwrite: Boolean(options.backupOverwrite),
-          }
-        : null;
-
-    if (walletBackupRequest) {
-      try {
-        const backupPassword = await resolveAdminSetupBackupPassword(options, true);
-        const exported = await exportEncryptedWalletBackup({
-          daemonSocket,
-          vaultPassword,
-          backupPassword,
-          outputPath: walletBackupRequest.outputPath,
-          overwrite: walletBackupRequest.overwrite,
-          config: persistedConfig,
-        });
-        walletBackup = {
-          status: 'created',
-          outputPath: exported.outputPath,
-          createdAt: exported.createdAt,
-          address: exported.address,
-          sourceVaultKeyId: exported.sourceVaultKeyId,
-          reminderCommand: renderWalletBackupCommand(exported.outputPath),
-        };
-      } catch (error) {
-        process.exitCode = 1;
-        walletBackup = {
-          status: 'failed',
-          outputPath: walletBackupRequest.outputPath,
-          address: walletAddress,
-          error: renderError(error),
-          reminderCommand: renderWalletBackupCommand(walletBackupRequest.outputPath),
-        };
-      }
-    } else if (createdFreshWallet && walletAddress) {
-      const suggestedOutputPath = defaultWalletBackupOutputPath(walletAddress);
-      walletBackup = {
-        status: 'not-created',
-        address: walletAddress,
-        outputPath: suggestedOutputPath,
-        reminderCommand: renderWalletBackupCommand(suggestedOutputPath),
-      };
-    }
-
-    printCliPayload(
-      {
-        command: 'setup',
-        daemon: {
-          autostart: true,
-          label: daemon.label,
-          serviceManager: daemon.serviceManager,
-          daemonSocket,
-          stateFile: daemon.stateFile,
-          runnerPath: daemon.runnerPath,
-          daemonBinary: daemon.daemonBin,
-          signerBackend: DEFAULT_SIGNER_BACKEND,
-          keychainService: daemon.keychainService,
-          keychainAccount: daemon.keychainAccount,
-          passwordFile: daemon.passwordFile,
+  } else if (railgunDerivation.status === 'failed') {
+    console.warn(
+      `warning: failed to derive Railgun shielded address after setup: ${railgunDerivation.error}`,
+    );
+  } else {
+    // Persist the derived address into the wallet profile so `agentpay
+    // config show` and `agentpay wallet --json` surface it without
+    // re-derivation. Re-read the config so we merge atop the wallet block
+    // that `completeWalletSetup` just wrote. The address is reported through the final
+    // payload (JSON or text summary) so `--json` stdout stays a single parseable document.
+    railgunAddress = railgunDerivation.railgunAddress;
+    const currentConfig = readConfig();
+    if (currentConfig.wallet) {
+      writeConfig({
+        wallet: {
+          ...currentConfig.wallet,
+          railgunAddress,
         },
-        ...summary,
-        ...(walletBackup ? { walletBackup } : {}),
-        config: redactConfig(persistedConfig),
-      },
-      options.json ?? false,
-      options.printAgentAuthToken ?? false,
-    );
-  } finally {
-    const cleanup = cleanupTemporaryWalletImportKeyFile(temporaryImportKeyFile);
-    if (cleanup.action === 'failed') {
-      console.error(`warning: failed to delete temporary wallet import key file: ${cleanup.error}`);
+      });
     }
   }
+
+  const persistedConfig = writeConfig({
+    daemonSocket,
+    stateFile,
+    ...(defaultActiveChain
+      ? {
+          chainId: defaultActiveChain.chainId,
+          chainName: defaultActiveChain.chainName,
+          ...(defaultActiveChain.rpcUrl ? { rpcUrl: defaultActiveChain.rpcUrl } : {}),
+        }
+      : {}),
+  });
+
+  const walletAddress = deriveWalletAddress(summary.vaultPublicKey, summary.vaultKeyAlgorithm);
+  let walletBackup: WalletBackupExportResult | undefined;
+  const walletBackupRequest = resolvePostSetupWalletBackupRequest(options);
+
+  if (walletBackupRequest) {
+    try {
+      const backupPassword = await resolveAdminSetupBackupPassword(options, true);
+      const exported = await exportEncryptedWalletBackup({
+        daemonSocket,
+        vaultPassword,
+        backupPassword,
+        outputPath: walletBackupRequest.outputPath,
+        overwrite: walletBackupRequest.overwrite,
+        config: persistedConfig,
+      });
+      walletBackup = {
+        status: 'created',
+        outputPath: exported.outputPath,
+        createdAt: exported.createdAt,
+        address: exported.address,
+        sourceVaultKeyId: exported.sourceVaultKeyId,
+        reminderCommand: renderWalletBackupCommand(exported.outputPath),
+      };
+    } catch (error) {
+      process.exitCode = 1;
+      walletBackup = {
+        status: 'failed',
+        outputPath: walletBackupRequest.outputPath,
+        address: walletAddress,
+        error: renderError(error),
+        reminderCommand: renderWalletBackupCommand(walletBackupRequest.outputPath),
+      };
+    }
+  } else if (createdFreshWallet && walletAddress) {
+    const suggestedOutputPath = defaultWalletBackupOutputPath(walletAddress);
+    walletBackup = {
+      status: 'not-created',
+      address: walletAddress,
+      outputPath: suggestedOutputPath,
+      reminderCommand: renderWalletBackupCommand(suggestedOutputPath),
+    };
+  }
+
+  printCliPayload(
+    {
+      command: 'setup',
+      daemon: {
+        autostart: true,
+        label: daemon.label,
+        serviceManager: daemon.serviceManager,
+        daemonSocket,
+        stateFile: daemon.stateFile,
+        runnerPath: daemon.runnerPath,
+        daemonBinary: daemon.daemonBin,
+        signerBackend: DEFAULT_SIGNER_BACKEND,
+        keychainService: daemon.keychainService,
+        keychainAccount: daemon.keychainAccount,
+        passwordFile: daemon.passwordFile,
+      },
+      ...summary,
+      ...(railgunAddress ? { railgunAddress } : {}),
+      ...(walletBackup ? { walletBackup } : {}),
+      config: redactConfig(persistedConfig),
+    },
+    options.json ?? false,
+    options.printAgentAuthToken ?? false,
+  );
 }
 
 export function buildAdminTuiPassthroughArgs(input: {
@@ -1992,6 +2089,95 @@ export function buildAdminTuiPassthroughArgs(input: {
   }
   args.push('tui', '--print-agent-auth-token');
   return args;
+}
+
+/// Outcome of attempting to derive the Railgun shielded address for a freshly
+/// provisioned vault key. The whole flow degrades gracefully: while the daemon
+/// backends still return `SignerError::Unsupported` (Track 2 Phase B), the
+/// `'pending-phase-b'` variant lets the setup wrapper print a clear warning
+/// instead of failing the entire setup.
+export type RailgunPublicKeyDerivationOutcome =
+  | { status: 'derived'; railgunAddress: string }
+  | { status: 'pending-phase-b'; reason: string }
+  | { status: 'failed'; error: string };
+
+/// Marker substring emitted by the daemon's signer backends while Track 2
+/// Phase B is not yet implemented. The TS wrapper treats this specific error
+/// as "Railgun derivation pending" rather than a setup failure.
+const RAILGUN_PHASE_B_MARKER = 'Track 2 Phase B';
+
+export async function deriveRailgunPublicKeyDuringSetup(input: {
+  vaultPassword: string;
+  daemonSocket: string;
+  vaultKeyId: string;
+  config?: WlfiConfig;
+}): Promise<RailgunPublicKeyDerivationOutcome> {
+  const args = [
+    '--json',
+    '--quiet',
+    '--vault-password-stdin',
+    '--non-interactive',
+    '--daemon-socket',
+    input.daemonSocket,
+    'railgun-public-key',
+    '--vault-key-id',
+    input.vaultKeyId,
+  ];
+  try {
+    const { stdout } = await runRustBinary('agentpay-admin', args, input.config, {
+      stdin: `${validateSecret(input.vaultPassword, 'vault password')}\n`,
+      preSuppliedSecretStdin: 'vaultPassword',
+      scrubSensitiveEnv: true,
+    });
+    const trimmed = stdout.trim();
+    if (!trimmed) {
+      return { status: 'failed', error: 'agentpay-admin produced empty output' };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch (error) {
+      return {
+        status: 'failed',
+        error: `failed to parse railgun-public-key JSON: ${renderError(error)}`,
+      };
+    }
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      'railgunAddress' in parsed &&
+      typeof (parsed as { railgunAddress: unknown }).railgunAddress === 'string'
+    ) {
+      return {
+        status: 'derived',
+        railgunAddress: (parsed as { railgunAddress: string }).railgunAddress,
+      };
+    }
+    return {
+      status: 'failed',
+      error: `unexpected railgun-public-key payload: ${trimmed}`,
+    };
+  } catch (error) {
+    if (error instanceof RustBinaryExitError) {
+      const payload = error.stdout.trim();
+      let errorMessage = error.message;
+      if (payload) {
+        try {
+          const parsed = JSON.parse(payload) as { error?: unknown };
+          if (typeof parsed.error === 'string' && parsed.error.length > 0) {
+            errorMessage = parsed.error;
+          }
+        } catch {
+          // fall through to the rust binary error message
+        }
+      }
+      if (errorMessage.includes(RAILGUN_PHASE_B_MARKER)) {
+        return { status: 'pending-phase-b', reason: errorMessage };
+      }
+      return { status: 'failed', error: errorMessage };
+    }
+    return { status: 'failed', error: renderError(error) };
+  }
 }
 
 export function buildAdminSetupBootstrapInvocation(input: {
@@ -2013,9 +2199,14 @@ export function buildAdminSetupBootstrapInvocation(input: {
   attachBootstrapPolicies?: boolean;
   existingVaultKeyId?: string;
   existingVaultPublicKey?: string;
-  importVaultPrivateKeyFile?: string;
+  /** Decrypted backup key to import; handed to Rust over the fd 3 pipe, never via disk/argv. */
+  importVaultPrivateKeyHex?: string;
   bootstrapOutputPath: string;
-}): { args: string[]; stdin: string } {
+}): { args: string[]; stdin: string; extraInputFd3?: string } {
+  const importVaultPrivateKey =
+    input.importVaultPrivateKeyHex !== undefined
+      ? validateSecret(input.importVaultPrivateKeyHex, 'imported wallet private key')
+      : undefined;
   return {
     args: buildWalletSetupAdminArgs({
       vaultPasswordStdin: true,
@@ -2037,14 +2228,17 @@ export function buildAdminSetupBootstrapInvocation(input: {
       attachBootstrapPolicies: input.attachBootstrapPolicies,
       existingVaultKeyId: input.existingVaultKeyId,
       existingVaultPublicKey: input.existingVaultPublicKey,
-      importVaultPrivateKeyFile: input.importVaultPrivateKeyFile,
+      importVaultPrivateKeyFd:
+        importVaultPrivateKey !== undefined ? WALLET_IMPORT_KEY_PIPE_FD : undefined,
       bootstrapOutputPath: input.bootstrapOutputPath,
     }),
     stdin: `${validateSecret(input.vaultPassword, 'vault password')}\n`,
+    ...(importVaultPrivateKey !== undefined ? { extraInputFd3: `${importVaultPrivateKey}\n` } : {}),
   };
 }
 
 async function runAdminTui(options: AdminTuiOptions): Promise<void> {
+  assertNotInvokedViaSudo('agentpay admin tui');
   assertManagedDaemonPlatform(
     '`agentpay admin tui`',
     'The current TUI flow refreshes local wallet credentials through managed daemon setup helpers.',
@@ -2187,7 +2381,7 @@ export async function runAdminSetupCli(argv: string[]): Promise<void> {
     .option('--json', 'Print JSON output', false)
     .action(runAdminSetup);
 
-  await program.parseAsync(argv, { from: 'user' });
+  await parseNestedAdminCommand(program, argv);
 }
 
 export async function runAdminTuiCli(argv: string[]): Promise<void> {
@@ -2212,5 +2406,5 @@ export async function runAdminTuiCli(argv: string[]): Promise<void> {
     .option('--json', 'Print JSON output', false)
     .action(runAdminTui);
 
-  await program.parseAsync(argv, { from: 'user' });
+  await parseNestedAdminCommand(program, argv);
 }

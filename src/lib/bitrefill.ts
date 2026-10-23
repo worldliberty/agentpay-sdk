@@ -13,8 +13,11 @@ import {
   parseConfiguredAmount,
   type ResolvedAssetMetadata,
 } from './config-amounts.js';
+import { assertTrustedPrivateFilePath, readUtf8FileSecure } from './fs-trust.js';
 
 const DEFAULT_BITREFILL_BASE_URL = 'https://www.bitrefill.com';
+const MAX_BITREFILL_INVOICE_ACCESS_TOKEN_STORE_BYTES = 1024 * 1024;
+const BITREFILL_INVOICE_ACCESS_TOKEN_STORE_LABEL = 'Bitrefill invoice access token store';
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 60_000;
 const DEFAULT_WAIT_INTERVAL_MS = 3_000;
@@ -989,11 +992,11 @@ export function resolveBitrefillCookieJarPath(): string {
 export function resolveBitrefillInvoiceAccessTokenStorePath(): string {
   const pluginDir = resolveBitrefillPluginStateDir();
   const storePath = path.join(pluginDir, BITREFILL_INVOICE_ACCESS_TOKEN_STORE_FILE);
-  if (!fs.existsSync(storePath)) {
-    fs.writeFileSync(storePath, '{}\n', { mode: 0o600 });
-  }
-  fs.chmodSync(storePath, 0o600);
-  return storePath;
+  // The store holds bearer tokens for paid invoices: refuse symlinks, foreign owners and
+  // group/other-readable modes instead of silently chmod-ing whatever sits at that path.
+  return assertTrustedPrivateFilePath(storePath, BITREFILL_INVOICE_ACCESS_TOKEN_STORE_LABEL, {
+    allowMissing: true,
+  });
 }
 
 function normalizeBitrefillInvoiceAccessTokenStore(
@@ -1024,21 +1027,55 @@ function readBitrefillInvoiceAccessTokenStoreEntries(): Record<
   StoredBitrefillInvoiceAccessTokenEntry
 > {
   const storePath = resolveBitrefillInvoiceAccessTokenStorePath();
+  let raw: string;
   try {
-    const raw = fs.readFileSync(storePath, 'utf8');
-    const parsed = raw.trim() ? JSON.parse(raw) : {};
-    return normalizeBitrefillInvoiceAccessTokenStore(parsed);
-  } catch {
-    return {};
+    raw = readUtf8FileSecure(
+      storePath,
+      BITREFILL_INVOICE_ACCESS_TOKEN_STORE_LABEL,
+      MAX_BITREFILL_INVOICE_ACCESS_TOKEN_STORE_BYTES,
+    );
+  } catch (error) {
+    // Only a store that does not exist yet is an empty store. Permission problems or a damaged file
+    // must surface, otherwise a write would silently discard every previously remembered token.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return {};
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `failed to read ${BITREFILL_INVOICE_ACCESS_TOKEN_STORE_LABEL} '${storePath}': ${message}`,
+    );
   }
+
+  let parsed: unknown;
+  try {
+    parsed = raw.trim() ? JSON.parse(raw) : {};
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `${BITREFILL_INVOICE_ACCESS_TOKEN_STORE_LABEL} '${storePath}' is not valid JSON: ${message}`,
+    );
+  }
+  return normalizeBitrefillInvoiceAccessTokenStore(parsed);
 }
 
 function writeBitrefillInvoiceAccessTokenStoreEntries(
   entries: Record<string, StoredBitrefillInvoiceAccessTokenEntry>,
 ): void {
   const storePath = resolveBitrefillInvoiceAccessTokenStorePath();
-  fs.writeFileSync(storePath, `${JSON.stringify(entries, null, 2)}\n`, { mode: 0o600 });
-  fs.chmodSync(storePath, 0o600);
+  const tempPath = `${storePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, `${JSON.stringify(entries, null, 2)}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+      flag: 'wx',
+    });
+    fs.chmodSync(tempPath, 0o600);
+    fs.renameSync(tempPath, storePath);
+    fs.chmodSync(storePath, 0o600);
+  } catch (error) {
+    fs.rmSync(tempPath, { force: true });
+    throw error;
+  }
 }
 
 export function rememberBitrefillInvoiceAccessToken(input: {
@@ -1388,9 +1425,10 @@ export function createCuimpBitrefillTransport(
 }
 
 export function createFetchBitrefillTransport(
-  input: { baseUrl?: string } = {},
+  input: { baseUrl?: string; requestTimeoutMs?: number } = {},
 ): BitrefillHttpTransport {
   const baseUrl = resolveBitrefillBaseUrl(input.baseUrl);
+  const requestTimeoutMs = input.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   return {
     async request<T>(request: BitrefillHttpRequest): Promise<BitrefillHttpResponse<T>> {
       const url = new URL(request.pathname, baseUrl);
@@ -1401,6 +1439,8 @@ export function createFetchBitrefillTransport(
       }
       const response = await fetch(url, {
         method: request.method,
+        // A stalled merchant endpoint must not hang a purchase forever.
+        signal: AbortSignal.timeout(requestTimeoutMs),
         headers: {
           Accept: 'application/json',
           ...(request.body ? { 'Content-Type': 'application/json' } : {}),

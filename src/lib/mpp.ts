@@ -94,6 +94,13 @@ interface RawMppCredential {
 
 const MPP_ATTRIBUTION_TAG = keccak256(stringToHex('mpp')).slice(0, 10) as Hex;
 const MPP_ATTRIBUTION_VERSION = 0x01;
+export const MAX_MPP_HEADER_BYTES = 16 * 1024;
+
+function assertMppHeaderSize(header: string, label: string): void {
+  if (Buffer.byteLength(header, 'utf8') > MAX_MPP_HEADER_BYTES) {
+    throw new Error(`${label} must not exceed ${MAX_MPP_HEADER_BYTES} bytes`);
+  }
+}
 
 function decodeBase64UrlJson<T>(value: string): T {
   return JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as T;
@@ -394,6 +401,7 @@ function parseReceipt(value: unknown): MppReceipt {
 }
 
 export function parseMppChallengeHeader(header: string): MppChallenge {
+  assertMppHeaderSize(header, 'MPP challenge header');
   const params = extractPaymentAuthParams(header);
   if (!params) {
     throw new Error('Missing Payment scheme in MPP challenge');
@@ -462,6 +470,7 @@ function parseChallenge(value: unknown): MppChallenge {
 }
 
 export function parseMppChallengeHeadersList(header: string): MppChallenge[] {
+  assertMppHeaderSize(header, 'MPP challenge header');
   const parsed = Challenge.deserializeList(header);
   const challenges = parsed.map((entry) => parseChallenge(entry));
   if (challenges.length === 0) {
@@ -553,6 +562,7 @@ export function parseMppChallengeFromHeaders(headers: Headers): MppChallenge {
 }
 
 export function deserializeMppReceiptHeader(header: string): MppReceipt {
+  assertMppHeaderSize(header, 'MPP receipt header');
   return parseReceipt(decodeBase64UrlJson<unknown>(header));
 }
 
@@ -595,25 +605,50 @@ export function encodeMppAttributionMemo(input: { serverId: string; clientId?: s
 }
 
 export function resolveMppChainId(challenge: MppChallenge): number {
-  return challenge.request.methodDetails?.chainId ?? 4217;
+  // The server names the chain it wants paying on; never assume mainnet when it is absent, since a
+  // stripped chainId would otherwise redirect a payment onto a network the user did not intend.
+  const chainId = challenge.request.methodDetails?.chainId;
+  if (typeof chainId !== 'number' || !Number.isSafeInteger(chainId) || chainId <= 0) {
+    throw new Error(
+      'MPP challenge is missing request.methodDetails.chainId; refusing to assume a default network',
+    );
+  }
+  return chainId;
 }
 
 export function isTempoChain(chainId: number): boolean {
   return chainId === 4217 || chainId === 42431;
 }
 
+/**
+ * Tempo stream-channel escrow contracts. These match the daemon's pinned constants
+ * (crates/vault-domain/src/constants.rs), which refuse to sign for any other escrow.
+ */
+export const TEMPO_STREAM_CHANNEL_ESCROW_CONTRACTS: Readonly<Record<number, string>> = {
+  4217: '0x33b901018174DDabE4841042ab76ba85D4e24f25',
+  42431: '0xe1c4d3dce17bc111181ddf716f75bae49e61a336',
+};
+
+/**
+ * Returns the pinned escrow contract for the challenge chain. The pinned value is authoritative:
+ * a server that names a different escrow is rejected rather than trusted, since the escrow decides
+ * who can claim the deposited funds.
+ */
 export function resolveMppEscrowContract(challenge: MppChallenge): string | null {
+  const chainId = resolveMppChainId(challenge);
+  const pinned = TEMPO_STREAM_CHANNEL_ESCROW_CONTRACTS[chainId] ?? null;
   const explicit = challenge.request.methodDetails?.escrowContract;
   if (typeof explicit === 'string' && explicit.trim()) {
-    return explicit;
+    if (!pinned) {
+      throw new Error(
+        `MPP challenge names escrow contract ${explicit} on chain ${chainId}, which has no pinned Tempo stream-channel escrow`,
+      );
+    }
+    if (explicit.trim().toLowerCase() !== pinned.toLowerCase()) {
+      throw new Error(
+        `MPP challenge escrow contract ${explicit} does not match the pinned Tempo stream-channel escrow ${pinned} for chain ${chainId}`,
+      );
+    }
   }
-
-  const chainId = resolveMppChainId(challenge);
-  if (chainId === 4217) {
-    return '0x33b901018174DDabE4841042ab76ba85D4e24f25';
-  }
-  if (chainId === 42431) {
-    return '0xe1c4d3dce17bc111181ddf716f75bae49e61a336';
-  }
-  return null;
+  return pinned;
 }

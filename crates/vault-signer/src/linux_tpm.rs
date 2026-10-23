@@ -337,6 +337,17 @@ mod inner {
                         "TPM backend does not support Ed25519 keys".to_string(),
                     ));
                 }
+                KeyCreateRequest::GenerateWithAlgorithm {
+                    algorithm: KeyAlgorithm::RailgunSpending | KeyAlgorithm::RailgunViewing,
+                }
+                | KeyCreateRequest::ImportWithAlgorithm {
+                    algorithm: KeyAlgorithm::RailgunSpending | KeyAlgorithm::RailgunViewing,
+                    ..
+                } => {
+                    return Err(SignerError::Unsupported(
+                        "TPM backend does not support Railgun keys".to_string(),
+                    ));
+                }
             };
 
             let key_id = Uuid::new_v4();

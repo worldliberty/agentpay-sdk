@@ -2,6 +2,19 @@
 
 import { QrCode } from './vendor/qrcodegen.mjs';
 
+// Native gas token symbols by EVM chain id. Unknown chains must pass --token-symbol explicitly
+// so a funding request never names the wrong asset.
+const NATIVE_GAS_TOKEN_SYMBOLS = new Map([
+  ['1', 'ETH'],
+  ['10', 'ETH'],
+  ['56', 'BNB'],
+  ['137', 'POL'],
+  ['4217', 'USD'],
+  ['8453', 'ETH'],
+  ['42161', 'ETH'],
+  ['11155111', 'ETH'],
+]);
+
 function usage() {
   console.error(
     [
@@ -13,7 +26,8 @@ function usage() {
       '  --chain-id <id>          Numeric EVM chain id',
       '  --network-name <name>    Optional display name such as bsc or sepolia',
       '  --amount-wei <wei>       Optional suggested native top-up amount in wei',
-      '  --token-symbol <symbol>  Optional symbol such as BNB or ETH',
+      '  --token-symbol <symbol>  Gas token symbol; derived from the chain id when omitted (56=BNB, 1/10/8453/42161=ETH, 137=POL, 4217=USD)',
+      '  --qr-url                 Also include a third-party hosted QR image URL (quickchart.io); the inline SVG is always included',
       '  --json                   Print JSON instead of text',
     ].join('\n'),
   );
@@ -39,6 +53,9 @@ function parseArgs(argv) {
       case '--token-symbol':
         options.tokenSymbol = argv[++index];
         break;
+      case '--qr-url':
+        options.qrUrl = true;
+        break;
       case '--json':
         options.json = true;
         break;
@@ -46,6 +63,7 @@ function parseArgs(argv) {
       case '-h':
         usage();
         process.exit(0);
+        break;
       default:
         throw new Error(`unknown argument: ${current}`);
     }
@@ -85,6 +103,20 @@ function normalizeOptionalInteger(value, label) {
     throw new Error(`${label} must be an integer string`);
   }
   return normalized;
+}
+
+function resolveGasTokenSymbol(chainId, explicitSymbol) {
+  const explicit = explicitSymbol?.trim();
+  if (explicit) {
+    return explicit;
+  }
+  const derived = NATIVE_GAS_TOKEN_SYMBOLS.get(chainId);
+  if (!derived) {
+    throw new Error(
+      `no known native gas token for chain id ${chainId}; pass --token-symbol <symbol> explicitly`,
+    );
+  }
+  return derived;
 }
 
 function formatNativeAmount(wei) {
@@ -135,12 +167,14 @@ function buildPayload(options) {
   const address = normalizeAddress(options.address);
   const chainId = normalizeChainId(options.chainId);
   const amountWei = normalizeOptionalInteger(options.amountWei, 'amount wei');
-  const tokenSymbol = options.tokenSymbol?.trim() || 'ETH';
+  const tokenSymbol = resolveGasTokenSymbol(chainId, options.tokenSymbol);
   const networkName = options.networkName?.trim() || null;
   const networkLabel = networkName ? `${networkName} (${chainId})` : chainId;
   const fundingUri = `ethereum:${address}@${chainId}`;
   const { svg, svgDataUri } = renderSvgDataUri(fundingUri);
-  const qrUrl = `https://quickchart.io/qr?size=240&text=${encodeURIComponent(fundingUri)}`;
+  const qrUrl = options.qrUrl
+    ? `https://quickchart.io/qr?size=240&text=${encodeURIComponent(fundingUri)}`
+    : null;
 
   return {
     address,
@@ -153,7 +187,7 @@ function buildPayload(options) {
     fundingUri,
     svg,
     svgDataUri,
-    qrUrl,
+    ...(qrUrl ? { qrUrl } : {}),
     markdownImage: `![Funding QR](${svgDataUri})`,
     reminder: amountWei
       ? `Please fund ${address} on ${networkLabel} with at least ${formatNativeAmount(amountWei)} ${tokenSymbol}, then tell me once the transfer is confirmed.`
@@ -170,7 +204,7 @@ function printText(payload) {
       : `Suggested Top-up: enough native ${payload.tokenSymbol} for gas`,
     `Funding URI: ${payload.fundingUri}`,
     `Markdown Image: ${payload.markdownImage}`,
-    `QR URL: ${payload.qrUrl}`,
+    ...(payload.qrUrl ? [`QR URL: ${payload.qrUrl}`] : []),
     `Reminder: ${payload.reminder}`,
   ];
   console.log(lines.join('\n'));

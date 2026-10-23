@@ -51,12 +51,18 @@ function defaultSecurityRunner(command: SecurityCommandInvocation): string {
   }
   const exitCode = result.status ?? signalExitCode(result.signal);
   if (exitCode !== 0) {
+    // `security -i` reads its command from stdin; name that subcommand (never its arguments,
+    // which can carry the hex-encoded secret) instead of the generic `-i` flag.
+    const commandLabel =
+      command.args[0] === '-i' && command.input
+        ? (command.input.trimStart().split(/\s/u)[0] ?? '-i')
+        : command.args[0];
     const error = new Error(
       result.stderr.trim() ||
         result.stdout.trim() ||
         (result.signal
-          ? `security ${command.args[0]} exited with code ${exitCode}`
-          : `security ${command.args[0]} failed`),
+          ? `security ${commandLabel} exited with code ${exitCode}`
+          : `security ${commandLabel} failed`),
     );
     Object.assign(error, {
       status: exitCode,
@@ -133,6 +139,45 @@ function assertValidKeychainSecret(secret: string, label: string): string {
   return secret;
 }
 
+/**
+ * Quotes one token for `security -i` interactive mode, which splits each stdin line into argv
+ * with shell-like rules: double quotes group whitespace and backslash escapes `"` and `\`.
+ * Callers validate that the value has no control characters (newlines would end the command).
+ */
+export function quoteSecurityInteractiveArg(value: string): string {
+  if (hasControlCharacters(value)) {
+    throw new Error('security interactive arguments must not contain control characters');
+  }
+  return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+}
+
+/**
+ * Builds the `security -i` invocation that stores a generic password. The secret is written to
+ * the tool's stdin as a hex-encoded `-X` argument instead of being placed on the process argv,
+ * where any local user could read it with `ps` while the command runs.
+ */
+export function buildStoreGenericPasswordInvocation(
+  service: string,
+  account: string,
+  secret: string,
+): SecurityCommandInvocation {
+  const commandLine = [
+    'add-generic-password',
+    '-U',
+    '-s',
+    quoteSecurityInteractiveArg(service),
+    '-a',
+    quoteSecurityInteractiveArg(account),
+    '-X',
+    Buffer.from(secret, 'utf8').toString('hex'),
+  ].join(' ');
+
+  return {
+    args: ['-i'],
+    input: `${commandLine}\n`,
+  };
+}
+
 function storeGenericPasswordInKeychain(
   service: string,
   account: string,
@@ -147,18 +192,9 @@ function storeGenericPasswordInKeychain(
   const normalizedAccount = assertValidKeychainAccount(account);
   const normalizedSecret = assertValidKeychainSecret(secret, 'keychain secret');
 
-  runner({
-    args: [
-      'add-generic-password',
-      '-U',
-      '-s',
-      normalizedService,
-      '-a',
-      normalizedAccount,
-      '-X',
-      Buffer.from(normalizedSecret, 'utf8').toString('hex'),
-    ],
-  });
+  runner(
+    buildStoreGenericPasswordInvocation(normalizedService, normalizedAccount, normalizedSecret),
+  );
 }
 
 export function storeAgentAuthTokenInKeychain(

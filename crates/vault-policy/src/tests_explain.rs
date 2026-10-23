@@ -26,7 +26,7 @@ fn policy_all_per_tx(max: u128) -> SpendingPolicy {
 
 #[test]
 fn explain_reports_denial_reason_and_evaluated_policy() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let policy = policy_all_per_tx(10);
     let action = AgentAction::Transfer {
         chain_id: 1,
@@ -55,7 +55,7 @@ fn explain_reports_denial_reason_and_evaluated_policy() {
 
 #[test]
 fn explain_reports_allow_for_valid_request() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let policy = policy_all_per_tx(10);
     let action = AgentAction::Transfer {
         chain_id: 1,

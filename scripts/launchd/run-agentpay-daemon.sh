@@ -70,4 +70,6 @@ if [[ -n "${AGENTPAY_ALLOW_CLIENT_EUID:-}" ]]; then
   args+=(--allow-client-euid "$AGENTPAY_ALLOW_CLIENT_EUID")
 fi
 
-exec "$AGENTPAY_DAEMON_BIN" "${args[@]}" <<<"$vault_password"
+# Feed the password through a pipe (process substitution) instead of a here-string, which bash
+# may spill to a $TMPDIR temp file; `exec` keeps the daemon as launchd's direct child.
+exec "$AGENTPAY_DAEMON_BIN" "${args[@]}" < <(printf '%s\n' "$vault_password")

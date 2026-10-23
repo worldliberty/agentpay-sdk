@@ -80,7 +80,7 @@ async function withMockPlatform(platform, fn) {
   }
 }
 
-async function withMockedPrompt(answer, fn, options = {}) {
+async function withMockedPrompt(answer, fn, _options = {}) {
   const originalCreateInterface = readline.createInterface;
   const stdinDescriptor = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
   const stdoutDescriptor = Object.getOwnPropertyDescriptor(process.stdout, 'isTTY');
@@ -1162,12 +1162,14 @@ test('runAdminResetCli non-json summary reports missing config and bootstrap cle
         '  exit 1',
         'fi',
         'if [ "$1" = "-n" ]; then',
+        // The uninstall helper must pass the trusted-path check before sudo runs it, so the
+        // home only becomes group/world-writable afterwards to provoke the cleanup warning.
+        `  chmod 777 ${JSON.stringify(agentpayHome)}`,
         '  exit 0',
         'fi',
         'exit 0',
       ].join('\n'),
     );
-    fs.chmodSync(agentpayHome, 0o777);
     const stdoutChunks = [];
     const originalStdoutWrite = process.stdout.write.bind(process.stdout);
     process.stdout.write = (chunk, ...args) => {
@@ -1441,6 +1443,7 @@ test('runAdminResetCli can delete config and print spinner progress when stderr 
       process.stdout.write = originalStdoutWrite;
     }
 
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: asserts the ANSI clear-line escape sequence
     assert.match(stderrChunks.join(''), /\u001b\[2K/u);
     assert.match(stdoutChunks.join(''), /config deleted:/u);
     assert.match(
@@ -2169,4 +2172,46 @@ test('runAdminUninstallCli non-json summary reports missing config and confirms 
       /legacy global npm AgentPay SDK CLI not removed: current command is not running from a legacy global npm install/u,
     );
   });
+});
+
+test('resolveTrustedLaunchDaemonUninstallScriptPath refuses missing or untrusted uninstall helpers', async () => {
+  const reset = await import(`${modulePath.href}?case=${Date.now()}-trusted-uninstall-helper`);
+  const scriptPath = '/opt/agentpay/bin/uninstall-helper.sh';
+  const checked = [];
+
+  assert.equal(
+    reset.resolveTrustedLaunchDaemonUninstallScriptPath(undefined, {
+      resolveScriptPath: () => scriptPath,
+      existsSync: () => true,
+      assertTrustedExecutablePath: (targetPath) => {
+        checked.push(targetPath);
+      },
+    }),
+    scriptPath,
+  );
+  assert.deepEqual(checked, [scriptPath]);
+
+  assert.throws(
+    () =>
+      reset.resolveTrustedLaunchDaemonUninstallScriptPath(undefined, {
+        resolveScriptPath: () => scriptPath,
+        existsSync: () => false,
+        assertTrustedExecutablePath: () => {
+          throw new Error('should not be checked');
+        },
+      }),
+    /managed daemon uninstall helper is not installed at \/opt\/agentpay\/bin\/uninstall-helper\.sh/u,
+  );
+
+  assert.throws(
+    () =>
+      reset.resolveTrustedLaunchDaemonUninstallScriptPath(undefined, {
+        resolveScriptPath: () => scriptPath,
+        existsSync: () => true,
+        assertTrustedExecutablePath: () => {
+          throw new Error('uninstall helper must not be writable by group/other');
+        },
+      }),
+    /must not be writable by group\/other/u,
+  );
 });

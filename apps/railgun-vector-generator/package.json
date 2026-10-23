@@ -1,0 +1,22 @@
+{
+  "name": "@worldlibertyfinancial/railgun-vector-generator",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Deterministic Railgun engine test-vector generator. Dumps a JSON fixture that the Rust crypto port (Track 2 Phase B) cross-checks bit-for-bit. Dev-only — never imported by the daemon or the CLI.",
+  "scripts": {
+    "clean": "rm -rf .turbo node_modules dist coverage junit",
+    "generate": "tsx src/generate.ts",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm run typecheck"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@railgun-community/engine": "^9.5.4",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.0"
+  }
+}

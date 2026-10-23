@@ -7,10 +7,14 @@ export interface SudoCommandResult {
   stderr: string;
 }
 
+/**
+ * Secrets for the privileged child must travel through `stdin`; there is intentionally no
+ * environment option because `sudo /usr/bin/env KEY=value ...` exposes values on the argv of a
+ * root process (visible to every local user through `ps`).
+ */
 export interface RunSudoCommandOptions {
   stdin?: string;
   inheritOutput?: boolean;
-  env?: Record<string, string | undefined>;
 }
 
 interface CreateSudoSessionDeps {
@@ -145,19 +149,6 @@ async function runCommand(
   return result;
 }
 
-function resolveEnvAssignmentArgs(env: Record<string, string | undefined> | undefined): string[] {
-  if (!env) {
-    return [];
-  }
-
-  return Object.entries(env)
-    .filter((entry): entry is [string, string] => {
-      const [key, value] = entry;
-      return key.trim().length > 0 && typeof value === 'string';
-    })
-    .map(([key, value]) => `${key}=${value}`);
-}
-
 export function createSudoSession(deps: CreateSudoSessionDeps) {
   const spawnCommand = deps.spawnCommand ?? spawn;
   const isRoot = deps.isRoot ?? currentProcessIsRoot;
@@ -203,8 +194,7 @@ export function createSudoSession(deps: CreateSudoSessionDeps) {
       throw new Error('sudo command arguments are required');
     }
 
-    const envArgs = resolveEnvAssignmentArgs(options.env);
-    const commandArgs = envArgs.length > 0 ? ['/usr/bin/env', ...envArgs, ...args] : args;
+    const commandArgs = args;
 
     if (isRoot()) {
       return await runCommand(commandArgs[0], commandArgs.slice(1), options, {

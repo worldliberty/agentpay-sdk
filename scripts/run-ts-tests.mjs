@@ -62,6 +62,12 @@ const result = spawnSync(
   ],
   {
     cwd: repoRoot,
+    env: {
+      ...process.env,
+      // Tests spawn the real CLI; none of them may phone home. Tests that exercise telemetry
+      // itself override this and point both destinations at a local server.
+      AGENTPAY_TELEMETRY: '0',
+    },
     stdio: 'inherit',
   },
 );

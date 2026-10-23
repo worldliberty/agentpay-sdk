@@ -2,6 +2,9 @@ import { z } from 'zod';
 
 const PUBLIC_APPROVAL_UPDATE_MAX_CIPHERTEXT_BYTES = 16 * 1024;
 
+/** Relay manual-approval envelope algorithm; must match the daemon and web console. */
+export const RELAY_ENVELOPE_ALGORITHM = 'x25519-hkdf-xchacha20poly1305-v2';
+
 const hexEncodedBytesSchema = (
   field: string,
   options: {
@@ -78,7 +81,7 @@ export const updateStatusSchema = z.enum(['pending', 'inflight', 'applied', 'rej
 
 export const encryptedPayloadSchema = z.object({
   aadBase64: z.string().min(1).optional(),
-  algorithm: z.string().trim().min(1).default('x25519-xsalsa20poly1305'),
+  algorithm: z.literal(RELAY_ENVELOPE_ALGORITHM).default(RELAY_ENVELOPE_ALGORITHM),
   ciphertextBase64: z.string().trim().min(1),
   contentSha256Hex: z
     .string()
@@ -157,6 +160,11 @@ export const daemonRegisterInputSchema = z.object({
   policies: z.array(relayPolicyRecordSchema).default([]),
 });
 
+export const rekeyDaemonInputSchema = z.object({
+  daemonId: daemonIdSchema,
+  daemonPublicKey: x25519PublicKeySchema,
+});
+
 export const listApprovalRequestsInputSchema = z.object({
   daemonId: daemonIdSchema.optional(),
   destination: addressSchema.optional(),
@@ -190,7 +198,7 @@ export const submitPublicApprovalUpdateInputSchema = z.object({
     .regex(/^[a-fA-F0-9]{64}$/u, 'approvalCapability must be a 32-byte hex token'),
   daemonId: daemonIdSchema,
   envelope: z.object({
-    algorithm: z.literal('x25519-xchacha20poly1305-v1').default('x25519-xchacha20poly1305-v1'),
+    algorithm: z.literal(RELAY_ENVELOPE_ALGORITHM).default(RELAY_ENVELOPE_ALGORITHM),
     ciphertext: hexEncodedBytesSchema('ciphertext', {
       minBytes: 1,
       maxBytes: PUBLIC_APPROVAL_UPDATE_MAX_CIPHERTEXT_BYTES,

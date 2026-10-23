@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import net from 'node:net';
@@ -1115,13 +1116,13 @@ test('buildAdminSetupBootstrapInvocation forwards existing wallet reuse metadata
   });
 });
 
-test('buildAdminSetupBootstrapInvocation forwards wallet restore import file', async () => {
+test('buildAdminSetupBootstrapInvocation forwards the wallet restore key over fd 3', async () => {
   const adminSetup = await loadModule(`${Date.now()}-setup-bootstrap-invocation-wallet-restore`);
 
   const invocation = adminSetup.buildAdminSetupBootstrapInvocation({
     vaultPassword: 'vault-secret',
     daemonSocket: '/Library/AgentPay/run/daemon.sock',
-    importVaultPrivateKeyFile: '/tmp/restored-wallet.key',
+    importVaultPrivateKeyHex: '11'.repeat(32),
     bootstrapOutputPath: '/tmp/bootstrap.json',
   });
 
@@ -1138,11 +1139,24 @@ test('buildAdminSetupBootstrapInvocation forwards wallet restore import file', a
       'bootstrap',
       '--print-agent-auth-token',
       '--from-shared-config',
-      '--import-vault-private-key-file',
-      '/tmp/restored-wallet.key',
+      '--import-vault-private-key-fd',
+      '3',
     ],
     stdin: 'vault-secret\n',
+    extraInputFd3: `${'11'.repeat(32)}\n`,
   });
+  assert.equal(invocation.args.join(' ').includes('11'.repeat(32)), false);
+
+  assert.throws(
+    () =>
+      adminSetup.buildAdminSetupBootstrapInvocation({
+        vaultPassword: 'vault-secret',
+        daemonSocket: '/Library/AgentPay/run/daemon.sock',
+        importVaultPrivateKeyHex: '   ',
+        bootstrapOutputPath: '/tmp/bootstrap.json',
+      }),
+    /imported wallet private key must not be empty or whitespace/u,
+  );
 });
 
 test('prepareAdminCommandOutputPayload redacts setup secrets by default', async () => {
@@ -1801,6 +1815,7 @@ function writeMockSecretTool(targetPath) {
       '  fs.rmSync(targetPath, { force: true });',
       '  process.exit(0);',
       '}',
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: JavaScript source text for a generated mock script
       'process.stderr.write(`unsupported secret-tool command: ${command}\\n`);',
       'process.exit(2);',
     ].join('\n'),
@@ -1857,7 +1872,7 @@ function bootstrapPayload() {
   };
 }
 
-async function withMockedPrompt(answer, fn, options = {}) {
+async function withMockedPrompt(answer, fn, _options = {}) {
   const resolveAnswer = (query = '') => {
     if (
       typeof answer === 'string' &&
@@ -1978,6 +1993,7 @@ function writeMockAdminBinary(targetPath) {
       'const writeBootstrap = () => {',
       '  if (!outputPath) return;',
       '  fs.mkdirSync(path.dirname(outputPath), { recursive: true, mode: 0o700 });',
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: JavaScript source text for a generated mock script
       '  fs.writeFileSync(outputPath, `${JSON.stringify(payload, null, 2)}\\n`, { mode: 0o600 });',
       '  fs.chmodSync(outputPath, 0o600);',
       '};',
@@ -2009,6 +2025,7 @@ function writeMockAdminBinary(targetPath) {
       '  const code = relayExitCode();',
       '  if (code !== 0) {',
       "    const message = process.env.AGENTPAY_MOCK_RELAY_ERROR_MESSAGE || (code === 9 ? 'authentication failed' : 'mock relay failure');",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: JavaScript source text for a generated mock script
       '    process.stderr.write(`${message}\\n`);',
       '    process.exit(code);',
       '  }',
@@ -2016,8 +2033,22 @@ function writeMockAdminBinary(targetPath) {
       '  process.exit(0);',
       '}',
       "if (args.includes('bootstrap')) {",
+      "  const importFdIndex = args.indexOf('--import-vault-private-key-fd');",
+      '  if (importFdIndex >= 0) {',
+      "    const importedKey = fs.readFileSync(Number(args[importFdIndex + 1]), 'utf8').trim();",
+      '    if (process.env.AGENTPAY_MOCK_IMPORT_KEY_RECORD) {',
+      "      const digest = require('node:crypto').createHash('sha256').update(importedKey).digest('hex');",
+      '      fs.writeFileSync(',
+      '        process.env.AGENTPAY_MOCK_IMPORT_KEY_RECORD,',
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: JavaScript source text for a generated mock script
+      '        `${JSON.stringify({ args, importedKeySha256: digest })}\\n`,',
+      '        { mode: 0o600 },',
+      '      );',
+      '    }',
+      '  }',
       '  writeBootstrap();',
       "  if (process.env.AGENTPAY_MOCK_BOOTSTRAP_SYMLINK_OUTPUT === '1' && outputPath) {",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: JavaScript source text for a generated mock script
       '    const realPath = `${outputPath}.real`;',
       '    fs.renameSync(outputPath, realPath);',
       '    fs.symlinkSync(realPath, outputPath);',
@@ -2030,11 +2061,17 @@ function writeMockAdminBinary(targetPath) {
       '  process.stdout.write(\'{"ok":true}\\n\');',
       '  process.exit(0);',
       '}',
+      "if (args.includes('railgun-public-key') && process.env.AGENTPAY_MOCK_RAILGUN_ADDRESS) {",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: JavaScript source text for a generated mock script
+      '  process.stdout.write(`${JSON.stringify({ railgunAddress: process.env.AGENTPAY_MOCK_RAILGUN_ADDRESS })}\\n`);',
+      '  process.exit(0);',
+      '}',
       "if (args.includes('tui')) {",
       "  if (process.env.AGENTPAY_MOCK_SKIP_TUI_OUTPUT !== '1') {",
       '    writeBootstrap();',
       '  }',
       "  if (process.env.AGENTPAY_MOCK_TUI_SYMLINK_OUTPUT === '1' && outputPath) {",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: JavaScript source text for a generated mock script
       '    const realPath = `${outputPath}.real`;',
       '    fs.renameSync(outputPath, realPath);',
       '    fs.symlinkSync(realPath, outputPath);',
@@ -2118,6 +2155,8 @@ async function withMockedAdminSetupEnv(fn) {
     delete process.env.AGENTPAY_MOCK_RELAY_ERROR_MESSAGE;
     delete process.env.AGENTPAY_MOCK_RELAY_COUNTER;
     delete process.env.AGENTPAY_MOCK_SECRET_TOOL_ROOT;
+    delete process.env.AGENTPAY_MOCK_RAILGUN_ADDRESS;
+    delete process.env.AGENTPAY_MOCK_IMPORT_KEY_RECORD;
     process.exitCode = undefined;
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -2127,8 +2166,10 @@ test('runAdminSetupCli plan mode parses repeated token and attach-policy-id flag
   await withMockedAdminSetupEnv(async () => {
     const stdoutChunks = [];
     const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = (chunk, ...args) => {
-      if (typeof chunk === 'string' && chunk.trimStart().startsWith('{')) {
+    // Capture every string stdout write: `--json` output must be exactly one parseable document.
+    // (Binary chunks are the node:test runner's own serialized events, not CLI output.)
+    process.stdout.write = (chunk) => {
+      if (typeof chunk === 'string') {
         stdoutChunks.push(chunk);
       }
       return true;
@@ -2165,7 +2206,7 @@ test('runAdminSetupCli plan mode forwards restore and backup flags', async () =>
   await withMockedAdminSetupEnv(async () => {
     const stdoutChunks = [];
     const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = (chunk, ...args) => {
+    process.stdout.write = (chunk) => {
       if (typeof chunk === 'string' && chunk.trimStart().startsWith('{')) {
         stdoutChunks.push(chunk);
       }
@@ -2188,9 +2229,10 @@ test('runAdminSetupCli plan mode forwards restore and backup flags', async () =>
 
     const payload = JSON.parse(stdoutChunks.join('').trim());
     const rustArgs = payload?.walletSetup?.rustCommand?.args ?? [];
-    const importFlagIndex = rustArgs.indexOf('--import-vault-private-key-file');
+    const importFlagIndex = rustArgs.indexOf('--import-vault-private-key-fd');
     assert.ok(importFlagIndex >= 0);
-    assert.equal(rustArgs[importFlagIndex + 1], '<decrypted from backup at runtime>');
+    assert.equal(rustArgs[importFlagIndex + 1], '3');
+    assert.equal(rustArgs.includes('--import-vault-private-key-file'), false);
   });
 });
 
@@ -2217,7 +2259,7 @@ test('runAdminSetupCli plan mode reuses the current wallet for attach-bootstrap-
 
     const stdoutChunks = [];
     const originalStdoutWrite = process.stdout.write.bind(process.stdout);
-    process.stdout.write = (chunk, ...args) => {
+    process.stdout.write = (chunk) => {
       if (typeof chunk === 'string' && chunk.trimStart().startsWith('{')) {
         stdoutChunks.push(chunk);
       }
@@ -2465,38 +2507,32 @@ test('runAdminSetupCli warns when bootstrap cleanup cannot scrub a failed explic
   });
 });
 
-test('runAdminSetupCli warns when temporary wallet import key cleanup fails after restore', async () => {
+test('runAdminSetupCli restore hands the decrypted key to Rust over fd 3 without writing a key file', async () => {
   await withTrustedRootDaemonSocket(async (trustedSocket) => {
-    await withMockedAdminSetupEnv(async ({ agentpayHome }) => {
+    await withMockedAdminSetupEnv(async ({ agentpayHome, tempRoot }) => {
       const walletBackup = await import(
-        walletBackupModulePath.href + `?case=${Date.now()}-restore-cleanup-warning`
+        walletBackupModulePath.href + `?case=${Date.now()}-restore-fd3-handoff`
       );
+      const privateKeyHex = '11'.repeat(32);
       const backupPath = path.join(agentpayHome, 'restore-wallet.json');
       const backup = walletBackup.createEncryptedWalletBackup({
-        privateKeyHex: '11'.repeat(32),
+        privateKeyHex,
         sourceVaultKeyId: '00000000-0000-0000-0000-000000000001',
         password: 'backup-secret',
       });
       walletBackup.writeEncryptedWalletBackupFile(backupPath, backup);
+      const recordPath = path.join(tempRoot, 'import-key-record.json');
+      process.env.AGENTPAY_MOCK_IMPORT_KEY_RECORD = recordPath;
 
-      const stderrChunks = [];
-      const originalStderrWrite = process.stderr.write.bind(process.stderr);
-      const originalRmSync = fs.rmSync;
-      process.stderr.write = (chunk, ...args) => {
-        stderrChunks.push(String(chunk));
-        return originalStderrWrite(chunk, ...args);
-      };
-      fs.rmSync = (targetPath, ...args) => {
-        if (path.basename(path.resolve(String(targetPath))).startsWith('wallet-import-key-')) {
-          throw new Error('delete failed');
-        }
-        return originalRmSync.call(fs, targetPath, ...args);
+      const writtenPaths = [];
+      const originalWriteFileSync = fs.writeFileSync;
+      fs.writeFileSync = (targetPath, ...args) => {
+        writtenPaths.push(String(targetPath));
+        return originalWriteFileSync.call(fs, targetPath, ...args);
       };
 
       try {
-        const adminSetup = await loadModule(
-          `${Date.now()}-run-setup-restore-import-key-cleanup-warning`,
-        );
+        const adminSetup = await loadModule(`${Date.now()}-run-setup-restore-fd3-handoff`);
         let promptCount = 0;
         await withMockedPrompt(
           () => {
@@ -2514,19 +2550,32 @@ test('runAdminSetupCli warns when temporary wallet import key cleanup fails afte
               '--restore-wallet-from',
               backupPath,
               '--bootstrap-output',
-              path.join(agentpayHome, 'bootstrap-restore-cleanup-warning.json'),
+              path.join(agentpayHome, 'bootstrap-restore-fd3.json'),
               '--json',
             ]);
           },
         );
       } finally {
-        process.stderr.write = originalStderrWrite;
-        fs.rmSync = originalRmSync;
+        fs.writeFileSync = originalWriteFileSync;
       }
 
-      assert.match(
-        stderrChunks.join(''),
-        /warning: failed to delete temporary wallet import key file:/u,
+      const record = JSON.parse(fs.readFileSync(recordPath, 'utf8'));
+      const importFlagIndex = record.args.indexOf('--import-vault-private-key-fd');
+      assert.ok(importFlagIndex >= 0);
+      assert.equal(record.args[importFlagIndex + 1], '3');
+      assert.equal(record.args.includes('--import-vault-private-key-file'), false);
+      assert.equal(record.args.join(' ').includes(privateKeyHex), false);
+      assert.equal(
+        record.importedKeySha256,
+        crypto.createHash('sha256').update(privateKeyHex).digest('hex'),
+      );
+      assert.deepEqual(
+        writtenPaths.filter((value) => path.basename(value).startsWith('wallet-import-key-')),
+        [],
+      );
+      assert.deepEqual(
+        fs.readdirSync(agentpayHome).filter((name) => name.startsWith('wallet-import-key-')),
+        [],
       );
     });
   });
@@ -2640,6 +2689,52 @@ test('runAdminSetupCli completes setup with mocked rust binaries and keychain', 
       const redactedBootstrap = JSON.parse(fs.readFileSync(bootstrapPath, 'utf8'));
       assert.equal(redactedBootstrap.agent_auth_token, '<redacted>');
       assert.equal(redactedBootstrap.agent_auth_token_redacted, true);
+    });
+  });
+});
+
+test('runAdminSetupCli --json keeps stdout a single JSON document and reports the railgun address in the payload', async () => {
+  await withTrustedRootDaemonSocket(async (trustedSocket) => {
+    await withMockedAdminSetupEnv(async ({ agentpayHome }) => {
+      const railgunAddress = `0zk${'1'.repeat(60)}`;
+      process.env.AGENTPAY_MOCK_RAILGUN_ADDRESS = railgunAddress;
+      const stdoutChunks = [];
+      const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+      // Every string write is CLI output; binary chunks are the node:test runner's own events.
+      process.stdout.write = (chunk, ...args) => {
+        if (typeof chunk !== 'string') {
+          return originalStdoutWrite(chunk, ...args);
+        }
+        stdoutChunks.push(chunk);
+        return true;
+      };
+
+      try {
+        const adminSetup = await loadModule(`${Date.now()}-run-setup-json-purity`);
+        await withMockedPrompt('vault-secret', async () => {
+          await adminSetup.runAdminSetupCli([
+            '--yes',
+            '--daemon-socket',
+            trustedSocket,
+            '--bootstrap-output',
+            path.join(agentpayHome, 'bootstrap-json-purity.json'),
+            '--json',
+          ]);
+        });
+      } finally {
+        process.stdout.write = originalStdoutWrite;
+      }
+
+      const stdout = stdoutChunks.join('');
+      assert.doesNotMatch(stdout, /Railgun shielded address/u);
+      const payload = JSON.parse(stdout);
+      assert.equal(payload.command, 'setup');
+      assert.equal(payload.railgunAddress, railgunAddress);
+
+      const updatedConfig = JSON.parse(
+        fs.readFileSync(path.join(agentpayHome, 'config.json'), 'utf8'),
+      );
+      assert.equal(updatedConfig.wallet?.railgunAddress, railgunAddress);
     });
   });
 });
@@ -2936,6 +3031,8 @@ test('runAdminSetupCli builds the managed-state probe socket under a root-create
           '}',
           "if (args[0] === '-n' && args[1] === '/bin/bash') {",
           "  fs.writeFileSync(probeScriptPath, String(args[3] ?? ''), 'utf8');",
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: JavaScript source text for a generated mock script
+          "  fs.writeFileSync(`${probeScriptPath}.flag`, String(args[2] ?? ''), 'utf8');",
           "  process.stderr.write('failed to initialize daemon\\nCaused by: failed to decrypt state (wrong password or tampered file)\\n');",
           '  process.exit(1);',
           '}',
@@ -2971,6 +3068,11 @@ test('runAdminSetupCli builds the managed-state probe socket under a root-create
       assert.match(captured, /mktemp -d/u);
       assert.match(captured, /agentpay-managed-state-probe-XXXXXX/u);
       assert.match(captured, /daemon_socket="\$temp_root\/daemon\.sock"/u);
+      // The probe must not run as a login shell (root profile scripts) and must pipe the
+      // password instead of using a here-string, which bash may spill to a temp file.
+      assert.equal(fs.readFileSync(`${probeScriptPath}.flag`, 'utf8'), '-c');
+      assert.doesNotMatch(captured, /<<</u);
+      assert.match(captured, /printf '%s\\n' "\$vault_password" \| "\$daemon_bin"/u);
     });
   });
 });
@@ -3235,7 +3337,7 @@ test('runAdminSetupCli reinstalls when launchd metadata looks current but no man
   });
 });
 
-test('runAdminSetupCli forwards AGENTPAY_RELAY_DAEMON_TOKEN into the root install command environment', async () => {
+test('runAdminSetupCli forwards AGENTPAY_RELAY_DAEMON_TOKEN to the root install helper on stdin, never on argv', async () => {
   await withTrustedRootDaemonSocket(async (trustedSocket) => {
     await withMockedAdminSetupEnv(async ({ agentpayHome, toolDir }) => {
       const installMarkerPath = path.join(agentpayHome, 'install-marker-relay-token.txt');
@@ -3257,14 +3359,20 @@ test('runAdminSetupCli forwards AGENTPAY_RELAY_DAEMON_TOKEN into the root instal
           "if (args[0] === '-n' && args[1] === '/bin/test') {",
           '  process.exit(1);',
           '}',
+          `if (args[0] === '-n' && args.some((value) => String(value).includes(${JSON.stringify(HOST_MANAGED.installScriptName)}))) {`,
+          "  let stdin = '';",
+          "  process.stdin.setEncoding('utf8');",
+          "  process.stdin.on('data', (chunk) => { stdin += chunk; });",
+          "  process.stdin.on('end', () => {",
+          "    fs.writeFileSync(relayTokenMarker, JSON.stringify({ args, stdin }), 'utf8');",
+          '    if (installMarker) {',
+          "      fs.writeFileSync(installMarker, 'installed\\n', 'utf8');",
+          '    }',
+          '    process.exit(0);',
+          '  });',
+          '  return;',
+          '}',
           "if (args[0] === '-n') {",
-          `  if (installMarker && args.some((value) => String(value).includes(${JSON.stringify(HOST_MANAGED.installScriptName)}))) {`,
-          "    fs.writeFileSync(installMarker, 'installed\\n', 'utf8');",
-          '  }',
-          "  const relayTokenArg = args.find((value) => String(value).startsWith('AGENTPAY_RELAY_DAEMON_TOKEN='));",
-          '  if (relayTokenArg) {',
-          "    fs.writeFileSync(relayTokenMarker, String(relayTokenArg).slice('AGENTPAY_RELAY_DAEMON_TOKEN='.length), 'utf8');",
-          '  }',
           '  process.exit(0);',
           '}',
           'process.exit(0);',
@@ -3292,9 +3400,16 @@ test('runAdminSetupCli forwards AGENTPAY_RELAY_DAEMON_TOKEN into the root instal
         delete process.env.AGENTPAY_RELAY_DAEMON_TOKEN;
       }
 
+      const recorded = JSON.parse(fs.readFileSync(relayTokenMarkerPath, 'utf8'));
+      assert.equal(recorded.stdin, 'vault-secret\nrelay-daemon-token-1234567890abcdef\n');
+      assert.ok(recorded.args.includes('--vault-password-stdin'));
+      assert.ok(recorded.args.includes('--relay-token-stdin'));
+      assert.equal(recorded.args.includes('/usr/bin/env'), false);
       assert.equal(
-        fs.readFileSync(relayTokenMarkerPath, 'utf8'),
-        'relay-daemon-token-1234567890abcdef',
+        recorded.args.some((value) =>
+          String(value).includes('relay-daemon-token-1234567890abcdef'),
+        ),
+        false,
       );
     });
   });
@@ -3646,4 +3761,106 @@ test('runAdminTuiCli warns when cleanup fails after a non-zero passthrough exit'
       );
     });
   });
+});
+
+async function withSimulatedSudoInvocation(fn) {
+  const geteuidDescriptor = Object.getOwnPropertyDescriptor(process, 'geteuid');
+  const originalSudoUid = process.env.SUDO_UID;
+  Object.defineProperty(process, 'geteuid', {
+    value: () => 0,
+    configurable: true,
+  });
+  process.env.SUDO_UID = '501';
+  try {
+    await fn();
+  } finally {
+    if (originalSudoUid === undefined) {
+      delete process.env.SUDO_UID;
+    } else {
+      process.env.SUDO_UID = originalSudoUid;
+    }
+    if (geteuidDescriptor) {
+      Object.defineProperty(process, 'geteuid', geteuidDescriptor);
+    } else {
+      delete process.geteuid;
+    }
+  }
+}
+
+test('runAdminSetupCli and runAdminTuiCli refuse sudo-wrapped invocations before doing any work', async () => {
+  await withMockedAdminSetupEnv(async () => {
+    const adminSetup = await loadModule(`${Date.now()}-sudo-guard`);
+    await withSimulatedSudoInvocation(async () => {
+      await assert.rejects(
+        () => adminSetup.runAdminSetupCli(['--plan', '--json']),
+        /run `agentpay admin setup` as your normal local user, not with sudo/u,
+      );
+      await assert.rejects(
+        () => adminSetup.runAdminTuiCli(['--json']),
+        /run `agentpay admin tui` as your normal local user, not with sudo/u,
+      );
+    });
+  });
+});
+
+test('buildManagedDaemonInstallSecretTransport keeps secrets on stdin lines behind explicit flags', async () => {
+  const adminSetup = await loadModule(`${Date.now()}-secret-transport`);
+
+  assert.deepEqual(
+    adminSetup.buildManagedDaemonInstallSecretTransport({ vaultPassword: 'vault-secret' }),
+    { flags: ['--vault-password-stdin'], stdin: 'vault-secret\n' },
+  );
+  assert.deepEqual(
+    adminSetup.buildManagedDaemonInstallSecretTransport({
+      vaultPassword: 'vault-secret',
+      relayDaemonToken: '   ',
+    }),
+    { flags: ['--vault-password-stdin'], stdin: 'vault-secret\n' },
+  );
+  assert.deepEqual(
+    adminSetup.buildManagedDaemonInstallSecretTransport({
+      vaultPassword: 'vault-secret',
+      relayDaemonToken: ' relay-token \n',
+    }),
+    {
+      flags: ['--vault-password-stdin', '--relay-token-stdin'],
+      stdin: 'vault-secret\nrelay-token\n',
+    },
+  );
+  assert.throws(
+    () =>
+      adminSetup.buildManagedDaemonInstallSecretTransport({
+        vaultPassword: 'vault-secret',
+        relayDaemonToken: 'relay\ntoken',
+      }),
+    /AGENTPAY_RELAY_DAEMON_TOKEN must not contain newlines/u,
+  );
+});
+
+test('isDaemonSocketUnavailableError only matches missing or refused daemon sockets', async () => {
+  const adminSetup = await loadModule(`${Date.now()}-socket-unavailable`);
+
+  assert.equal(
+    adminSetup.isDaemonSocketUnavailableError(
+      new adminSetup.DaemonSocketUnavailableError('missing', 'ENOENT'),
+    ),
+    true,
+  );
+  assert.equal(
+    adminSetup.isDaemonSocketUnavailableError(
+      new adminSetup.DaemonSocketUnavailableError('refused', 'ECONNREFUSED'),
+    ),
+    true,
+  );
+  assert.equal(
+    adminSetup.isDaemonSocketUnavailableError(
+      new Error("daemon socket '/tmp/x' must be owned by root"),
+    ),
+    false,
+  );
+  assert.equal(
+    adminSetup.isDaemonSocketUnavailableError(Object.assign(new Error('x'), { code: 'EACCES' })),
+    false,
+  );
+  assert.equal(adminSetup.isDaemonSocketUnavailableError(null), false);
 });

@@ -11,7 +11,7 @@
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { keccak256, parseSignature, recoverAddress } from 'viem';
+import { keccak256, recoverAddress } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { Transaction as TempoTransaction } from 'viem/tempo';
 

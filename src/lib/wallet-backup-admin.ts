@@ -65,6 +65,8 @@ export async function exportEncryptedWalletBackup(
       stdin: `${options.vaultPassword}\n`,
       preSuppliedSecretStdin: 'vaultPassword',
       scrubSensitiveEnv: true,
+      // stdout carries the raw private key; never let it leak into error messages or objects.
+      sensitiveStdout: true,
     },
   );
 

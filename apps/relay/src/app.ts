@@ -1,16 +1,17 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { getConnInfo } from '@hono/node-server/conninfo';
 import { trpcServer } from '@hono/trpc-server';
-import { CacheError, cacheErrorCodes } from '@worldlibertyfinancial/agent-cache/errors';
 import {
-  type RelayApprovalRequestRecord,
   RelayCacheService,
   type RelayEncryptedUpdateRecord,
+  type RotatedApprovalCapability,
 } from '@worldlibertyfinancial/agent-cache/service';
 import { type Context, Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { z } from 'zod';
 import { env } from '@/env';
 import { hasAdminAccess, hasDaemonAccess } from '@/lib/auth';
+import { mapCacheError } from '@/lib/cache-errors';
 import { createContext, type RelayBindings } from '@/lib/core/create-context';
 import { log } from '@/lib/logger';
 import {
@@ -22,6 +23,8 @@ import {
 import { router } from '@/routers';
 
 const createCorsOrigins = (): string[] | '*' => {
+  // env.ts refuses to start a production relay without explicit origins, so the
+  // wildcard fallback is only reachable in development and test.
   return env.RELAY_ALLOWED_ORIGINS.length > 0 ? env.RELAY_ALLOWED_ORIGINS : '*';
 };
 
@@ -63,11 +66,28 @@ const badRequest = (c: Context<RelayBindings>, error: unknown) => {
     log.warn('request.invalid', { issues: error.issues });
     return c.json({ error: 'Invalid request payload', issues: error.issues }, 400);
   }
-  if (error instanceof CacheError) {
-    return c.json({ error: error.message }, 503);
+
+  const mapped = mapCacheError(error);
+  if (mapped) {
+    if (mapped.status === 503) {
+      log.error('cache.request_failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        path: c.req.path,
+      });
+    }
+    return c.json({ error: mapped.message }, mapped.status);
   }
-  const message = error instanceof Error ? error.message : 'Invalid request payload';
-  return c.json({ error: message }, 400);
+
+  if (error instanceof SyntaxError) {
+    return c.json({ error: 'Invalid request payload' }, 400);
+  }
+
+  // Unexpected failures never echo internal error text back to the caller.
+  log.error('request.failed', {
+    error: error instanceof Error ? error.message : 'Unknown error',
+    path: c.req.path,
+  });
+  return c.json({ error: 'Internal relay error' }, 500);
 };
 
 const notFound = (c: Context<RelayBindings>, message: string) => c.json({ error: message }, 404);
@@ -91,29 +111,53 @@ const adminApprovalFrontendBaseUrl = (): string | null => {
   return candidate ? candidate.replace(/\/$/u, '') : null;
 };
 
-const approvalCapabilityToken = (metadata: Record<string, string> | undefined): string | null => {
-  const candidate = metadata?.approvalCapabilityToken?.trim();
-  return candidate ? candidate : null;
-};
-
-const buildSecureApprovalUrl = (record: {
+/**
+ * Builds the secure approval deep link in the same shape the daemon emits:
+ * capability, daemon id and daemon X25519 key travel in the URL fragment so
+ * they never reach the frontend host or its access logs, and the approval page
+ * can refuse to encrypt when the relay-advertised key differs from `daemonKey`.
+ */
+const buildSecureApprovalUrl = (input: {
+  approvalCapability: string;
   approvalRequestId: string;
   daemonId: string;
-  status: string;
-  metadata?: Record<string, string>;
+  daemonPublicKey: string;
 }): string | null => {
-  if (record.status !== 'pending') {
-    return null;
-  }
-
   const baseUrl = adminApprovalFrontendBaseUrl();
-  const capability = approvalCapabilityToken(record.metadata);
-  if (!baseUrl || !capability) {
+  if (!baseUrl) {
     return null;
   }
 
-  return `${baseUrl}/approvals/${record.approvalRequestId}?daemonId=${record.daemonId}&approvalCapability=${capability}`;
+  const fragment = new URLSearchParams({
+    approvalCapability: input.approvalCapability,
+    daemonId: input.daemonId,
+    daemonKey: input.daemonPublicKey,
+  });
+  return `${baseUrl}/approvals/${encodeURIComponent(input.approvalRequestId)}#${fragment.toString()}`;
 };
+
+/**
+ * Identifies the submitting client for secure-link throttling. A proxy header
+ * is only honoured when the operator names it in RELAY_CLIENT_IP_HEADER;
+ * otherwise the socket address is used. Returns undefined when neither is
+ * available so an unknown client never shares a global lockout bucket.
+ */
+const resolveClientAddress = (c: Context<RelayBindings>): string | undefined => {
+  if (env.RELAY_CLIENT_IP_HEADER) {
+    const forwarded = c.req.header(env.RELAY_CLIENT_IP_HEADER)?.split(',')[0]?.trim();
+    return forwarded ? forwarded : undefined;
+  }
+
+  try {
+    return getConnInfo(c).remote.address ?? undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const INVALID_SECURE_LINK_MESSAGE = 'A valid secure approval link is required';
+const LOCKED_SECURE_LINK_MESSAGE =
+  'Secure approval link submissions are temporarily locked after repeated invalid attempts';
 
 const sha256Hex = (value: string): string => createHash('sha256').update(value).digest('hex');
 
@@ -190,6 +234,8 @@ export const createApp = (
     try {
       const input = await readJson(c.req.raw, daemonRegisterInputSchema);
       const daemonId = input.daemon.daemonId;
+      // A re-registration that changes the pinned daemon key fails with a cache
+      // conflict (409); rotation is only possible through admin.rekeyDaemon.
       const result = await cacheService.syncDaemonRegistration({
         ...input,
         agentKeys: input.agentKeys.map((agentKey) => ({ ...agentKey, daemonId })),
@@ -249,9 +295,14 @@ export const createApp = (
 
   app.get('/v1/daemons/:daemonId', async (c) => {
     const daemonId = c.req.param('daemonId');
-    const daemon = await cacheService.getDaemonProfile(daemonId);
+    let daemon: Awaited<ReturnType<RelayCacheService['getDaemonProfile']>>;
+    try {
+      daemon = await cacheService.getDaemonProfile(daemonId);
+    } catch (error) {
+      return badRequest(c, error);
+    }
     if (!daemon) {
-      return c.json({ error: `Unknown daemon '${daemonId}'` }, 404);
+      return notFound(c, 'Unknown daemon');
     }
     return c.json({
       daemonId: daemon.daemonId,
@@ -264,17 +315,25 @@ export const createApp = (
 
   app.get('/v1/daemons/:daemonId/approvals', async (c) => {
     const daemonId = c.req.param('daemonId');
-    const approvals = await cacheService.listApprovalRequests({ daemonId, limit: 200 });
-    return c.json(approvals.map(mapApprovalRecord));
+    try {
+      const approvals = await cacheService.listApprovalRequests({ daemonId, limit: 200 });
+      return c.json(approvals.map(mapApprovalRecord));
+    } catch (error) {
+      return badRequest(c, error);
+    }
   });
 
   app.get('/v1/approvals/:approvalId', async (c) => {
     const approvalId = c.req.param('approvalId');
-    const approval = await cacheService.getApprovalRequest(approvalId);
-    if (!approval) {
-      return c.json({ error: `Unknown approval '${approvalId}'` }, 404);
+    try {
+      const approval = await cacheService.getApprovalRequest(approvalId);
+      if (!approval) {
+        return notFound(c, 'Unknown approval');
+      }
+      return c.json(mapApprovalRecord(approval));
+    } catch (error) {
+      return badRequest(c, error);
     }
-    return c.json(mapApprovalRecord(approval));
   });
 
   app.post('/v1/admin/approvals/:approvalId/secure-link', async (c) => {
@@ -283,30 +342,34 @@ export const createApp = (
     }
 
     const approvalId = c.req.param('approvalId');
-    let approval: RelayApprovalRequestRecord;
+    let rotated: RotatedApprovalCapability;
+    let daemonPublicKey: string;
     try {
-      approval = await cacheService.rotateApprovalCapability(approvalId);
-    } catch (error) {
-      const cacheError = error as { code?: string; message?: string };
-      if (cacheError?.code === cacheErrorCodes.notFound) {
-        return notFound(c, cacheError.message ?? `Unknown approval '${approvalId}'`);
+      // Resolve the owning daemon's pinned key before rotating so a link is
+      // never invalidated without a usable replacement being returned.
+      const existing = await cacheService.getApprovalRequest(approvalId);
+      if (!existing) {
+        return notFound(c, `Unknown approval '${approvalId}'`);
       }
-
-      if (cacheError?.code === cacheErrorCodes.invalidPayload) {
+      const daemon = await cacheService.getDaemonProfile(existing.daemonId);
+      if (!daemon) {
         return conflict(
           c,
-          cacheError.message ?? `Approval '${approvalId}' cannot accept a new secure approval link`,
+          `Approval '${approvalId}' belongs to a daemon that is not registered with this relay`,
         );
       }
-
-      if (error instanceof CacheError) {
-        return c.json({ error: error.message }, 503);
-      }
-
-      throw error;
+      daemonPublicKey = daemon.daemonPublicKey;
+      rotated = await cacheService.rotateApprovalCapability(approvalId);
+    } catch (error) {
+      return badRequest(c, error);
     }
 
-    const approvalUrl = buildSecureApprovalUrl(approval);
+    const approvalUrl = buildSecureApprovalUrl({
+      approvalCapability: rotated.approvalCapability,
+      approvalRequestId: approvalId,
+      daemonId: rotated.approval.daemonId,
+      daemonPublicKey,
+    });
     if (!approvalUrl) {
       return conflict(
         c,
@@ -314,11 +377,14 @@ export const createApp = (
       );
     }
 
+    // The plaintext capability exists only in this response; the relay keeps
+    // nothing but its hash.
     return c.json({
-      approvalCapability: approvalCapabilityToken(approval.metadata),
+      approvalCapability: rotated.approvalCapability,
       approvalId,
       approvalUrl,
-      daemonId: approval.daemonId,
+      daemonId: rotated.approval.daemonId,
+      daemonPublicKey,
     });
   });
 
@@ -326,17 +392,43 @@ export const createApp = (
     const approvalId = c.req.param('approvalId');
     try {
       const input = await readJson(c.req.raw, submitPublicApprovalUpdateInputSchema);
-      const approval = await cacheService.getApprovalRequest(approvalId);
+      const clientAddress = resolveClientAddress(c);
 
+      // Lockouts are checked before any capability comparison so a locked
+      // approval (or client) is refused even when it presents a correct token.
+      const blockState = await cacheService.getApprovalCapabilityBlockState(
+        approvalId,
+        clientAddress,
+      );
+      if (blockState.blocked) {
+        return tooManyRequests(c, LOCKED_SECURE_LINK_MESSAGE);
+      }
+
+      const approval = await cacheService.getApprovalRequest(approvalId);
       if (!approval) {
         return notFound(c, `Unknown approval '${approvalId}'`);
       }
 
-      if (approval.daemonId !== input.daemonId) {
-        return conflict(
-          c,
-          `Approval '${approvalId}' belongs to daemon '${approval.daemonId}', not '${input.daemonId}'`,
+      // Records without a hash were never issued a secure link; they fail the
+      // same way as a wrong capability.
+      const expectedCapabilityHash = approval.metadata?.approvalCapabilityHash?.trim() ?? '';
+      const providedCapabilityHash = sha256Hex(input.approvalCapability.trim());
+      const capabilityMatches =
+        expectedCapabilityHash.length > 0 &&
+        constantTimeEquals(expectedCapabilityHash, providedCapabilityHash);
+
+      // A wrong daemon id and a wrong capability get the same uniform 401 so the
+      // response never reveals which daemon owns the approval.
+      if (!capabilityMatches || approval.daemonId !== input.daemonId) {
+        const failure = await cacheService.recordApprovalCapabilityFailure(
+          approvalId,
+          clientAddress,
         );
+        if (failure.blocked) {
+          return tooManyRequests(c, LOCKED_SECURE_LINK_MESSAGE);
+        }
+
+        return unauthorized(c, INVALID_SECURE_LINK_MESSAGE);
       }
 
       if (approval.status !== 'pending') {
@@ -344,27 +436,6 @@ export const createApp = (
           c,
           `Approval '${approvalId}' is '${approval.status}' and cannot accept new updates`,
         );
-      }
-
-      const expectedCapabilityHash = approval.metadata?.approvalCapabilityHash?.trim();
-      if (!expectedCapabilityHash) {
-        return conflict(
-          c,
-          `Approval '${approvalId}' requires a secure CLI-issued approval link; public relay submission is unavailable for this record`,
-        );
-      }
-
-      const providedCapabilityHash = sha256Hex(input.approvalCapability.trim());
-      if (!constantTimeEquals(expectedCapabilityHash, providedCapabilityHash)) {
-        const failure = await cacheService.recordApprovalCapabilityFailure(approvalId);
-        if (failure.blocked) {
-          return tooManyRequests(
-            c,
-            `Approval '${approvalId}' is temporarily locked after repeated invalid secure-link attempts`,
-          );
-        }
-
-        return unauthorized(c, `Approval '${approvalId}' requires a valid secure approval link`);
       }
 
       await cacheService.clearApprovalCapabilityFailures(approvalId);
@@ -404,17 +475,6 @@ export const createApp = (
         });
       } catch (error) {
         await cacheService.releaseApprovalCapabilityConsumption(approvalId, expectedCapabilityHash);
-        const cacheError = error as { code?: string; message?: string };
-        if (cacheError?.code === cacheErrorCodes.notFound) {
-          return notFound(c, cacheError.message ?? `Unknown approval '${approvalId}'`);
-        }
-
-        if (cacheError?.code === cacheErrorCodes.invalidPayload) {
-          return conflict(
-            c,
-            cacheError.message ?? `Approval '${approvalId}' already has a queued operator update`,
-          );
-        }
         throw error;
       }
 

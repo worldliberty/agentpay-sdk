@@ -129,7 +129,7 @@ AgentPay supports two payment setup paths.
   - asset needed for gas
   - funding URI
   - a rendered QR image if the host supports markdown images
-  - a `qrUrl` as fallback
+  - a third-party `qrUrl` only when the host cannot render inline images (opt in with `--qr-url`)
 
 ## Bitrefill Plugin Rule
 
@@ -226,4 +226,3 @@ AgentPay can pay for any MPP-enabled API using `agentpay mpp`. No API keys or ac
 ## Extra References
 
 - Read [references/capabilities.md](./references/capabilities.md) only when you need exact flags or examples.
-- Read [references/demo-walkthrough.md](./references/demo-walkthrough.md) only when you need a short live demo script.

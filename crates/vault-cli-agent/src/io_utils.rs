@@ -18,20 +18,12 @@ const GROUP_OTHER_WRITE_MODE_MASK: u32 = 0o022;
 const STICKY_BIT_MODE: u32 = 0o1000;
 
 pub(crate) fn resolve_agent_auth_token(
-    cli_value: Option<String>,
     env_value: Option<String>,
     from_stdin: bool,
     non_interactive: bool,
 ) -> Result<Zeroizing<String>> {
     if from_stdin {
         return read_secret_from_reader(std::io::stdin(), "agent auth token");
-    }
-
-    if let Some(value) = cli_value {
-        validate_secret(value.into(), "argument")?;
-        bail!(
-            "--agent-auth-token is disabled for security; use --agent-auth-token-stdin or AGENTPAY_AGENT_AUTH_TOKEN"
-        );
     }
 
     if let Some(value) = env_value {
@@ -154,11 +146,11 @@ mod tests {
 
     #[test]
     fn resolve_agent_auth_token_covers_env_and_non_interactive_paths() {
-        let token = resolve_agent_auth_token(None, Some("secret".to_string()), false, false)
+        let token = resolve_agent_auth_token(Some("secret".to_string()), false, false)
             .expect("environment token");
         assert_eq!(token.as_str(), "secret");
 
-        let err = resolve_agent_auth_token(None, None, false, true).expect_err("must fail");
+        let err = resolve_agent_auth_token(None, false, true).expect_err("must fail");
         assert!(err
             .to_string()
             .contains("agent auth token is required in non-interactive mode"));

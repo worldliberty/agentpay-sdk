@@ -40,6 +40,14 @@ pub enum PolicyType {
     PerChainMaxGasSpend,
     ManualApproval,
     Eip712Signing,
+    /// Per-tx cap on Railgun shield amounts.
+    PerTxMaxShieldAmount,
+    /// Rolling 24-hour cap on aggregate Railgun shield amounts.
+    DailyMaxShieldAmount,
+    /// Per-tx cap on Railgun unshield + private-transfer amounts.
+    PerTxMaxUnshieldAmount,
+    /// Rolling 24-hour cap on aggregate Railgun unshield + private-transfer amounts.
+    DailyMaxUnshieldAmount,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,6 +185,7 @@ impl SpendingPolicyWire {
             {
                 return Err("eip712_signing does not accept numeric limit fields");
             }
+            SpendingPolicy::validate_wire_network_scope(&networks)?;
 
             return Ok(SpendingPolicy {
                 id,
@@ -200,6 +209,7 @@ impl SpendingPolicyWire {
         if approval_type.is_some() {
             return Err("field `approval_type` is only valid for `eip712_signing`");
         }
+        SpendingPolicy::validate_wire_network_scope(&networks)?;
 
         let max_amount_wei = if SpendingPolicy::uses_amount_limit_field(policy_type) {
             max_amount_wei.ok_or("missing field `max_amount_wei`")?
@@ -219,7 +229,7 @@ impl SpendingPolicyWire {
             max_amount_wei.unwrap_or_default()
         };
 
-        Ok(SpendingPolicy {
+        let policy = SpendingPolicy {
             id,
             priority,
             policy_type,
@@ -236,7 +246,9 @@ impl SpendingPolicyWire {
             approval_type: None,
             enabled,
         }
-        .normalize_limits())
+        .normalize_limits();
+        policy.validate_wire_limits()?;
+        Ok(policy)
     }
 }
 
@@ -708,6 +720,10 @@ impl SpendingPolicy {
                 | PolicyType::WeeklyMaxSpending
                 | PolicyType::PerTxMaxSpending
                 | PolicyType::ManualApproval
+                | PolicyType::PerTxMaxShieldAmount
+                | PolicyType::DailyMaxShieldAmount
+                | PolicyType::PerTxMaxUnshieldAmount
+                | PolicyType::DailyMaxUnshieldAmount
         )
     }
 
@@ -855,6 +871,48 @@ impl SpendingPolicy {
 
         Ok(())
     }
+
+    /// Wire-format counterpart of [`Self::validate_network_scope`] with static
+    /// messages suitable for `serde::de::Error::custom`.
+    fn validate_wire_network_scope(networks: &EntityScope<u64>) -> Result<(), &'static str> {
+        Self::validate_network_scope(networks).map_err(|err| match err {
+            DomainError::EmptyScope { .. } => "network set scope must not be empty",
+            _ => "network set must not contain chain_id 0",
+        })
+    }
+
+    /// Re-applies the limit invariants enforced by the `new_*` constructors to
+    /// a policy that arrived over the wire (persisted state, admin API), so a
+    /// hand-edited or corrupted payload cannot smuggle in a zero cap or an
+    /// inverted manual-approval range.
+    fn validate_wire_limits(&self) -> Result<(), &'static str> {
+        if Self::uses_amount_limit_field(self.policy_type) {
+            if self.max_amount_wei == 0 {
+                return Err("max_amount_wei must be greater than zero");
+            }
+            if self
+                .min_amount_wei
+                .is_some_and(|min_amount_wei| min_amount_wei > self.max_amount_wei)
+            {
+                return Err("min_amount_wei must not exceed max_amount_wei");
+            }
+            return Ok(());
+        }
+
+        let limit = match self.policy_type {
+            PolicyType::DailyMaxTxCount => self.tx_count_limit(),
+            PolicyType::PerTxMaxFeePerGas => self.fee_per_gas_limit(),
+            PolicyType::PerTxMaxPriorityFeePerGas => self.priority_fee_per_gas_limit(),
+            PolicyType::PerTxMaxCalldataBytes => self.calldata_bytes_limit(),
+            PolicyType::PerChainMaxGasSpend => self.gas_spend_limit_wei(),
+            _ => return Ok(()),
+        };
+        if limit.unwrap_or_default() == 0 {
+            return Err("policy limit must be greater than zero");
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -889,6 +947,25 @@ impl PolicyAttachment {
     }
 }
 
+/// Discriminator stored on a [`SpendEvent`] so action-kind-scoped policies
+/// (`PerTxMaxShieldAmount`, `DailyMaxUnshieldAmount`, …) can filter the
+/// rolling spend history. Legacy persisted events without this field
+/// deserialize to [`ActionKind::Other`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionKind {
+    /// Spend recorded for any non-Railgun, non-categorized action. The
+    /// default keeps deserialization of pre-Railgun spend logs lossless.
+    #[default]
+    Other,
+    /// Railgun `shield` (public → shielded).
+    Shield,
+    /// Railgun `unshield` (shielded → public).
+    Unshield,
+    /// Railgun shielded-to-shielded private transfer.
+    PrivateTransfer,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpendEvent {
     pub agent_key_id: Uuid,
@@ -898,6 +975,8 @@ pub struct SpendEvent {
     #[serde(with = "u128_as_decimal_string")]
     pub amount_wei: u128,
     pub at: OffsetDateTime,
+    #[serde(default)]
+    pub action_kind: ActionKind,
 }
 
 fn map_evm_recipient_scope(scope: EntityScope<EvmAddress>) -> EntityScope<RecipientId> {

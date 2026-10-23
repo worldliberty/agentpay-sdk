@@ -1723,7 +1723,7 @@ mod windows_integration_tests {
         let backend = WindowsTpmSignerBackend::new();
         let key = backend
             .create_vault_key(KeyCreateRequest::Import {
-                private_key_hex: format!("0x{}", "11".repeat(32)),
+                private_key_hex: format!("0x{}", "11".repeat(32)).into(),
             })
             .await
             .expect("must import key");

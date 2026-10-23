@@ -16,6 +16,7 @@ async function loadAdminCaller(headerValue?: string) {
     createEncryptedUpdate: vi.fn(),
     listApprovalRequests: vi.fn().mockResolvedValue([]),
     listDaemons: vi.fn().mockResolvedValue([]),
+    rekeyDaemon: vi.fn(),
   };
 
   const caller = router.createCaller({
@@ -46,6 +47,7 @@ async function loadDaemonCaller(headerValue?: string) {
   const { router } = await import('@/routers');
   const cache = {
     claimEncryptedUpdates: vi.fn().mockResolvedValue([]),
+    syncDaemonRegistration: vi.fn(),
   };
 
   const caller = router.createCaller({
@@ -112,7 +114,7 @@ describe('adminProcedure error mapping', () => {
       caller.admin.submitEncryptedUpdate({
         daemonId,
         payload: {
-          algorithm: 'x25519-xchacha20poly1305-v1',
+          algorithm: 'x25519-hkdf-xchacha20poly1305-v2',
           ciphertextBase64: 'aa',
           encapsulatedKeyBase64: 'bb',
           nonceBase64: 'cc',
@@ -144,7 +146,7 @@ describe('adminProcedure error mapping', () => {
       caller.admin.submitEncryptedUpdate({
         daemonId,
         payload: {
-          algorithm: 'x25519-xchacha20poly1305-v1',
+          algorithm: 'x25519-hkdf-xchacha20poly1305-v2',
           ciphertextBase64: 'aa',
           encapsulatedKeyBase64: 'bb',
           nonceBase64: 'cc',
@@ -175,7 +177,7 @@ describe('adminProcedure error mapping', () => {
       caller.admin.submitEncryptedUpdate({
         daemonId,
         payload: {
-          algorithm: 'x25519-xchacha20poly1305-v1',
+          algorithm: 'x25519-hkdf-xchacha20poly1305-v2',
           ciphertextBase64: 'aa',
           encapsulatedKeyBase64: 'bb',
           nonceBase64: 'cc',
@@ -205,7 +207,7 @@ describe('adminProcedure error mapping', () => {
       caller.admin.submitEncryptedUpdate({
         daemonId,
         payload: {
-          algorithm: 'x25519-xchacha20poly1305-v1',
+          algorithm: 'x25519-hkdf-xchacha20poly1305-v2',
           ciphertextBase64: 'aa',
           encapsulatedKeyBase64: 'bb',
           nonceBase64: 'cc',
@@ -217,5 +219,107 @@ describe('adminProcedure error mapping', () => {
       code: 'BAD_REQUEST',
       message: 'Manual approval updates require a target approval request id',
     });
+  });
+});
+
+describe('daemon identity binding', () => {
+  const registerInput = {
+    agentKeys: [],
+    approvalRequests: [],
+    daemon: {
+      daemonId,
+      daemonPublicKey: '33'.repeat(32),
+      ethereumAddress: '0x3333333333333333333333333333333333333333',
+      lastSeenAt: new Date().toISOString(),
+      registeredAt: new Date().toISOString(),
+      signerBackend: 'software',
+      status: 'active' as const,
+      updatedAt: new Date().toISOString(),
+    },
+    policies: [],
+  };
+
+  it('maps a re-registration that changes the pinned daemon key to TRPC CONFLICT', async () => {
+    const { cache, caller } = await loadDaemonCaller(daemonToken);
+    cache.syncDaemonRegistration.mockRejectedValue(
+      new CacheError({
+        code: cacheErrorCodes.conflict,
+        message: `Daemon '${daemonId}' is already registered with a different public key; rotate it explicitly with rekeyDaemon`,
+        operation: 'syncDaemonRegistration',
+      }),
+    );
+
+    await expect(caller.daemon.register(registerInput)).rejects.toMatchObject({
+      code: 'CONFLICT',
+      message: expect.stringContaining('different public key'),
+    });
+  });
+
+  it('requires admin auth to rekey a daemon', async () => {
+    const { cache, caller } = await loadAdminCaller();
+
+    await expect(
+      caller.admin.rekeyDaemon({ daemonId, daemonPublicKey: '44'.repeat(32) }),
+    ).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    expect(cache.rekeyDaemon).not.toHaveBeenCalled();
+  });
+
+  it('rekeys a registered daemon for admin callers and maps unknown daemons to NOT_FOUND', async () => {
+    const { cache, caller } = await loadAdminCaller('Bearer relay-admin-token-1234567890abcd');
+    cache.rekeyDaemon.mockResolvedValueOnce({
+      daemonId,
+      daemonPublicKey: '44'.repeat(32),
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    await expect(
+      caller.admin.rekeyDaemon({ daemonId, daemonPublicKey: '44'.repeat(32) }),
+    ).resolves.toEqual({
+      daemonId,
+      daemonPublicKey: '44'.repeat(32),
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    expect(cache.rekeyDaemon).toHaveBeenCalledWith({ daemonId, daemonPublicKey: '44'.repeat(32) });
+
+    cache.rekeyDaemon.mockRejectedValueOnce(
+      new CacheError({
+        code: cacheErrorCodes.notFound,
+        message: `Unknown daemon '${daemonId}'`,
+        operation: 'rekeyDaemon',
+      }),
+    );
+    await expect(
+      caller.admin.rekeyDaemon({ daemonId, daemonPublicKey: '44'.repeat(32) }),
+    ).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  });
+});
+
+describe('admin approval listing', () => {
+  it('never returns capability-bearing URLs, tokens, or hashes', async () => {
+    const { cache, caller } = await loadAdminCaller('Bearer relay-admin-token-1234567890abcd');
+    cache.listApprovalRequests.mockResolvedValue([
+      {
+        approvalRequestId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        daemonId,
+        destination: '0x3333333333333333333333333333333333333333',
+        metadata: {
+          approvalCapabilityHash: 'ab'.repeat(32),
+          approvalCapabilityToken: 'cd'.repeat(32),
+          source: 'daemon',
+        },
+        requestedAt: '2026-01-01T00:00:00.000Z',
+        status: 'pending',
+        transactionType: 'transfer_native',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      },
+    ]);
+
+    const result = await caller.admin.listApprovalRequests();
+    const serialized = JSON.stringify(result);
+
+    expect(result.items[0]).not.toHaveProperty('approvalUrl');
+    expect(result.items[0]?.metadata).toEqual({ source: 'daemon' });
+    expect(serialized).not.toContain('ab'.repeat(32));
+    expect(serialized).not.toContain('cd'.repeat(32));
   });
 });

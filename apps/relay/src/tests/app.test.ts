@@ -17,7 +17,6 @@ const approvalRecord = {
   daemonId,
   destination: ethereumAddress,
   metadata: {
-    approvalCapabilityToken: 'dd'.repeat(32),
     approvalCapabilityHash: createHash('sha256').update('dd'.repeat(32)).digest('hex'),
   },
   requestedAt: new Date().toISOString(),
@@ -30,7 +29,7 @@ const publicApprovalUpdatePayload = {
   approvalCapability: 'dd'.repeat(32),
   daemonId,
   envelope: {
-    algorithm: 'x25519-xchacha20poly1305-v1',
+    algorithm: 'x25519-hkdf-xchacha20poly1305-v2',
     ciphertext: 'aa'.repeat(64),
     ephemeralPublicKey: 'bb'.repeat(32),
     nonce: 'cc'.repeat(24),
@@ -55,10 +54,19 @@ const registerPayload = {
   approvalRequests: [],
 };
 
-async function loadCreateApp() {
+const unblocked = () => vi.fn().mockResolvedValue({ blocked: false, blockedUntil: null });
+
+async function loadCreateApp(extraEnv: Record<string, string | undefined> = {}) {
   process.env.RELAY_ADMIN_TOKEN = 'relay-admin-token-1234567890abcd';
   process.env.RELAY_BASE_URL = 'https://relay.example';
   process.env.RELAY_DAEMON_TOKEN = daemonToken;
+  for (const [key, value] of Object.entries(extraEnv)) {
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
   vi.resetModules();
   const module = await import('@/app');
   return module.createApp;
@@ -81,6 +89,9 @@ describe('relay app', () => {
     process.env.RELAY_ADMIN_TOKEN = 'relay-admin-token-1234567890abcd';
     process.env.RELAY_BASE_URL = 'https://relay.example';
     process.env.RELAY_DAEMON_TOKEN = daemonToken;
+    delete process.env.RELAY_CLIENT_IP_HEADER;
+    delete process.env.RELAY_ALLOWED_ORIGINS;
+    process.env.NODE_ENV = 'test';
   });
 
   it('serves healthz', async () => {
@@ -197,7 +208,7 @@ describe('relay app', () => {
         createdAt: new Date().toISOString(),
         daemonId,
         payload: {
-          algorithm: 'x25519-xchacha20poly1305-v1',
+          algorithm: 'x25519-hkdf-xchacha20poly1305-v2',
           ciphertextBase64: 'deadbeef',
           encapsulatedKeyBase64: 'beadfeed',
           nonceBase64: 'abcd',
@@ -311,6 +322,7 @@ describe('relay app', () => {
       createEncryptedUpdate,
       getApprovalRequest,
       hasActiveApprovalUpdate,
+      getApprovalCapabilityBlockState: unblocked(),
       ping: vi.fn(),
       releaseApprovalCapabilityConsumption: vi.fn(),
     } as unknown as RelayCacheService);
@@ -341,7 +353,7 @@ describe('relay app', () => {
         source: 'approval_console',
       },
       payload: {
-        algorithm: 'x25519-xchacha20poly1305-v1',
+        algorithm: 'x25519-hkdf-xchacha20poly1305-v2',
         ciphertextBase64: publicApprovalUpdatePayload.envelope.ciphertext,
         encapsulatedKeyBase64: publicApprovalUpdatePayload.envelope.ephemeralPublicKey,
         nonceBase64: publicApprovalUpdatePayload.envelope.nonce,
@@ -361,13 +373,17 @@ describe('relay app', () => {
     const createApp = await loadCreateApp();
     const rotatedCapability = 'ee'.repeat(32);
     const rotateApprovalCapability = vi.fn().mockResolvedValue({
-      ...approvalRecord,
-      metadata: {
-        approvalCapabilityHash: createHash('sha256').update(rotatedCapability).digest('hex'),
-        approvalCapabilityToken: rotatedCapability,
+      approval: {
+        ...approvalRecord,
+        metadata: {
+          approvalCapabilityHash: createHash('sha256').update(rotatedCapability).digest('hex'),
+        },
       },
+      approvalCapability: rotatedCapability,
     });
     const app = createApp({
+      getApprovalRequest: vi.fn().mockResolvedValue(approvalRecord),
+      getDaemonProfile: vi.fn().mockResolvedValue(registerPayload.daemon),
       ping: vi.fn(),
       rotateApprovalCapability,
     } as unknown as RelayCacheService);
@@ -388,8 +404,9 @@ describe('relay app', () => {
     await expect(response.json()).resolves.toEqual({
       approvalCapability: rotatedCapability,
       approvalId: approvalRequestId,
-      approvalUrl: `https://relay.example/approvals/${approvalRequestId}?daemonId=${daemonId}&approvalCapability=${rotatedCapability}`,
+      approvalUrl: `https://relay.example/approvals/${approvalRequestId}#approvalCapability=${rotatedCapability}&daemonId=${daemonId}&daemonKey=${daemonPublicKey}`,
       daemonId,
+      daemonPublicKey,
     });
   });
 
@@ -413,16 +430,11 @@ describe('relay app', () => {
     });
   });
 
-  it('returns not found for secure-link reissue on unknown approvals', async () => {
+  it('returns not found for secure-link reissue on unknown approvals without rotating', async () => {
     const createApp = await loadCreateApp();
-    const rotateApprovalCapability = vi.fn().mockRejectedValue(
-      new CacheError({
-        code: cacheErrorCodes.notFound,
-        message: `Unknown approval '${approvalRequestId}'`,
-        operation: 'rotateApprovalCapability',
-      }),
-    );
+    const rotateApprovalCapability = vi.fn();
     const app = createApp({
+      getApprovalRequest: vi.fn().mockResolvedValue(null),
       ping: vi.fn(),
       rotateApprovalCapability,
     } as unknown as RelayCacheService);
@@ -438,9 +450,34 @@ describe('relay app', () => {
     );
 
     expect(response.status).toBe(404);
+    expect(rotateApprovalCapability).not.toHaveBeenCalled();
     await expect(response.json()).resolves.toEqual({
       error: `Unknown approval '${approvalRequestId}'`,
     });
+  });
+
+  it('refuses secure-link reissue without rotating when the owning daemon is not registered', async () => {
+    const createApp = await loadCreateApp();
+    const rotateApprovalCapability = vi.fn();
+    const app = createApp({
+      getApprovalRequest: vi.fn().mockResolvedValue(approvalRecord),
+      getDaemonProfile: vi.fn().mockResolvedValue(null),
+      ping: vi.fn(),
+      rotateApprovalCapability,
+    } as unknown as RelayCacheService);
+
+    const response = await app.request(
+      `http://relay.test/v1/admin/approvals/${approvalRequestId}/secure-link`,
+      {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer relay-admin-token-1234567890abcd',
+        },
+      },
+    );
+
+    expect(response.status).toBe(409);
+    expect(rotateApprovalCapability).not.toHaveBeenCalled();
   });
 
   it('rejects secure-link reissue for non-pending approvals', async () => {
@@ -453,6 +490,8 @@ describe('relay app', () => {
       }),
     );
     const app = createApp({
+      getApprovalRequest: vi.fn().mockResolvedValue({ ...approvalRecord, status: 'completed' }),
+      getDaemonProfile: vi.fn().mockResolvedValue(registerPayload.daemon),
       ping: vi.fn(),
       rotateApprovalCapability,
     } as unknown as RelayCacheService);
@@ -481,6 +520,7 @@ describe('relay app', () => {
       createEncryptedUpdate,
       getApprovalRequest,
       hasActiveApprovalUpdate: vi.fn(),
+      getApprovalCapabilityBlockState: unblocked(),
       ping: vi.fn(),
     } as unknown as RelayCacheService);
 
@@ -502,16 +542,23 @@ describe('relay app', () => {
     });
   });
 
-  it('rejects public approval updates when daemon ownership does not match', async () => {
+  it('rejects public approval updates when daemon ownership does not match without leaking the owner', async () => {
     const createApp = await loadCreateApp();
     const createEncryptedUpdate = vi.fn();
+    const recordApprovalCapabilityFailure = vi.fn().mockResolvedValue({
+      attempts: 1,
+      blocked: false,
+      blockedUntil: null,
+    });
     const app = createApp({
       createEncryptedUpdate,
+      recordApprovalCapabilityFailure,
       getApprovalRequest: vi.fn().mockResolvedValue({
         ...approvalRecord,
         daemonId: '44'.repeat(32),
       }),
       hasActiveApprovalUpdate: vi.fn(),
+      getApprovalCapabilityBlockState: unblocked(),
       ping: vi.fn(),
     } as unknown as RelayCacheService);
 
@@ -526,8 +573,12 @@ describe('relay app', () => {
       },
     );
 
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(401);
     expect(createEncryptedUpdate).not.toHaveBeenCalled();
+    expect(recordApprovalCapabilityFailure).toHaveBeenCalledWith(approvalRequestId, undefined);
+    const body = await response.json();
+    expect(body).toEqual({ error: 'A valid secure approval link is required' });
+    expect(JSON.stringify(body)).not.toContain('44'.repeat(32));
   });
 
   it('rejects public approval updates once the approval is not pending', async () => {
@@ -540,6 +591,7 @@ describe('relay app', () => {
         status: 'approved',
       }),
       hasActiveApprovalUpdate: vi.fn(),
+      getApprovalCapabilityBlockState: unblocked(),
       ping: vi.fn(),
     } as unknown as RelayCacheService);
 
@@ -570,6 +622,7 @@ describe('relay app', () => {
       createEncryptedUpdate,
       getApprovalRequest: vi.fn().mockResolvedValue(approvalRecord),
       hasActiveApprovalUpdate: vi.fn().mockResolvedValue(true),
+      getApprovalCapabilityBlockState: unblocked(),
       ping: vi.fn(),
     } as unknown as RelayCacheService);
 
@@ -603,6 +656,7 @@ describe('relay app', () => {
       createEncryptedUpdate,
       getApprovalRequest: vi.fn().mockResolvedValue(approvalRecord),
       hasActiveApprovalUpdate: vi.fn(),
+      getApprovalCapabilityBlockState: unblocked(),
       ping: vi.fn(),
       recordApprovalCapabilityFailure,
     } as unknown as RelayCacheService);
@@ -622,10 +676,10 @@ describe('relay app', () => {
     );
 
     expect(response.status).toBe(401);
-    expect(recordApprovalCapabilityFailure).toHaveBeenCalledWith(approvalRequestId);
+    expect(recordApprovalCapabilityFailure).toHaveBeenCalledWith(approvalRequestId, undefined);
     expect(createEncryptedUpdate).not.toHaveBeenCalled();
-    await expect(response.json()).resolves.toMatchObject({
-      error: `Approval '${approvalRequestId}' requires a valid secure approval link`,
+    await expect(response.json()).resolves.toEqual({
+      error: 'A valid secure approval link is required',
     });
   });
 
@@ -641,6 +695,7 @@ describe('relay app', () => {
       createEncryptedUpdate,
       getApprovalRequest: vi.fn().mockResolvedValue(approvalRecord),
       hasActiveApprovalUpdate: vi.fn(),
+      getApprovalCapabilityBlockState: unblocked(),
       ping: vi.fn(),
       recordApprovalCapabilityFailure,
     } as unknown as RelayCacheService);
@@ -661,9 +716,79 @@ describe('relay app', () => {
 
     expect(response.status).toBe(429);
     expect(createEncryptedUpdate).not.toHaveBeenCalled();
-    await expect(response.json()).resolves.toMatchObject({
-      error: `Approval '${approvalRequestId}' is temporarily locked after repeated invalid secure-link attempts`,
+    await expect(response.json()).resolves.toEqual({
+      error:
+        'Secure approval link submissions are temporarily locked after repeated invalid attempts',
     });
+  });
+
+  it('refuses a locked approval before comparing even a correct capability', async () => {
+    const createApp = await loadCreateApp();
+    const getApprovalRequest = vi.fn().mockResolvedValue(approvalRecord);
+    const getApprovalCapabilityBlockState = vi.fn().mockResolvedValue({
+      blocked: true,
+      blockedUntil: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const consumeApprovalCapability = vi.fn();
+    const app = createApp({
+      consumeApprovalCapability,
+      createEncryptedUpdate: vi.fn(),
+      getApprovalCapabilityBlockState,
+      getApprovalRequest,
+      ping: vi.fn(),
+    } as unknown as RelayCacheService);
+
+    const response = await app.request(
+      `http://relay.test/v1/approvals/${approvalRequestId}/updates`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+        },
+        body: JSON.stringify(publicApprovalUpdatePayload),
+      },
+    );
+
+    expect(response.status).toBe(429);
+    expect(getApprovalCapabilityBlockState).toHaveBeenCalledWith(approvalRequestId, undefined);
+    expect(getApprovalRequest).not.toHaveBeenCalled();
+    expect(consumeApprovalCapability).not.toHaveBeenCalled();
+  });
+
+  it('throttles by the trusted client address header when one is configured', async () => {
+    const createApp = await loadCreateApp({ RELAY_CLIENT_IP_HEADER: 'X-Forwarded-For' });
+    const getApprovalCapabilityBlockState = unblocked();
+    const recordApprovalCapabilityFailure = vi.fn().mockResolvedValue({
+      attempts: 1,
+      blocked: false,
+      blockedUntil: null,
+    });
+    const app = createApp({
+      createEncryptedUpdate: vi.fn(),
+      getApprovalCapabilityBlockState,
+      getApprovalRequest: vi.fn().mockResolvedValue(approvalRecord),
+      ping: vi.fn(),
+      recordApprovalCapabilityFailure,
+    } as unknown as RelayCacheService);
+
+    const response = await app.request(
+      `http://relay.test/v1/approvals/${approvalRequestId}/updates`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-forwarded-for': '203.0.113.7, 10.0.0.1',
+        },
+        body: JSON.stringify({
+          ...publicApprovalUpdatePayload,
+          approvalCapability: 'ee'.repeat(32),
+        }),
+      },
+    );
+
+    expect(response.status).toBe(401);
+    expect(getApprovalCapabilityBlockState).toHaveBeenCalledWith(approvalRequestId, '203.0.113.7');
+    expect(recordApprovalCapabilityFailure).toHaveBeenCalledWith(approvalRequestId, '203.0.113.7');
   });
 
   it('rejects reused approval capability links after the first queued update', async () => {
@@ -675,6 +800,7 @@ describe('relay app', () => {
       createEncryptedUpdate,
       getApprovalRequest: vi.fn().mockResolvedValue(approvalRecord),
       hasActiveApprovalUpdate: vi.fn().mockResolvedValue(false),
+      getApprovalCapabilityBlockState: unblocked(),
       ping: vi.fn(),
     } as unknown as RelayCacheService);
 
@@ -712,6 +838,7 @@ describe('relay app', () => {
       createEncryptedUpdate,
       getApprovalRequest: vi.fn().mockResolvedValue(approvalRecord),
       hasActiveApprovalUpdate: vi.fn().mockResolvedValue(false),
+      getApprovalCapabilityBlockState: unblocked(),
       ping: vi.fn(),
       releaseApprovalCapabilityConsumption,
     } as unknown as RelayCacheService);
@@ -754,6 +881,7 @@ describe('relay app', () => {
       createEncryptedUpdate,
       getApprovalRequest: vi.fn().mockResolvedValue(approvalRecord),
       hasActiveApprovalUpdate: vi.fn().mockResolvedValue(false),
+      getApprovalCapabilityBlockState: unblocked(),
       ping: vi.fn(),
       releaseApprovalCapabilityConsumption,
     } as unknown as RelayCacheService);
@@ -787,6 +915,7 @@ describe('relay app', () => {
       createEncryptedUpdate: vi.fn(),
       getApprovalRequest,
       hasActiveApprovalUpdate: vi.fn(),
+      getApprovalCapabilityBlockState: unblocked(),
       ping: vi.fn(),
     } as unknown as RelayCacheService);
 
@@ -800,7 +929,7 @@ describe('relay app', () => {
         body: JSON.stringify({
           daemonId,
           envelope: {
-            algorithm: 'x25519-xchacha20poly1305-v1',
+            algorithm: 'x25519-hkdf-xchacha20poly1305-v2',
             ciphertext: 'not-hex',
             ephemeralPublicKey: 'bb'.repeat(32),
             nonce: 'cc'.repeat(24),
@@ -814,5 +943,134 @@ describe('relay app', () => {
     await expect(response.json()).resolves.toMatchObject({
       error: 'Invalid request payload',
     });
+  });
+
+  it('maps a daemon re-registration with a changed public key to 409', async () => {
+    const createApp = await loadCreateApp();
+    const syncDaemonRegistration = vi.fn().mockRejectedValue(
+      new CacheError({
+        code: cacheErrorCodes.conflict,
+        message: `Daemon '${daemonId}' is already registered with a different public key; rotate it explicitly with rekeyDaemon`,
+        operation: 'syncDaemonRegistration',
+      }),
+    );
+    const app = createApp({
+      ping: vi.fn(),
+      syncDaemonRegistration,
+    } as unknown as RelayCacheService);
+
+    const response = await app.request('http://relay.test/v1/daemon/register', {
+      method: 'POST',
+      headers: daemonAuthHeaders(),
+      body: JSON.stringify(registerPayload),
+    });
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      error: expect.stringContaining('already registered with a different public key'),
+    });
+  });
+
+  it('maps unknown daemon feedback targets to 404', async () => {
+    const createApp = await loadCreateApp();
+    const app = createApp({
+      ping: vi.fn(),
+      submitUpdateFeedback: vi.fn().mockRejectedValue(
+        new CacheError({
+          code: cacheErrorCodes.notFound,
+          message: 'Unknown update',
+          operation: 'submitUpdateFeedback',
+        }),
+      ),
+    } as unknown as RelayCacheService);
+
+    const response = await app.request('http://relay.test/v1/daemon/submit-feedback', {
+      method: 'POST',
+      headers: daemonAuthHeaders(),
+      body: JSON.stringify({
+        claimToken: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        daemonId,
+        updateId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        status: 'applied',
+      }),
+    });
+
+    expect(response.status).toBe(404);
+  });
+
+  it('returns generic messages for cache outages and unexpected errors', async () => {
+    const createApp = await loadCreateApp();
+    const app = createApp({
+      claimEncryptedUpdates: vi.fn().mockRejectedValue(
+        new CacheError({
+          code: cacheErrorCodes.connectionFailed,
+          key: 'agentpay:relay:daemon:secret-key-name',
+          message: 'connect ECONNREFUSED 10.1.2.3:6379',
+          operation: 'claimEncryptedUpdates',
+        }),
+      ),
+      ping: vi.fn(),
+      submitUpdateFeedback: vi.fn().mockRejectedValue(new Error('internal detail /srv/relay')),
+    } as unknown as RelayCacheService);
+
+    const outage = await app.request('http://relay.test/v1/daemon/poll-updates', {
+      method: 'POST',
+      headers: daemonAuthHeaders(),
+      body: JSON.stringify({ daemonId, leaseSeconds: 30, limit: 5 }),
+    });
+    expect(outage.status).toBe(503);
+    await expect(outage.json()).resolves.toEqual({
+      error: 'Relay storage is temporarily unavailable',
+    });
+
+    const unexpected = await app.request('http://relay.test/v1/daemon/submit-feedback', {
+      method: 'POST',
+      headers: daemonAuthHeaders(),
+      body: JSON.stringify({
+        claimToken: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        daemonId,
+        updateId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        status: 'applied',
+      }),
+    });
+    expect(unexpected.status).toBe(500);
+    await expect(unexpected.json()).resolves.toEqual({ error: 'Internal relay error' });
+
+    const malformedJson = await app.request('http://relay.test/v1/daemon/poll-updates', {
+      method: 'POST',
+      headers: daemonAuthHeaders(),
+      body: '{not json',
+    });
+    expect(malformedJson.status).toBe(400);
+    await expect(malformedJson.json()).resolves.toEqual({ error: 'Invalid request payload' });
+  });
+
+  it('refuses to start in production without explicit CORS origins', async () => {
+    await expect(
+      loadCreateApp({ NODE_ENV: 'production', RELAY_ALLOWED_ORIGINS: undefined }),
+    ).rejects.toThrow(/RELAY_ALLOWED_ORIGINS/);
+    await expect(
+      loadCreateApp({ NODE_ENV: 'development', RELAY_ALLOWED_ORIGINS: '*' }),
+    ).rejects.toThrow(/explicit origins/);
+  });
+
+  it('only reflects configured CORS origins in production', async () => {
+    const createApp = await loadCreateApp({
+      NODE_ENV: 'production',
+      RELAY_ALLOWED_ORIGINS: 'https://console.example',
+    });
+    const app = createApp({ ping: vi.fn() } as unknown as RelayCacheService);
+
+    const allowed = await app.request('http://relay.test/v1/approvals/x', {
+      method: 'OPTIONS',
+      headers: { origin: 'https://console.example', 'access-control-request-method': 'POST' },
+    });
+    expect(allowed.headers.get('access-control-allow-origin')).toBe('https://console.example');
+
+    const denied = await app.request('http://relay.test/v1/approvals/x', {
+      method: 'OPTIONS',
+      headers: { origin: 'https://evil.example', 'access-control-request-method': 'POST' },
+    });
+    expect(denied.headers.get('access-control-allow-origin')).toBeNull();
   });
 });

@@ -14,6 +14,17 @@ export interface WlfiConfig {
   wallet?: WalletProfile;
   chains?: Record<string, ChainProfile>;
   tokens?: Record<string, TokenProfile>;
+  /// Tombstones for builtin chain/token seeds the user explicitly removed.
+  /// `readConfig` re-merges the builtin defaults on every read, so without
+  /// these markers `removeChainProfile`/`removeTokenProfile` would silently
+  /// resurrect the removed entries. Token entries use `<token>` for a whole
+  /// token or `<token>:<chain>` for a single chain of a builtin token.
+  removedBuiltins?: RemovedBuiltinProfiles;
+}
+
+export interface RemovedBuiltinProfiles {
+  chains?: string[];
+  tokens?: string[];
 }
 
 export type WalletKeyAlgorithm = 'secp256k1' | 'ed25519';
@@ -26,6 +37,11 @@ export interface WalletProfile {
   address?: string;
   solanaPublicKey?: string;
   solanaAddress?: string;
+  /// Railgun shielded address (`0zk1…`) derived deterministically from the
+  /// wallet's secp256k1 vault key. Surfaced by `agentpay config show` and the
+  /// `agentpay wallet --json` summary. Populated after a successful
+  /// `agentpay admin setup` call; absent until the Phase B derivation lands.
+  railgunAddress?: string;
   agentKeyId?: string;
   policyAttachment: string;
   attachedPolicyIds?: string[];
@@ -106,6 +122,7 @@ export interface TokenProfileEntry {
 
 export const AGENTPAY_DIRNAME = '.agentpay';
 export const CONFIG_FILENAME = 'config.json';
+export const TELEMETRY_FILENAME = 'telemetry.json';
 
 const PRIVATE_DIR_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
@@ -357,223 +374,215 @@ function defaultTokenPolicy(
   };
 }
 
+/**
+ * Builtin chains that are seeded into every config, keyed by their `BUILTIN_CHAINS`
+ * key with the operator-facing display name. Everything else about the seeded
+ * profile (chainId, family, rpcUrl) is derived from `BUILTIN_CHAINS` so the two
+ * tables cannot drift apart.
+ */
+const DEFAULT_SEEDED_CHAIN_NAMES: Record<string, string> = {
+  eth: 'ETH',
+  bsc: 'BSC',
+  tempo: 'Tempo',
+  'tempo-testnet': 'Tempo Testnet (Moderato)',
+  'solana-mainnet': 'Solana',
+  'solana-devnet': 'Solana Devnet',
+  'solana-testnet': 'Solana Testnet',
+};
+
 function defaultChainProfiles(): Record<string, ChainProfile> {
+  const profiles: Record<string, ChainProfile> = {};
+  for (const [key, name] of Object.entries(DEFAULT_SEEDED_CHAIN_NAMES)) {
+    const builtin = BUILTIN_CHAINS[key];
+    if (!builtin) {
+      throw new Error(
+        `builtin chain '${key}' is missing; seeded chains must exist in BUILTIN_CHAINS`,
+      );
+    }
+    profiles[key] = {
+      chainId: builtin.chainId,
+      name,
+      family: builtin.family,
+      rpcUrl: builtin.rpcUrl,
+    };
+  }
+  return profiles;
+}
+
+function seededChainKeyForChainId(chainId: number): string | undefined {
+  return Object.keys(DEFAULT_SEEDED_CHAIN_NAMES).find(
+    (key) => BUILTIN_CHAINS[key]?.chainId === chainId,
+  );
+}
+
+/**
+ * Seeded token profiles are derived from `BUILTIN_TOKENS`: every builtin token
+ * chain whose chainId belongs to a seeded chain is included, keyed by the seeded
+ * chain key (so the builtin `ethereum` entry seeds as `eth`). Builtin spending
+ * policies are intentionally dropped so seeded assets start unrestricted.
+ */
+function defaultTokenProfiles(): Record<string, TokenProfile> {
+  const profiles: Record<string, TokenProfile> = {};
+  for (const [tokenKey, builtin] of Object.entries(BUILTIN_TOKENS)) {
+    const chains: Record<string, TokenChainProfile> = {};
+    for (const chainProfile of Object.values(builtin.chains ?? {})) {
+      const seededChainKey = seededChainKeyForChainId(chainProfile.chainId);
+      if (!seededChainKey || chains[seededChainKey]) {
+        continue;
+      }
+      chains[seededChainKey] = {
+        chainId: chainProfile.chainId,
+        isNative: chainProfile.isNative,
+        ...(chainProfile.address ? { address: chainProfile.address } : {}),
+        decimals: chainProfile.decimals,
+      };
+    }
+    if (Object.keys(chains).length === 0) {
+      continue;
+    }
+    profiles[tokenKey] = {
+      name: builtin.name ?? builtin.symbol,
+      symbol: builtin.symbol,
+      destinationOverrides: [],
+      manualApprovalPolicies: [],
+      chains,
+    };
+  }
+  return profiles;
+}
+
+const REMOVED_BUILTIN_TOKEN_CHAIN_SEPARATOR = ':';
+
+interface NormalizedRemovedBuiltinProfiles {
+  chains: string[];
+  tokens: string[];
+}
+
+function normalizeRemovedBuiltinList(value: unknown, label: string): string[] {
+  if (value == null) {
+    return [];
+  }
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
+    throw new Error(`config field ${label} must be an array of strings`);
+  }
+  return [
+    ...new Set(
+      (value as string[]).map((entry) => entry.trim().toLowerCase()).filter((entry) => entry),
+    ),
+  ].sort();
+}
+
+function normalizeRemovedBuiltins(
+  value: RemovedBuiltinProfiles | null | undefined,
+): NormalizedRemovedBuiltinProfiles {
+  if (value == null) {
+    return { chains: [], tokens: [] };
+  }
+  if (!isPlainObject(value)) {
+    throw new Error('config field removedBuiltins must be an object');
+  }
   return {
-    eth: {
-      chainId: 1,
-      name: 'ETH',
-      family: 'evm',
-      rpcUrl: DEFAULT_ETH_RPC_URL,
-    },
-    bsc: {
-      chainId: 56,
-      name: 'BSC',
-      family: 'evm',
-      rpcUrl: DEFAULT_BSC_RPC_URL,
-    },
-    tempo: {
-      chainId: 4217,
-      name: 'Tempo',
-      family: 'evm',
-      rpcUrl: DEFAULT_TEMPO_RPC_URL,
-    },
-    'tempo-testnet': {
-      chainId: 42431,
-      name: 'Tempo Testnet (Moderato)',
-      family: 'evm',
-      rpcUrl: DEFAULT_TEMPO_TESTNET_RPC_URL,
-    },
-    'solana-mainnet': {
-      chainId: 900000001,
-      name: 'Solana',
-      family: 'solana',
-      rpcUrl: DEFAULT_SOLANA_MAINNET_RPC_URL,
-    },
-    'solana-devnet': {
-      chainId: 900000002,
-      name: 'Solana Devnet',
-      family: 'solana',
-      rpcUrl: DEFAULT_SOLANA_DEVNET_RPC_URL,
-    },
-    'solana-testnet': {
-      chainId: 900000003,
-      name: 'Solana Testnet',
-      family: 'solana',
-      rpcUrl: DEFAULT_SOLANA_TESTNET_RPC_URL,
-    },
+    chains: normalizeRemovedBuiltinList(value.chains, 'removedBuiltins.chains'),
+    tokens: normalizeRemovedBuiltinList(value.tokens, 'removedBuiltins.tokens'),
   };
 }
 
-function defaultTokenProfiles(): Record<string, TokenProfile> {
+function compactRemovedBuiltins(
+  value: RemovedBuiltinProfiles | null | undefined,
+): RemovedBuiltinProfiles | undefined {
+  const normalized = normalizeRemovedBuiltins(value);
+  if (normalized.chains.length === 0 && normalized.tokens.length === 0) {
+    return undefined;
+  }
   return {
-    bnb: {
-      name: 'BNB',
-      symbol: 'BNB',
-      destinationOverrides: [],
-      manualApprovalPolicies: [],
-      chains: {
-        bsc: {
-          chainId: 56,
-          isNative: true,
-          decimals: 18,
-        },
-      },
-    },
-    eth: {
-      name: 'ETH',
-      symbol: 'ETH',
-      destinationOverrides: [],
-      manualApprovalPolicies: [],
-      chains: {
-        eth: {
-          chainId: 1,
-          isNative: true,
-          decimals: 18,
-        },
-      },
-    },
-    sol: {
-      name: 'Solana',
-      symbol: 'SOL',
-      destinationOverrides: [],
-      manualApprovalPolicies: [],
-      chains: {
-        'solana-mainnet': {
-          chainId: 900000001,
-          isNative: true,
-          decimals: 9,
-        },
-        'solana-devnet': {
-          chainId: 900000002,
-          isNative: true,
-          decimals: 9,
-        },
-        'solana-testnet': {
-          chainId: 900000003,
-          isNative: true,
-          decimals: 9,
-        },
-      },
-    },
-    usd: {
-      name: 'USD',
-      symbol: 'USD',
-      destinationOverrides: [],
-      manualApprovalPolicies: [],
-      chains: {
-        tempo: {
-          chainId: 4217,
-          isNative: true,
-          decimals: 6,
-        },
-      },
-    },
-    usd1: {
-      name: 'USD1',
-      symbol: 'USD1',
-      destinationOverrides: [],
-      manualApprovalPolicies: [],
-      chains: {
-        eth: {
-          chainId: 1,
-          isNative: false,
-          address: DEFAULT_USD1_ADDRESS,
-          decimals: 18,
-        },
-        bsc: {
-          chainId: 56,
-          isNative: false,
-          address: DEFAULT_USD1_ADDRESS,
-          decimals: 18,
-        },
-      },
-    },
-    pathusd: {
-      name: 'PATH/USD',
-      symbol: 'PATH/USD',
-      destinationOverrides: [],
-      manualApprovalPolicies: [],
-      chains: {
-        tempo: {
-          chainId: 4217,
-          isNative: false,
-          address: DEFAULT_PATHUSD_ADDRESS,
-          decimals: 6,
-        },
-        'tempo-testnet': {
-          chainId: 42431,
-          isNative: false,
-          address: DEFAULT_PATHUSD_ADDRESS,
-          decimals: 6,
-        },
-      },
-    },
-    'usdc.e': {
-      name: 'Bridged USDC (Stargate)',
-      symbol: 'USDC.e',
-      destinationOverrides: [],
-      manualApprovalPolicies: [],
-      chains: {
-        tempo: {
-          chainId: 4217,
-          isNative: false,
-          address: DEFAULT_TEMPO_USDCE_ADDRESS,
-          decimals: 6,
-        },
-        'tempo-testnet': {
-          chainId: 42431,
-          isNative: false,
-          address: DEFAULT_TEMPO_TESTNET_USDCE_ADDRESS,
-          decimals: 6,
-        },
-      },
-    },
-    usdc: {
-      name: 'USDC',
-      symbol: 'USDC',
-      destinationOverrides: [],
-      manualApprovalPolicies: [],
-      chains: {
-        'solana-mainnet': {
-          chainId: 900000001,
-          isNative: false,
-          address: DEFAULT_SOLANA_USDC_MINT,
-          decimals: 6,
-        },
-        'solana-devnet': {
-          chainId: 900000002,
-          isNative: false,
-          address: DEFAULT_SOLANA_DEVNET_USDC_MINT,
-          decimals: 6,
-        },
-      },
-    },
+    ...(normalized.chains.length > 0 ? { chains: normalized.chains } : {}),
+    ...(normalized.tokens.length > 0 ? { tokens: normalized.tokens } : {}),
   };
+}
+
+function removedBuiltinTokenChainEntry(tokenKey: string, chainKey: string): string {
+  return `${tokenKey}${REMOVED_BUILTIN_TOKEN_CHAIN_SEPARATOR}${chainKey}`;
+}
+
+function withRemovedBuiltins(
+  existing: RemovedBuiltinProfiles | undefined,
+  additions: Partial<NormalizedRemovedBuiltinProfiles>,
+): RemovedBuiltinProfiles | undefined {
+  const normalized = normalizeRemovedBuiltins(existing);
+  return compactRemovedBuiltins({
+    chains: [...normalized.chains, ...(additions.chains ?? [])],
+    tokens: [...normalized.tokens, ...(additions.tokens ?? [])],
+  });
+}
+
+function withoutRemovedBuiltins(
+  existing: RemovedBuiltinProfiles | undefined,
+  removals: { chains?: (entry: string) => boolean; tokens?: (entry: string) => boolean },
+): RemovedBuiltinProfiles | undefined {
+  const normalized = normalizeRemovedBuiltins(existing);
+  return compactRemovedBuiltins({
+    chains: normalized.chains.filter((entry) => !removals.chains?.(entry)),
+    tokens: normalized.tokens.filter((entry) => !removals.tokens?.(entry)),
+  });
+}
+
+function seededChainRemovals(chainKey: string): Partial<NormalizedRemovedBuiltinProfiles> {
+  return Object.hasOwn(defaultChainProfiles(), chainKey) ? { chains: [chainKey] } : {};
+}
+
+function seededTokenRemovals(
+  tokenKey: string,
+  chainKey?: string,
+): Partial<NormalizedRemovedBuiltinProfiles> {
+  const seeded = defaultTokenProfiles()[tokenKey];
+  if (!seeded) {
+    return {};
+  }
+  if (chainKey === undefined) {
+    return { tokens: [tokenKey] };
+  }
+  return Object.hasOwn(seeded.chains ?? {}, chainKey)
+    ? { tokens: [removedBuiltinTokenChainEntry(tokenKey, chainKey)] }
+    : {};
 }
 
 function mergeDefaultChainProfiles(
   profiles: Record<string, ChainProfile> | undefined,
+  removed: NormalizedRemovedBuiltinProfiles = { chains: [], tokens: [] },
 ): Record<string, ChainProfile> {
+  const seeded = Object.fromEntries(
+    Object.entries(defaultChainProfiles()).filter(([key]) => !removed.chains.includes(key)),
+  );
   return {
-    ...defaultChainProfiles(),
+    ...seeded,
     ...(profiles ?? {}),
   };
 }
 
 function mergeDefaultTokenProfiles(
   profiles: Record<string, TokenProfile> | undefined,
+  removed: NormalizedRemovedBuiltinProfiles = { chains: [], tokens: [] },
 ): Record<string, TokenProfile> {
-  const merged = Object.fromEntries(
-    Object.entries(defaultTokenProfiles()).map(([key, profile]) => [
-      key,
-      {
-        ...profile,
-        destinationOverrides: [...(profile.destinationOverrides ?? [])],
-        manualApprovalPolicies: [...(profile.manualApprovalPolicies ?? [])],
-        chains: { ...(profile.chains ?? {}) },
-      },
-    ]),
-  ) as Record<string, TokenProfile>;
+  const merged: Record<string, TokenProfile> = {};
+  for (const [key, profile] of Object.entries(defaultTokenProfiles())) {
+    if (removed.tokens.includes(key)) {
+      continue;
+    }
+    const chains = Object.fromEntries(
+      Object.entries(profile.chains ?? {}).filter(
+        ([chainKey]) => !removed.tokens.includes(removedBuiltinTokenChainEntry(key, chainKey)),
+      ),
+    );
+    if (Object.keys(chains).length === 0) {
+      continue;
+    }
+    merged[key] = {
+      ...profile,
+      destinationOverrides: [...(profile.destinationOverrides ?? [])],
+      manualApprovalPolicies: [...(profile.manualApprovalPolicies ?? [])],
+      chains,
+    };
+  }
 
   for (const [key, profile] of Object.entries(profiles ?? {})) {
     const existing = merged[key];
@@ -677,7 +686,7 @@ const SOLANA_PUBLIC_KEY_HEX_PATTERN = /^(?:0x)?[0-9a-f]{64}$/iu;
 const SOLANA_CHAIN_IDS = new Set([900000001, 900000002, 900000003]);
 
 function assertValidEvmAddress(value: string, label: string): string {
-  const normalized = value.trim();
+  const normalized = assertString(value, label).trim();
   if (!ADDRESS_PATTERN.test(normalized)) {
     throw new Error(`${label} must be a valid EVM address`);
   }
@@ -712,8 +721,40 @@ function assertOptionalSolanaAddress(
   return normalized;
 }
 
+// Bounds chosen to match `RailgunAddress::from_str` in vault-domain — keep
+// the two sides in lockstep when the encoding evolves.
+const RAILGUN_ADDRESS_PREFIX = '0zk1';
+const RAILGUN_ADDRESS_MIN_LENGTH = 32;
+const RAILGUN_ADDRESS_MAX_LENGTH = 256;
+const RAILGUN_ADDRESS_CHAR_PATTERN = /^[A-Za-z0-9_]+$/u;
+
+function assertOptionalRailgunAddress(
+  value: string | null | undefined,
+  label: string,
+): string | undefined {
+  const normalized = assertOptionalTrimmedString(value, label);
+  if (!normalized) {
+    return undefined;
+  }
+  if (!normalized.startsWith(RAILGUN_ADDRESS_PREFIX)) {
+    throw new Error(`${label} must start with "${RAILGUN_ADDRESS_PREFIX}"`);
+  }
+  if (
+    normalized.length < RAILGUN_ADDRESS_MIN_LENGTH ||
+    normalized.length > RAILGUN_ADDRESS_MAX_LENGTH
+  ) {
+    throw new Error(
+      `${label} length ${normalized.length} is outside the supported range (${RAILGUN_ADDRESS_MIN_LENGTH}-${RAILGUN_ADDRESS_MAX_LENGTH})`,
+    );
+  }
+  if (!RAILGUN_ADDRESS_CHAR_PATTERN.test(normalized)) {
+    throw new Error(`${label} contains characters outside the supported alphanumeric/_ set`);
+  }
+  return normalized;
+}
+
 function assertValidSolanaAddress(value: string, label: string): string {
-  const normalized = value.trim();
+  const normalized = assertString(value, label).trim();
   if (!SOLANA_ADDRESS_PATTERN.test(normalized)) {
     throw new Error(`${label} must be a valid Solana address`);
   }
@@ -721,7 +762,7 @@ function assertValidSolanaAddress(value: string, label: string): string {
 }
 
 function assertValidEvmOrSolanaAddress(value: string, label: string): string {
-  const normalized = value.trim();
+  const normalized = assertString(value, label).trim();
   if (ADDRESS_PATTERN.test(normalized) || SOLANA_ADDRESS_PATTERN.test(normalized)) {
     return normalized;
   }
@@ -768,6 +809,23 @@ function assertOptionalTokenAmount(
   return value;
 }
 
+function assertString(value: unknown, label: string): string {
+  if (typeof value !== 'string') {
+    throw new Error(`${label} must be a string`);
+  }
+  return value;
+}
+
+function assertOptionalArray<T>(value: T[] | null | undefined, label: string): T[] {
+  if (value == null) {
+    return [];
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${label} must be an array`);
+  }
+  return value;
+}
+
 function assertOptionalTrimmedString(
   value: string | null | undefined,
   label: string,
@@ -775,7 +833,7 @@ function assertOptionalTrimmedString(
   if (value == null) {
     return undefined;
   }
-  const normalized = value.trim();
+  const normalized = assertString(value, label).trim();
   if (!normalized) {
     return undefined;
   }
@@ -827,6 +885,7 @@ function normalizeWalletProfile(
       'wallet.solanaPublicKey',
     ),
     solanaAddress: assertOptionalSolanaAddress(profile.solanaAddress, 'wallet.solanaAddress'),
+    railgunAddress: assertOptionalRailgunAddress(profile.railgunAddress, 'wallet.railgunAddress'),
     agentKeyId: assertOptionalTrimmedString(profile.agentKeyId, 'wallet.agentKeyId'),
     policyAttachment: assertRequiredTrimmedString(
       profile.policyAttachment,
@@ -1031,17 +1090,28 @@ function normalizeTokenProfile(key: string, profile: TokenProfile): TokenProfile
     throw new Error('token profile key is required');
   }
 
-  const symbol = profile.symbol?.trim();
-  if (!symbol) {
-    throw new Error(`token profile '${normalizedKey}' symbol is required`);
+  if (!isPlainObject(profile)) {
+    throw new Error(`token profile '${normalizedKey}' must be an object`);
   }
+  const symbol = assertRequiredTrimmedString(
+    profile.symbol,
+    `token profile '${normalizedKey}' symbol`,
+  );
   const name = assertOptionalTrimmedString(profile.name, `token profile '${normalizedKey}' name`);
+  if (profile.chains != null && !isPlainObject(profile.chains)) {
+    throw new Error(`token profile '${normalizedKey}' chains must be an object`);
+  }
 
   const normalizedChains: Record<string, TokenChainProfile> = {};
   for (const [chainKey, chainProfile] of Object.entries(profile.chains ?? {})) {
     const normalizedChainKey = chainKey.trim().toLowerCase();
     if (!normalizedChainKey) {
       throw new Error(`token profile '${normalizedKey}' contains an empty chain key`);
+    }
+    if (!isPlainObject(chainProfile)) {
+      throw new Error(
+        `token profile '${normalizedKey}' chain '${normalizedChainKey}' must be an object`,
+      );
     }
     normalizedChains[normalizedChainKey] = normalizeTokenChainProfile(
       normalizedKey,
@@ -1054,12 +1124,14 @@ function normalizeTokenProfile(key: string, profile: TokenProfile): TokenProfile
     name,
     symbol,
     defaultPolicy: normalizeTokenPolicyProfile(normalizedKey, 'default', profile.defaultPolicy),
-    destinationOverrides: (profile.destinationOverrides ?? []).map((item) =>
-      normalizeTokenDestinationOverrideProfile(normalizedKey, item),
-    ),
-    manualApprovalPolicies: (profile.manualApprovalPolicies ?? []).map((item) =>
-      normalizeTokenManualApprovalProfile(normalizedKey, item),
-    ),
+    destinationOverrides: assertOptionalArray(
+      profile.destinationOverrides,
+      `token profile '${normalizedKey}' destinationOverrides`,
+    ).map((item) => normalizeTokenDestinationOverrideProfile(normalizedKey, item)),
+    manualApprovalPolicies: assertOptionalArray(
+      profile.manualApprovalPolicies,
+      `token profile '${normalizedKey}' manualApprovalPolicies`,
+    ).map((item) => normalizeTokenManualApprovalProfile(normalizedKey, item)),
     chains: normalizedChains,
   };
 }
@@ -1164,8 +1236,7 @@ function isStableRootOwnedSymlink(stats: fs.Stats, targetPath: string): boolean 
   const parentPath = path.dirname(targetPath);
   const parentStats = readLstat(parentPath);
   return Boolean(
-    parentStats &&
-      parentStats.isDirectory() &&
+    parentStats?.isDirectory() &&
       typeof parentStats.uid === 'number' &&
       parentStats.uid === 0 &&
       (parentStats.mode & GROUP_OTHER_WRITE_MODE_MASK) === 0,
@@ -1499,11 +1570,82 @@ function normalizedDefaultConfig(): WlfiConfig {
 }
 
 function mergeSeedDefaults(config: WlfiConfig): WlfiConfig {
+  const removed = normalizeRemovedBuiltins(config.removedBuiltins);
   return {
     ...config,
-    chains: mergeDefaultChainProfiles(config.chains),
-    tokens: mergeDefaultTokenProfiles(config.tokens),
+    removedBuiltins: compactRemovedBuiltins(removed),
+    chains: mergeDefaultChainProfiles(config.chains, removed),
+    tokens: mergeDefaultTokenProfiles(config.tokens, removed),
   };
+}
+
+const CONFIG_STRING_FIELDS = [
+  'rpcUrl',
+  'chainName',
+  'daemonSocket',
+  'stateFile',
+  'rustBinDir',
+  'agentKeyId',
+  'agentAuthToken',
+] as const;
+const CONFIG_OBJECT_FIELDS = ['wallet', 'chains', 'tokens', 'removedBuiltins'] as const;
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function assertConfigEntriesAreObjects(
+  entries: Record<string, unknown> | undefined,
+  label: string,
+): void {
+  for (const [key, value] of Object.entries(entries ?? {})) {
+    if (!isPlainObject(value)) {
+      throw new Error(`config field ${label}.${key} must be an object`);
+    }
+  }
+}
+
+/**
+ * Structural guard for the on-disk config. Field-level normalizers assume the
+ * declared TypeScript shapes, so wrong-typed JSON (e.g. `wallet.vaultPublicKey: 123`)
+ * would otherwise surface as an opaque `TypeError`.
+ */
+function assertConfigFieldTypes(parsed: unknown, label: string): WlfiConfig {
+  if (parsed == null) {
+    return {};
+  }
+  if (!isPlainObject(parsed)) {
+    throw new Error(`${label} must contain a JSON object`);
+  }
+  for (const field of CONFIG_STRING_FIELDS) {
+    const value = parsed[field];
+    if (value != null && typeof value !== 'string') {
+      throw new Error(`config field ${field} must be a string`);
+    }
+  }
+  if (parsed.chainId != null && typeof parsed.chainId !== 'number') {
+    throw new Error('config field chainId must be a number');
+  }
+  for (const field of CONFIG_OBJECT_FIELDS) {
+    const value = parsed[field];
+    if (value != null && !isPlainObject(value)) {
+      throw new Error(`config field ${field} must be an object`);
+    }
+  }
+  assertConfigEntriesAreObjects(parsed.chains as Record<string, unknown> | undefined, 'chains');
+  assertConfigEntriesAreObjects(parsed.tokens as Record<string, unknown> | undefined, 'tokens');
+  for (const [tokenKey, token] of Object.entries(
+    (parsed.tokens as Record<string, Record<string, unknown>> | undefined) ?? {},
+  )) {
+    if (token.chains != null && !isPlainObject(token.chains)) {
+      throw new Error(`config field tokens.${tokenKey}.chains must be an object`);
+    }
+    assertConfigEntriesAreObjects(
+      token.chains as Record<string, unknown> | undefined,
+      `tokens.${tokenKey}.chains`,
+    );
+  }
+  return parsed as WlfiConfig;
 }
 
 export function resolveAgentPayHome(): string {
@@ -1516,6 +1658,10 @@ export function resolveAgentPayHome(): string {
 
 export function resolveConfigPath(): string {
   return path.join(resolveAgentPayHome(), CONFIG_FILENAME);
+}
+
+export function resolveTelemetryPath(): string {
+  return path.join(resolveAgentPayHome(), TELEMETRY_FILENAME);
 }
 
 export function defaultDaemonSocketPath(): string {
@@ -1538,12 +1684,23 @@ export function ensureAgentPayHome(): string {
   return ensurePrivateDirectory(resolveAgentPayHome(), 'AgentPay home');
 }
 
+export function readPrivateJson<T>(targetPath: string, label: string): T | null {
+  return readPrivateJsonFile<T>(targetPath, label);
+}
+
+export function writePrivateJson(targetPath: string, value: unknown, label: string): void {
+  writePrivateFile(targetPath, JSON.stringify(value, null, 2) + '\n', label);
+}
+
 export function readConfig(): WlfiConfig {
   ensureAgentPayHome();
-  const parsed = readPrivateJsonFile<WlfiConfig>(resolveConfigPath(), 'config file');
+  const parsed = assertConfigFieldTypes(
+    readPrivateJsonFile<unknown>(resolveConfigPath(), 'config file'),
+    'config file',
+  );
   const merged = mergeSeedDefaults({
     ...normalizedDefaultConfig(),
-    ...(parsed ?? {}),
+    ...parsed,
   } satisfies WlfiConfig);
 
   return {
@@ -1579,6 +1736,7 @@ export function writeConfig(nextConfig: WlfiConfig): WlfiConfig {
   merged.wallet = normalizeWalletProfile(merged.wallet);
   merged.chains = normalizeChainProfiles(merged.chains);
   merged.tokens = normalizeTokenProfiles(merged.tokens);
+  merged.removedBuiltins = compactRemovedBuiltins(merged.removedBuiltins);
 
   writePrivateFile(resolveConfigPath(), JSON.stringify(merged, null, 2) + '\n', 'config file');
   return merged;
@@ -1718,32 +1876,56 @@ export function saveChainProfile(key: string, profile: ChainProfile): WlfiConfig
   const normalizedProfile = normalizeChainProfileEntry(normalizedKey, profile, {
     validateRpcUrl: true,
   });
+  const current = readConfig();
 
   return writeConfig({
     chains: {
-      ...(readConfig().chains ?? {}),
+      ...(current.chains ?? {}),
       [normalizedKey]: normalizedProfile,
     },
+    removedBuiltins: withoutRemovedBuiltins(current.removedBuiltins, {
+      chains: (entry) => entry === normalizedKey,
+    }),
   });
 }
 
 export function removeChainProfile(key: string): WlfiConfig {
   const normalizedKey = key.trim().toLowerCase();
-  const nextChains = { ...(readConfig().chains ?? {}) };
+  const current = readConfig();
+  const nextChains = { ...(current.chains ?? {}) };
   if (!Object.hasOwn(nextChains, normalizedKey)) {
     throw new Error(`network '${normalizedKey}' does not exist`);
   }
   delete nextChains[normalizedKey];
-  return writeConfig({ chains: nextChains });
+  return writeConfig({
+    chains: nextChains,
+    removedBuiltins: withRemovedBuiltins(
+      current.removedBuiltins,
+      seededChainRemovals(normalizedKey),
+    ),
+  });
+}
+
+function isRemovedBuiltinTokenEntry(entry: string, tokenKey: string, chainKey?: string): boolean {
+  if (entry === tokenKey) {
+    return true;
+  }
+  return chainKey === undefined
+    ? entry.startsWith(`${tokenKey}${REMOVED_BUILTIN_TOKEN_CHAIN_SEPARATOR}`)
+    : entry === removedBuiltinTokenChainEntry(tokenKey, chainKey);
 }
 
 export function saveTokenProfile(key: string, profile: TokenProfile): WlfiConfig {
   const normalizedKey = key.trim().toLowerCase();
+  const current = readConfig();
   return writeConfig({
     tokens: {
-      ...(readConfig().tokens ?? {}),
+      ...(current.tokens ?? {}),
       [normalizedKey]: normalizeTokenProfile(normalizedKey, profile),
     },
+    removedBuiltins: withoutRemovedBuiltins(current.removedBuiltins, {
+      tokens: (entry) => isRemovedBuiltinTokenEntry(entry, normalizedKey),
+    }),
   });
 }
 
@@ -1781,14 +1963,26 @@ export function saveTokenChainProfile(
         },
       }),
     },
+    removedBuiltins: withoutRemovedBuiltins(current.removedBuiltins, {
+      tokens: (entry) =>
+        entry === normalizedTokenKey ||
+        isRemovedBuiltinTokenEntry(entry, normalizedTokenKey, normalizedChainKey),
+    }),
   });
 }
 
 export function removeTokenProfile(key: string): WlfiConfig {
   const normalizedKey = key.trim().toLowerCase();
-  const nextTokens = { ...(readConfig().tokens ?? {}) };
+  const current = readConfig();
+  const nextTokens = { ...(current.tokens ?? {}) };
   delete nextTokens[normalizedKey];
-  return writeConfig({ tokens: nextTokens });
+  return writeConfig({
+    tokens: nextTokens,
+    removedBuiltins: withRemovedBuiltins(
+      current.removedBuiltins,
+      seededTokenRemovals(normalizedKey),
+    ),
+  });
 }
 
 export function removeTokenChainProfile(tokenKey: string, chainKey: string): WlfiConfig {
@@ -1803,6 +1997,14 @@ export function removeTokenChainProfile(tokenKey: string, chainKey: string): Wlf
   const nextChains = { ...(token.chains ?? {}) };
   delete nextChains[normalizedChainKey];
   const nextTokens = { ...(current.tokens ?? {}) };
+  const removedBuiltins = withRemovedBuiltins(current.removedBuiltins, {
+    tokens: [
+      ...(seededTokenRemovals(normalizedTokenKey, normalizedChainKey).tokens ?? []),
+      ...(Object.keys(nextChains).length === 0
+        ? (seededTokenRemovals(normalizedTokenKey).tokens ?? [])
+        : []),
+    ],
+  });
   if (Object.keys(nextChains).length === 0) {
     delete nextTokens[normalizedTokenKey];
   } else {
@@ -1815,7 +2017,7 @@ export function removeTokenChainProfile(tokenKey: string, chainKey: string): Wlf
       chains: nextChains,
     });
   }
-  return writeConfig({ tokens: nextTokens });
+  return writeConfig({ tokens: nextTokens, removedBuiltins });
 }
 
 export function switchActiveChain(
@@ -1828,7 +2030,10 @@ export function switchActiveChain(
     throw new Error(`Unknown chain selector: ${selector}`);
   }
 
-  const nextRpcUrl = options.rpcUrl ?? profile.rpcUrl;
+  // A blank `--rpc-url` means "not provided": fall back to the profile endpoint
+  // instead of clearing the active RPC URL.
+  const explicitRpcUrl = options.rpcUrl?.trim();
+  const nextRpcUrl = explicitRpcUrl ? explicitRpcUrl : profile.rpcUrl;
   const normalizedRpcUrl = normalizeOptionalRpcUrl(nextRpcUrl, 'rpcUrl', { validate: true });
   let next = writeConfig({
     chainId: profile.chainId,

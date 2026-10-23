@@ -4,10 +4,12 @@ use std::str::FromStr;
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 use vault_domain::{
-    AgentAction, ApprovalType, AssetId, BroadcastTx, Eip712TypedData, EntityScope, EvmAddress,
-    PolicyAttachment, PolicyType, SolanaAddress, SolanaNonceAccountCreate, SolanaSplTransfer,
-    SpendEvent, SpendingPolicy, SOLANA_DEVNET_CHAIN_ID, SOLANA_MAINNET_CHAIN_ID,
-    SOLANA_TESTNET_CHAIN_ID,
+    ActionKind, AgentAction, ApprovalType, AssetId, BroadcastTx, Eip712TypedData, EntityScope,
+    EvmAddress, PolicyAttachment, PolicyType, RailgunAddress, SolanaAddress,
+    SolanaNonceAccountCreate, SolanaSplTransfer, SpendEvent, SpendingPolicy,
+    TempoSessionOpenTransaction, TempoSessionVoucher, TempoTxParams, SOLANA_DEVNET_CHAIN_ID,
+    SOLANA_MAINNET_CHAIN_ID, SOLANA_TESTNET_CHAIN_ID, TEMPO_MAINNET_CHAIN_ID,
+    TEMPO_MAINNET_ESCROW_CONTRACT,
 };
 
 use crate::engine::{
@@ -102,6 +104,14 @@ fn broadcast_action_with_fees(
 }
 
 fn eip712_action(chain_id: u64) -> AgentAction {
+    eip712_action_with(
+        chain_id,
+        "Mail",
+        "0x1111111111111111111111111111111111111111",
+    )
+}
+
+fn eip712_action_with(chain_id: u64, primary_type: &str, verifying_contract: &str) -> AgentAction {
     AgentAction::Eip712TypedData {
         typed_data: Eip712TypedData {
             typed_data_json: format!(
@@ -113,16 +123,16 @@ fn eip712_action(chain_id: u64) -> AgentAction {
       {{ "name": "chainId", "type": "uint256" }},
       {{ "name": "verifyingContract", "type": "address" }}
     ],
-    "Mail": [
+    "{primary_type}": [
       {{ "name": "contents", "type": "string" }}
     ]
   }},
-  "primaryType": "Mail",
+  "primaryType": "{primary_type}",
   "domain": {{
     "name": "AgentPay Test",
     "version": "1",
     "chainId": {chain_id},
-    "verifyingContract": "0x1111111111111111111111111111111111111111"
+    "verifyingContract": "{verifying_contract}"
   }},
   "message": {{
     "contents": "hello"
@@ -133,9 +143,12 @@ fn eip712_action(chain_id: u64) -> AgentAction {
     }
 }
 
+/// Canonical Permit2 deployment, EIP-55 checksummed as wallets emit it.
+const PERMIT2_CHECKSUMMED: &str = "0x000000000022D473030F116dDEE9F6B43aC78BA3";
+
 #[test]
 fn per_tx_limit_is_enforced() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let token = addr("0x1000000000000000000000000000000000000000");
     let recipient = addr("0x2000000000000000000000000000000000000000");
     let policy = policy_all_per_tx(100);
@@ -163,8 +176,8 @@ fn per_tx_limit_is_enforced() {
 }
 
 #[test]
-fn eip712_defaults_to_allow_with_all_policies() {
-    let engine = PolicyEngine;
+fn eip712_with_no_attached_policies_requires_manual_approval_even_with_all_policies() {
+    let engine = PolicyEngine::default();
     let result = engine.evaluate(
         &[],
         &PolicyAttachment::AllPolicies,
@@ -174,12 +187,18 @@ fn eip712_defaults_to_allow_with_all_policies() {
         OffsetDateTime::now_utc(),
     );
 
-    assert!(result.is_ok());
+    assert!(matches!(
+        result,
+        Err(PolicyError::Eip712ManualApprovalRequired {
+            policy_id: None,
+            ..
+        })
+    ));
 }
 
 #[test]
 fn eip712_allow_policy_allows_signing() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let policy = SpendingPolicy::new_eip712_signing(1, ApprovalType::Allow, EntityScope::All)
         .expect("policy");
 
@@ -197,7 +216,7 @@ fn eip712_allow_policy_allows_signing() {
 
 #[test]
 fn eip712_deny_policy_rejects_signing() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let policy = SpendingPolicy::new_eip712_signing(1, ApprovalType::Deny, EntityScope::All)
         .expect("policy");
 
@@ -218,7 +237,7 @@ fn eip712_deny_policy_rejects_signing() {
 
 #[test]
 fn wallet_maintenance_bypasses_spending_and_manual_policies() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let manual_policy = SpendingPolicy::new_manual_approval(
         0,
         1,
@@ -259,7 +278,7 @@ fn wallet_maintenance_bypasses_spending_and_manual_policies() {
 
 #[test]
 fn eip712_manual_policy_requires_manual_approval() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let policy =
         SpendingPolicy::new_eip712_signing(1, ApprovalType::ManualApproval, EntityScope::All)
             .expect("policy");
@@ -284,7 +303,7 @@ fn eip712_manual_policy_requires_manual_approval() {
 
 #[test]
 fn daily_limit_sums_recent_usage() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let now = OffsetDateTime::now_utc();
     let token = addr("0x3000000000000000000000000000000000000000");
     let recipient = addr("0x4000000000000000000000000000000000000000");
@@ -306,6 +325,7 @@ fn daily_limit_sums_recent_usage() {
         recipient: recipient.clone().into(),
         amount_wei: 70,
         at: now - time::Duration::hours(2),
+        action_kind: ActionKind::Other,
     }];
 
     let action = AgentAction::Transfer {
@@ -335,8 +355,8 @@ fn daily_limit_sums_recent_usage() {
 }
 
 #[test]
-fn daily_limit_ignores_future_dated_usage() {
-    let engine = PolicyEngine;
+fn daily_limit_counts_future_dated_usage_as_current() {
+    let engine = PolicyEngine::default();
     let now = OffsetDateTime::now_utc();
     let token = addr("0x3000000000000000000000000000000000000000");
     let recipient = addr("0x4000000000000000000000000000000000000000");
@@ -358,6 +378,7 @@ fn daily_limit_ignores_future_dated_usage() {
         recipient: recipient.clone().into(),
         amount_wei: 80,
         at: now + Duration::hours(1),
+        action_kind: ActionKind::Other,
     }];
 
     let action = AgentAction::Transfer {
@@ -376,12 +397,22 @@ fn daily_limit_ignores_future_dated_usage() {
         now,
     );
 
-    assert!(result.is_ok());
+    // A backward clock step must not reset the budget: the 80 wei stamped
+    // one hour "in the future" still counts against today's cap.
+    assert!(matches!(
+        result,
+        Err(PolicyError::WindowLimitExceeded {
+            used_amount_wei: 80,
+            requested_amount_wei: 30,
+            max_amount_wei: 100,
+            ..
+        })
+    ));
 }
 
 #[test]
 fn daily_limit_counts_all_in_scope_usage_across_assets_and_chains() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let now = OffsetDateTime::now_utc();
     let token_a = addr("0x3000000000000000000000000000000000000000");
     let token_b = addr("0x5000000000000000000000000000000000000000");
@@ -406,6 +437,7 @@ fn daily_limit_counts_all_in_scope_usage_across_assets_and_chains() {
             recipient: recipient_a.into(),
             amount_wei: 70,
             at: now - time::Duration::hours(2),
+            action_kind: ActionKind::Other,
         },
         SpendEvent {
             agent_key_id,
@@ -414,6 +446,7 @@ fn daily_limit_counts_all_in_scope_usage_across_assets_and_chains() {
             recipient: recipient_b.clone().into(),
             amount_wei: 20,
             at: now - time::Duration::hours(1),
+            action_kind: ActionKind::Other,
         },
     ];
 
@@ -445,7 +478,7 @@ fn daily_limit_counts_all_in_scope_usage_across_assets_and_chains() {
 
 #[test]
 fn network_scope_is_enforced() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let token = addr("0x5000000000000000000000000000000000000000");
     let recipient = addr("0x6000000000000000000000000000000000000000");
 
@@ -480,7 +513,7 @@ fn network_scope_is_enforced() {
 
 #[test]
 fn solana_network_aliases_share_policy_scope() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let policy = SpendingPolicy::new(
         1,
         PolicyType::PerTxMaxSpending,
@@ -513,7 +546,7 @@ fn solana_network_aliases_share_policy_scope() {
 
 #[test]
 fn solana_window_limits_count_all_network_aliases() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let now = OffsetDateTime::now_utc();
     let agent_key_id = Uuid::new_v4();
     let policy = SpendingPolicy::new(
@@ -534,6 +567,7 @@ fn solana_window_limits_count_all_network_aliases() {
         recipient: history_action.recipient(),
         amount_wei: 7,
         at: now - Duration::hours(1),
+        action_kind: ActionKind::Other,
     }];
 
     let result = engine.evaluate(
@@ -558,7 +592,7 @@ fn solana_window_limits_count_all_network_aliases() {
 
 #[test]
 fn native_eth_scope_is_enforced() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let recipient = addr("0x7000000000000000000000000000000000000000");
     let policy = SpendingPolicy::new(
         1,
@@ -606,7 +640,7 @@ fn native_eth_scope_is_enforced() {
 
 #[test]
 fn policies_are_evaluated_in_priority_order() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let token = addr("0x5000000000000000000000000000000000000000");
     let recipient = addr("0x6000000000000000000000000000000000000000");
 
@@ -653,7 +687,7 @@ fn policies_are_evaluated_in_priority_order() {
 
 #[test]
 fn only_attached_policy_ids_are_used() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let token = addr("0x5000000000000000000000000000000000000000");
     let recipient = addr("0x6000000000000000000000000000000000000000");
 
@@ -702,7 +736,7 @@ fn only_attached_policy_ids_are_used() {
 
 #[test]
 fn no_applicable_policy_fails_when_scope_does_not_match() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
 
     let token = addr("0x7777777777777777777777777777777777777777");
     let recipient = addr("0x8888888888888888888888888888888888888888");
@@ -740,7 +774,7 @@ fn no_applicable_policy_fails_when_scope_does_not_match() {
 
 #[test]
 fn equal_priority_policies_are_ordered_by_id() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let token = addr("0x1111111111111111111111111111111111111111");
     let recipient = addr("0x2222222222222222222222222222222222222222");
 
@@ -789,7 +823,7 @@ fn equal_priority_policies_are_ordered_by_id() {
 
 #[test]
 fn window_limit_fails_closed_on_usage_overflow() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let now = OffsetDateTime::now_utc();
     let token = addr("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     let recipient = addr("0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
@@ -813,6 +847,7 @@ fn window_limit_fails_closed_on_usage_overflow() {
             recipient: recipient.clone().into(),
             amount_wei: u128::MAX,
             at: now - time::Duration::hours(2),
+            action_kind: ActionKind::Other,
         },
         SpendEvent {
             agent_key_id,
@@ -821,6 +856,7 @@ fn window_limit_fails_closed_on_usage_overflow() {
             recipient: recipient.clone().into(),
             amount_wei: 1,
             at: now - time::Duration::hours(1),
+            action_kind: ActionKind::Other,
         },
     ];
 
@@ -852,7 +888,7 @@ fn window_limit_fails_closed_on_usage_overflow() {
 
 #[test]
 fn per_chain_gas_limit_is_enforced_for_broadcast_tx() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let now = OffsetDateTime::now_utc();
     let policy = gas_policy(1, 500_000_000_000_000);
 
@@ -885,7 +921,7 @@ fn per_chain_gas_limit_is_enforced_for_broadcast_tx() {
 
 #[test]
 fn per_chain_gas_limit_allows_broadcast_within_cap() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let now = OffsetDateTime::now_utc();
     let policy = gas_policy(1, 2_000_000_000_000_000);
 
@@ -918,7 +954,7 @@ fn per_chain_gas_limit_allows_broadcast_within_cap() {
 
 #[test]
 fn per_tx_max_fee_per_gas_is_enforced() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let policy = SpendingPolicy::new(
         0,
         PolicyType::PerTxMaxFeePerGas,
@@ -946,7 +982,7 @@ fn per_tx_max_fee_per_gas_is_enforced() {
 
 #[test]
 fn per_tx_max_priority_fee_per_gas_is_enforced() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let policy = SpendingPolicy::new(
         0,
         PolicyType::PerTxMaxPriorityFeePerGas,
@@ -974,7 +1010,7 @@ fn per_tx_max_priority_fee_per_gas_is_enforced() {
 
 #[test]
 fn per_tx_max_calldata_bytes_is_enforced() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let policy = SpendingPolicy::new_calldata_limit(
         0,
         3,
@@ -1032,7 +1068,7 @@ fn legacy_calldata_policies_still_use_max_amount_as_fallback_limit() {
 
 #[test]
 fn daily_tx_count_limit_is_enforced() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let now = OffsetDateTime::now_utc();
     let recipient = addr("0x2000000000000000000000000000000000000000");
     let token = addr("0x3000000000000000000000000000000000000000");
@@ -1054,6 +1090,7 @@ fn daily_tx_count_limit_is_enforced() {
             recipient: recipient.clone().into(),
             amount_wei: 1,
             at: now - Duration::hours(2),
+            action_kind: ActionKind::Other,
         },
         SpendEvent {
             agent_key_id,
@@ -1062,6 +1099,7 @@ fn daily_tx_count_limit_is_enforced() {
             recipient: recipient.clone().into(),
             amount_wei: 1,
             at: now - Duration::hours(1),
+            action_kind: ActionKind::Other,
         },
     ];
     let action = AgentAction::Transfer {
@@ -1086,8 +1124,8 @@ fn daily_tx_count_limit_is_enforced() {
 }
 
 #[test]
-fn daily_tx_count_limit_ignores_future_dated_usage() {
-    let engine = PolicyEngine;
+fn daily_tx_count_limit_counts_future_dated_usage_as_current() {
+    let engine = PolicyEngine::default();
     let now = OffsetDateTime::now_utc();
     let recipient = addr("0x2000000000000000000000000000000000000000");
     let token = addr("0x3000000000000000000000000000000000000000");
@@ -1108,6 +1146,7 @@ fn daily_tx_count_limit_ignores_future_dated_usage() {
         recipient: recipient.clone().into(),
         amount_wei: 1,
         at: now + Duration::hours(1),
+        action_kind: ActionKind::Other,
     }];
     let action = AgentAction::Transfer {
         chain_id: 1,
@@ -1125,12 +1164,19 @@ fn daily_tx_count_limit_ignores_future_dated_usage() {
         now,
     );
 
-    assert!(result.is_ok());
+    assert!(matches!(
+        result,
+        Err(PolicyError::TxCountLimitExceeded {
+            used_tx_count: 1,
+            max_tx_count: 1,
+            ..
+        })
+    ));
 }
 
 #[test]
 fn fee_policy_is_not_applicable_when_action_lacks_metadata() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let policy = SpendingPolicy::new(
         0,
         PolicyType::PerTxMaxFeePerGas,
@@ -1160,7 +1206,7 @@ fn fee_policy_is_not_applicable_when_action_lacks_metadata() {
 
 #[test]
 fn explain_reports_no_attached_policies_when_attachment_filters_everything() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let policy = policy_all_per_tx(100);
     let attachment =
         PolicyAttachment::policy_set(BTreeSet::from([Uuid::new_v4()])).expect("attachment");
@@ -1188,8 +1234,8 @@ fn explain_reports_no_attached_policies_when_attachment_filters_everything() {
 }
 
 #[test]
-fn explain_allows_unrestricted_agents_when_no_policies_exist() {
-    let engine = PolicyEngine;
+fn explain_denies_agents_when_no_policies_exist_even_with_all_policies() {
+    let engine = PolicyEngine::default();
     let action = AgentAction::TransferNative {
         chain_id: 1,
         to: addr("0x2000000000000000000000000000000000000000"),
@@ -1205,15 +1251,31 @@ fn explain_allows_unrestricted_agents_when_no_policies_exist() {
         OffsetDateTime::now_utc(),
     );
 
-    assert!(matches!(explanation.decision, super::PolicyDecision::Allow));
+    assert!(matches!(
+        explanation.decision,
+        super::PolicyDecision::Deny(PolicyError::NoAttachedPolicies)
+    ));
     assert!(explanation.attached_policy_ids.is_empty());
     assert!(explanation.applicable_policy_ids.is_empty());
     assert!(explanation.evaluated_policy_ids.is_empty());
+
+    // Disabled policies do not count as attached either.
+    let mut disabled = policy_all_per_tx(1_000);
+    disabled.enabled = false;
+    let result = engine.evaluate(
+        &[disabled],
+        &PolicyAttachment::AllPolicies,
+        &action,
+        &[],
+        Uuid::new_v4(),
+        OffsetDateTime::now_utc(),
+    );
+    assert!(matches!(result, Err(PolicyError::NoAttachedPolicies)));
 }
 
 #[test]
 fn fee_and_calldata_limits_allow_broadcasts_within_cap() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let fee_policy = SpendingPolicy::new(
         0,
         PolicyType::PerTxMaxPriorityFeePerGas,
@@ -1247,7 +1309,7 @@ fn fee_and_calldata_limits_allow_broadcasts_within_cap() {
 
 #[test]
 fn weekly_limit_and_manual_approval_paths_are_enforced() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let now = OffsetDateTime::now_utc();
     let agent_key_id = Uuid::new_v4();
     let token = addr("0x3000000000000000000000000000000000000000");
@@ -1269,6 +1331,7 @@ fn weekly_limit_and_manual_approval_paths_are_enforced() {
         recipient: recipient.clone().into(),
         amount_wei: 80,
         at: now - Duration::days(2),
+        action_kind: ActionKind::Other,
     }];
     let weekly_action = AgentAction::Transfer {
         chain_id: 1,
@@ -1335,7 +1398,7 @@ fn weekly_limit_and_manual_approval_paths_are_enforced() {
 
 #[test]
 fn manual_approval_without_minimum_defaults_to_zero_and_reports_effective_threshold() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let now = OffsetDateTime::now_utc();
     let agent_key_id = Uuid::new_v4();
     let recipient = addr("0x4000000000000000000000000000000000000000");
@@ -1376,7 +1439,7 @@ fn manual_approval_without_minimum_defaults_to_zero_and_reports_effective_thresh
 
 #[test]
 fn manual_approval_above_max_is_hard_denied() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let now = OffsetDateTime::now_utc();
     let agent_key_id = Uuid::new_v4();
     let recipient = addr("0x4000000000000000000000000000000000000000");
@@ -1458,7 +1521,7 @@ fn optional_limit_helpers_allow_missing_or_in_range_metadata() {
 
 #[test]
 fn gas_policy_is_not_applicable_when_action_lacks_metadata() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let policy = SpendingPolicy::new(
         0,
         PolicyType::PerChainMaxGasSpend,
@@ -1488,7 +1551,7 @@ fn gas_policy_is_not_applicable_when_action_lacks_metadata() {
 
 #[test]
 fn permit2_per_tx_limit_is_enforced() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let expiration =
         u64::try_from((OffsetDateTime::now_utc() + Duration::hours(2)).unix_timestamp())
             .expect("future unix timestamp");
@@ -1523,7 +1586,7 @@ fn permit2_per_tx_limit_is_enforced() {
 
 #[test]
 fn eip3009_broadcast_scope_is_enforced() {
-    let engine = PolicyEngine;
+    let engine = PolicyEngine::default();
     let token = addr("0x3000000000000000000000000000000000000000");
     let allowed_recipient = addr("0x4000000000000000000000000000000000000000");
     let denied_recipient = addr("0x5050505050505050505050505050505050505050");
@@ -1582,4 +1645,1169 @@ fn eip3009_broadcast_scope_is_enforced() {
     );
     assert!(matches!(result, Err(PolicyError::NoApplicablePolicies)));
     assert_eq!(action.recipient(), denied_recipient);
+}
+
+fn railgun_test_address() -> RailgunAddress {
+    "0zk1qyqqqqqdl645pcpreh6dga7xa0dfwx5ehmkmrkpaczj9cyqr0e0vchcaxfsa6au6f93dvr64skspz"
+        .parse::<RailgunAddress>()
+        .expect("railgun address")
+}
+
+fn railgun_token() -> EvmAddress {
+    addr("0x1000000000000000000000000000000000000000")
+}
+
+fn shield_action(amount_wei: u128) -> AgentAction {
+    AgentAction::Shield {
+        chain_id: 56,
+        token: railgun_token(),
+        to_railgun_address: railgun_test_address(),
+        amount_wei,
+    }
+}
+
+fn unshield_action(amount_wei: u128) -> AgentAction {
+    AgentAction::Unshield {
+        chain_id: 56,
+        token: railgun_token(),
+        to: addr("0x2000000000000000000000000000000000000000"),
+        amount_wei,
+        via_broadcaster: false,
+    }
+}
+
+fn private_transfer_action(amount_wei: u128) -> AgentAction {
+    AgentAction::PrivateTransfer {
+        chain_id: 56,
+        token: railgun_token(),
+        to_railgun_address: railgun_test_address(),
+        amount_wei,
+        via_broadcaster: true,
+    }
+}
+
+fn railgun_amount_policy(policy_type: PolicyType, max: u128) -> SpendingPolicy {
+    SpendingPolicy::new(
+        1,
+        policy_type,
+        max,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::All,
+    )
+    .expect("policy")
+}
+
+#[test]
+fn per_tx_max_shield_amount_blocks_oversized_shield() {
+    let engine = PolicyEngine::default();
+    let policy = railgun_amount_policy(PolicyType::PerTxMaxShieldAmount, 100);
+
+    let denied = engine.evaluate(
+        &[policy.clone()],
+        &PolicyAttachment::AllPolicies,
+        &shield_action(101),
+        &[],
+        Uuid::new_v4(),
+        OffsetDateTime::now_utc(),
+    );
+    assert!(matches!(
+        denied,
+        Err(PolicyError::PerTxLimitExceeded { .. })
+    ));
+
+    let allowed = engine.evaluate(
+        &[policy],
+        &PolicyAttachment::AllPolicies,
+        &shield_action(100),
+        &[],
+        Uuid::new_v4(),
+        OffsetDateTime::now_utc(),
+    );
+    assert!(allowed.is_ok());
+}
+
+#[test]
+fn per_tx_max_shield_amount_is_ignored_for_unshield_and_transfer() {
+    let engine = PolicyEngine::default();
+    let policy = railgun_amount_policy(PolicyType::PerTxMaxShieldAmount, 50);
+
+    // Unshield is not constrained by a shield-amount cap.
+    let unshield_ok = engine.evaluate(
+        &[policy.clone()],
+        &PolicyAttachment::AllPolicies,
+        &unshield_action(10_000),
+        &[],
+        Uuid::new_v4(),
+        OffsetDateTime::now_utc(),
+    );
+    assert!(unshield_ok.is_ok());
+
+    // Plain ERC-20 transfer is also untouched.
+    let transfer = AgentAction::Transfer {
+        chain_id: 56,
+        token: railgun_token(),
+        to: addr("0x2000000000000000000000000000000000000000"),
+        amount_wei: 10_000,
+    };
+    let transfer_ok = engine.evaluate(
+        &[policy],
+        &PolicyAttachment::AllPolicies,
+        &transfer,
+        &[],
+        Uuid::new_v4(),
+        OffsetDateTime::now_utc(),
+    );
+    assert!(transfer_ok.is_ok());
+}
+
+#[test]
+fn per_tx_max_unshield_amount_applies_to_both_unshield_and_private_transfer() {
+    let engine = PolicyEngine::default();
+    let policy = railgun_amount_policy(PolicyType::PerTxMaxUnshieldAmount, 100);
+
+    for action in [unshield_action(101), private_transfer_action(101)] {
+        let result = engine.evaluate(
+            &[policy.clone()],
+            &PolicyAttachment::AllPolicies,
+            &action,
+            &[],
+            Uuid::new_v4(),
+            OffsetDateTime::now_utc(),
+        );
+        assert!(
+            matches!(result, Err(PolicyError::PerTxLimitExceeded { .. })),
+            "expected per-tx limit denial for {action:?}",
+        );
+    }
+}
+
+#[test]
+fn daily_max_shield_amount_accumulates_shield_events_only() {
+    let engine = PolicyEngine::default();
+    let policy = railgun_amount_policy(PolicyType::DailyMaxShieldAmount, 100);
+    let now = OffsetDateTime::now_utc();
+    let agent_key_id = Uuid::new_v4();
+
+    let history = vec![
+        SpendEvent {
+            agent_key_id,
+            chain_id: 56,
+            asset: AssetId::Erc20(railgun_token()),
+            recipient: railgun_test_address().into(),
+            amount_wei: 70,
+            at: now - Duration::hours(2),
+            action_kind: ActionKind::Shield,
+        },
+        // An unshield event in the same window must NOT count toward the shield cap.
+        SpendEvent {
+            agent_key_id,
+            chain_id: 56,
+            asset: AssetId::Erc20(railgun_token()),
+            recipient: addr("0x2000000000000000000000000000000000000000").into(),
+            amount_wei: 1_000_000,
+            at: now - Duration::hours(1),
+            action_kind: ActionKind::Unshield,
+        },
+    ];
+
+    let allowed = engine.evaluate(
+        &[policy.clone()],
+        &PolicyAttachment::AllPolicies,
+        &shield_action(30),
+        &history,
+        agent_key_id,
+        now,
+    );
+    assert!(allowed.is_ok(), "70 + 30 == 100, exact fit must allow");
+
+    let denied = engine.evaluate(
+        &[policy],
+        &PolicyAttachment::AllPolicies,
+        &shield_action(31),
+        &history,
+        agent_key_id,
+        now,
+    );
+    assert!(matches!(
+        denied,
+        Err(PolicyError::WindowLimitExceeded { .. })
+    ));
+}
+
+#[test]
+fn daily_max_unshield_amount_aggregates_unshield_and_private_transfer() {
+    let engine = PolicyEngine::default();
+    let policy = railgun_amount_policy(PolicyType::DailyMaxUnshieldAmount, 200);
+    let now = OffsetDateTime::now_utc();
+    let agent_key_id = Uuid::new_v4();
+
+    let history = vec![
+        SpendEvent {
+            agent_key_id,
+            chain_id: 56,
+            asset: AssetId::Erc20(railgun_token()),
+            recipient: addr("0x2000000000000000000000000000000000000000").into(),
+            amount_wei: 100,
+            at: now - Duration::hours(3),
+            action_kind: ActionKind::Unshield,
+        },
+        SpendEvent {
+            agent_key_id,
+            chain_id: 56,
+            asset: AssetId::Erc20(railgun_token()),
+            recipient: railgun_test_address().into(),
+            amount_wei: 75,
+            at: now - Duration::hours(1),
+            action_kind: ActionKind::PrivateTransfer,
+        },
+        // A shield event must NOT count toward an unshield-bucket cap.
+        SpendEvent {
+            agent_key_id,
+            chain_id: 56,
+            asset: AssetId::Erc20(railgun_token()),
+            recipient: railgun_test_address().into(),
+            amount_wei: 10_000,
+            at: now - Duration::hours(2),
+            action_kind: ActionKind::Shield,
+        },
+    ];
+
+    let denied = engine.evaluate(
+        &[policy],
+        &PolicyAttachment::AllPolicies,
+        &unshield_action(30), // 100 + 75 + 30 = 205 > 200
+        &history,
+        agent_key_id,
+        now,
+    );
+    assert!(matches!(
+        denied,
+        Err(PolicyError::WindowLimitExceeded { .. })
+    ));
+}
+
+#[test]
+fn poi_standby_blocks_private_transfer_after_recent_shield() {
+    use crate::engine::RAILGUN_POI_STANDBY;
+    use vault_domain::ActionKind;
+    let engine = PolicyEngine::with_poi_standby(RAILGUN_POI_STANDBY);
+    let agent_key_id = Uuid::new_v4();
+    let now = OffsetDateTime::now_utc();
+
+    // Shield 10 minutes ago — well inside the 1h standby window.
+    let history = vec![SpendEvent {
+        agent_key_id,
+        chain_id: 56,
+        asset: AssetId::Erc20(railgun_token()),
+        recipient: railgun_test_address().into(),
+        amount_wei: 100,
+        at: now - Duration::minutes(10),
+        action_kind: ActionKind::Shield,
+    }];
+
+    for action in [unshield_action(1), private_transfer_action(1)] {
+        let result = engine.evaluate(
+            &[policy_all_per_tx(1_000)],
+            &PolicyAttachment::AllPolicies,
+            &action,
+            &history,
+            agent_key_id,
+            now,
+        );
+        match result {
+            Err(PolicyError::PoiStandbyActive {
+                standby_remaining_seconds,
+                standby_required_seconds,
+            }) => {
+                assert_eq!(standby_required_seconds, 3600);
+                // 10 minutes elapsed of 60 → ~50 minutes remaining.
+                assert!(
+                    (standby_remaining_seconds as i64 - 3000).abs() < 60,
+                    "remaining {standby_remaining_seconds}s should be ~50 minutes",
+                );
+            }
+            other => panic!("expected PoiStandbyActive, got {other:?}"),
+        }
+    }
+}
+
+#[test]
+fn poi_standby_allows_private_transfer_after_window_lapses() {
+    use crate::engine::RAILGUN_POI_STANDBY;
+    use vault_domain::ActionKind;
+    let engine = PolicyEngine::with_poi_standby(RAILGUN_POI_STANDBY);
+    let agent_key_id = Uuid::new_v4();
+    let now = OffsetDateTime::now_utc();
+
+    // Shield 2 hours ago — comfortably outside the 1h standby window.
+    let history = vec![SpendEvent {
+        agent_key_id,
+        chain_id: 56,
+        asset: AssetId::Erc20(railgun_token()),
+        recipient: railgun_test_address().into(),
+        amount_wei: 100,
+        at: now - Duration::hours(2),
+        action_kind: ActionKind::Shield,
+    }];
+
+    let result = engine.evaluate(
+        &[policy_all_per_tx(1_000)],
+        &PolicyAttachment::AllPolicies,
+        &private_transfer_action(1),
+        &history,
+        agent_key_id,
+        now,
+    );
+    assert!(
+        result.is_ok(),
+        "stale shield must not gate the next private-transfer: {result:?}",
+    );
+}
+
+#[test]
+fn poi_standby_does_not_gate_shield_or_plain_transfer() {
+    use crate::engine::RAILGUN_POI_STANDBY;
+    use vault_domain::ActionKind;
+    let engine = PolicyEngine::with_poi_standby(RAILGUN_POI_STANDBY);
+    let agent_key_id = Uuid::new_v4();
+    let now = OffsetDateTime::now_utc();
+
+    // Recent shield inside the standby window.
+    let history = vec![SpendEvent {
+        agent_key_id,
+        chain_id: 56,
+        asset: AssetId::Erc20(railgun_token()),
+        recipient: railgun_test_address().into(),
+        amount_wei: 100,
+        at: now - Duration::minutes(15),
+        action_kind: ActionKind::Shield,
+    }];
+
+    // Back-to-back shields are fine — PoI gates the outflow side only.
+    let shield_again = engine.evaluate(
+        &[policy_all_per_tx(1_000)],
+        &PolicyAttachment::AllPolicies,
+        &shield_action(1),
+        &history,
+        agent_key_id,
+        now,
+    );
+    assert!(
+        shield_again.is_ok(),
+        "shield must not gate a follow-up shield"
+    );
+
+    // Plain (non-Railgun) ERC-20 transfer must also be unaffected.
+    let transfer = AgentAction::Transfer {
+        chain_id: 56,
+        token: railgun_token(),
+        to: addr("0x2000000000000000000000000000000000000000"),
+        amount_wei: 1,
+    };
+    let plain = engine.evaluate(
+        &[policy_all_per_tx(1_000)],
+        &PolicyAttachment::AllPolicies,
+        &transfer,
+        &history,
+        agent_key_id,
+        now,
+    );
+    assert!(
+        plain.is_ok(),
+        "PoI standby must not affect non-Railgun actions"
+    );
+}
+
+#[test]
+fn poi_standby_disabled_engine_keeps_legacy_behaviour() {
+    // Tests that don't enable the standby (the default constructor) must
+    // continue to allow private-transfer immediately after a shield. This
+    // protects fixtures that pre-date the standby feature.
+    use vault_domain::ActionKind;
+    let engine = PolicyEngine::default();
+    let agent_key_id = Uuid::new_v4();
+    let now = OffsetDateTime::now_utc();
+    let history = vec![SpendEvent {
+        agent_key_id,
+        chain_id: 56,
+        asset: AssetId::Erc20(railgun_token()),
+        recipient: railgun_test_address().into(),
+        amount_wei: 100,
+        at: now - Duration::seconds(1),
+        action_kind: ActionKind::Shield,
+    }];
+
+    let result = engine.evaluate(
+        &[policy_all_per_tx(1_000)],
+        &PolicyAttachment::AllPolicies,
+        &private_transfer_action(1),
+        &history,
+        agent_key_id,
+        now,
+    );
+    assert!(
+        result.is_ok(),
+        "default engine must not gate by PoI standby: {result:?}",
+    );
+}
+
+#[test]
+fn transfer_per_tx_spending_policy_inherits_to_railgun_actions() {
+    let engine = PolicyEngine::default();
+    // A regular per-tx spending policy capped at 50 — applies to all spend
+    // actions including the new Railgun variants without any explicit opt-in.
+    let policy = policy_all_per_tx(50);
+
+    for action in [
+        shield_action(51),
+        unshield_action(51),
+        private_transfer_action(51),
+    ] {
+        let result = engine.evaluate(
+            &[policy.clone()],
+            &PolicyAttachment::AllPolicies,
+            &action,
+            &[],
+            Uuid::new_v4(),
+            OffsetDateTime::now_utc(),
+        );
+        assert!(
+            matches!(result, Err(PolicyError::PerTxLimitExceeded { .. })),
+            "expected inherited per-tx denial for {action:?}",
+        );
+    }
+}
+
+#[test]
+fn manual_approval_does_not_mask_daily_cap() {
+    let engine = PolicyEngine::default();
+    let now = OffsetDateTime::now_utc();
+    let agent_key_id = Uuid::new_v4();
+    let token = addr("0x3000000000000000000000000000000000000000");
+    let recipient = addr("0x4000000000000000000000000000000000000000");
+
+    // Manual approval sorts first (priority 0): a first-error short-circuit
+    // would have surfaced ManualApprovalRequired and hidden the daily cap.
+    let manual_policy = SpendingPolicy::new_manual_approval(
+        0,
+        10,
+        10_000,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::All,
+    )
+    .expect("policy");
+    let daily_policy = SpendingPolicy::new(
+        1,
+        PolicyType::DailyMaxSpending,
+        100,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::All,
+    )
+    .expect("policy");
+    let action = AgentAction::Transfer {
+        chain_id: 1,
+        token,
+        to: recipient,
+        amount_wei: 5_000,
+    };
+
+    let explanation = engine.explain(
+        &[manual_policy.clone(), daily_policy.clone()],
+        &PolicyAttachment::AllPolicies,
+        &action,
+        &[],
+        agent_key_id,
+        now,
+    );
+    assert_eq!(
+        explanation.evaluated_policy_ids,
+        vec![manual_policy.id, daily_policy.id],
+        "soft manual approval must not stop evaluation"
+    );
+    assert!(matches!(
+        explanation.decision,
+        PolicyDecision::Deny(PolicyError::WindowLimitExceeded {
+            policy_id,
+            used_amount_wei: 0,
+            requested_amount_wei: 5_000,
+            max_amount_wei: 100,
+        }) if policy_id == daily_policy.id
+    ));
+
+    let result = engine.evaluate(
+        &[manual_policy.clone(), daily_policy.clone()],
+        &PolicyAttachment::AllPolicies,
+        &action,
+        &[],
+        agent_key_id,
+        now,
+    );
+    assert!(matches!(
+        result,
+        Err(PolicyError::WindowLimitExceeded { policy_id, .. }) if policy_id == daily_policy.id
+    ));
+
+    // Reversed priority order reaches the same hard denial.
+    let mut daily_first = daily_policy;
+    daily_first.priority = 0;
+    let mut manual_last = manual_policy;
+    manual_last.priority = 1;
+    let result = engine.evaluate(
+        &[manual_last, daily_first.clone()],
+        &PolicyAttachment::AllPolicies,
+        &action,
+        &[],
+        agent_key_id,
+        now,
+    );
+    assert!(matches!(
+        result,
+        Err(PolicyError::WindowLimitExceeded { policy_id, .. }) if policy_id == daily_first.id
+    ));
+}
+
+#[test]
+fn manual_approval_does_not_mask_other_hard_limits() {
+    let engine = PolicyEngine::default();
+    let now = OffsetDateTime::now_utc();
+    let agent_key_id = Uuid::new_v4();
+    let token = addr("0x3000000000000000000000000000000000000000");
+    let recipient = addr("0x4000000000000000000000000000000000000000");
+    let manual_policy = SpendingPolicy::new_manual_approval(
+        0,
+        10,
+        10_000,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::All,
+    )
+    .expect("policy");
+    let action = AgentAction::Transfer {
+        chain_id: 1,
+        token: token.clone(),
+        to: recipient.clone(),
+        amount_wei: 5_000,
+    };
+    let history = vec![SpendEvent {
+        agent_key_id,
+        chain_id: 1,
+        asset: AssetId::Erc20(token),
+        recipient: recipient.into(),
+        amount_wei: 1,
+        at: now - Duration::hours(1),
+        action_kind: ActionKind::Other,
+    }];
+
+    let per_tx = SpendingPolicy::new(
+        1,
+        PolicyType::PerTxMaxSpending,
+        100,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::All,
+    )
+    .expect("policy");
+    assert!(matches!(
+        engine.evaluate(
+            &[manual_policy.clone(), per_tx],
+            &PolicyAttachment::AllPolicies,
+            &action,
+            &history,
+            agent_key_id,
+            now,
+        ),
+        Err(PolicyError::PerTxLimitExceeded { .. })
+    ));
+
+    let weekly = SpendingPolicy::new(
+        1,
+        PolicyType::WeeklyMaxSpending,
+        100,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::All,
+    )
+    .expect("policy");
+    assert!(matches!(
+        engine.evaluate(
+            &[manual_policy.clone(), weekly],
+            &PolicyAttachment::AllPolicies,
+            &action,
+            &history,
+            agent_key_id,
+            now,
+        ),
+        Err(PolicyError::WindowLimitExceeded { .. })
+    ));
+
+    let tx_count = SpendingPolicy::new_tx_count_limit(
+        1,
+        1,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::All,
+    )
+    .expect("policy");
+    assert!(matches!(
+        engine.evaluate(
+            &[manual_policy, tx_count],
+            &PolicyAttachment::AllPolicies,
+            &action,
+            &history,
+            agent_key_id,
+            now,
+        ),
+        Err(PolicyError::TxCountLimitExceeded { .. })
+    ));
+}
+
+#[test]
+fn manual_approval_is_returned_once_all_hard_limits_pass() {
+    let engine = PolicyEngine::default();
+    let now = OffsetDateTime::now_utc();
+    let agent_key_id = Uuid::new_v4();
+    let manual_policy = SpendingPolicy::new_manual_approval(
+        0,
+        10,
+        10_000,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::All,
+    )
+    .expect("policy");
+    let daily_policy = SpendingPolicy::new(
+        1,
+        PolicyType::DailyMaxSpending,
+        10_000,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::All,
+    )
+    .expect("policy");
+    let mut per_tx_policy = policy_all_per_tx(10_000);
+    per_tx_policy.priority = 2;
+    let action = AgentAction::Transfer {
+        chain_id: 1,
+        token: addr("0x3000000000000000000000000000000000000000"),
+        to: addr("0x4000000000000000000000000000000000000000"),
+        amount_wei: 5_000,
+    };
+
+    let explanation = engine.explain(
+        &[
+            manual_policy.clone(),
+            daily_policy.clone(),
+            per_tx_policy.clone(),
+        ],
+        &PolicyAttachment::AllPolicies,
+        &action,
+        &[],
+        agent_key_id,
+        now,
+    );
+    assert_eq!(
+        explanation.evaluated_policy_ids,
+        vec![manual_policy.id, daily_policy.id, per_tx_policy.id]
+    );
+    assert!(matches!(
+        explanation.decision,
+        PolicyDecision::Deny(PolicyError::ManualApprovalRequired {
+            policy_id,
+            min_amount_wei: Some(10),
+            max_amount_wei: 10_000,
+            requested_amount_wei: 5_000,
+        }) if policy_id == manual_policy.id
+    ));
+}
+
+#[test]
+fn policy_error_classifies_manual_approval_outcomes_as_soft() {
+    let policy_id = Uuid::new_v4();
+    assert!(PolicyError::ManualApprovalRequired {
+        policy_id,
+        min_amount_wei: None,
+        max_amount_wei: 1,
+        requested_amount_wei: 1,
+    }
+    .is_manual_approval_required());
+    assert!(PolicyError::Eip712ManualApprovalRequired {
+        policy_id: None,
+        policy_suffix: String::new(),
+    }
+    .is_manual_approval_required());
+    assert!(!PolicyError::NoAttachedPolicies.is_manual_approval_required());
+    assert!(!PolicyError::AmountExceeded {
+        policy_id,
+        max_amount_wei: 1,
+        requested_amount_wei: 2,
+    }
+    .is_manual_approval_required());
+    assert!(!PolicyError::Eip712SigningDenied { policy_id }.is_manual_approval_required());
+}
+
+#[test]
+fn eip712_manual_approval_does_not_mask_deny_policy() {
+    let engine = PolicyEngine::default();
+    let manual_policy =
+        SpendingPolicy::new_eip712_signing(0, ApprovalType::ManualApproval, EntityScope::All)
+            .expect("policy");
+    let deny_policy = SpendingPolicy::new_eip712_signing(1, ApprovalType::Deny, EntityScope::All)
+        .expect("policy");
+
+    let explanation = engine.explain(
+        &[manual_policy.clone(), deny_policy.clone()],
+        &PolicyAttachment::AllPolicies,
+        &eip712_action(1),
+        &[],
+        Uuid::new_v4(),
+        OffsetDateTime::now_utc(),
+    );
+
+    assert_eq!(
+        explanation.evaluated_policy_ids,
+        vec![manual_policy.id, deny_policy.id]
+    );
+    assert!(matches!(
+        explanation.decision,
+        PolicyDecision::Deny(PolicyError::Eip712SigningDenied { policy_id })
+            if policy_id == deny_policy.id
+    ));
+}
+
+#[test]
+fn eip712_allow_policy_denies_value_bearing_primary_types() {
+    let engine = PolicyEngine::default();
+    let policy = SpendingPolicy::new_eip712_signing(1, ApprovalType::Allow, EntityScope::All)
+        .expect("policy");
+
+    for primary_type in [
+        "PermitSingle",
+        "PermitBatch",
+        "PermitTransferFrom",
+        "PermitBatchTransferFrom",
+        "Permit",
+        "TransferWithAuthorization",
+        "ReceiveWithAuthorization",
+        "SafeTx",
+        // Case variants must not slip through the denylist.
+        "permitsingle",
+        "SAFETX",
+    ] {
+        let action = eip712_action_with(
+            1,
+            primary_type,
+            "0x1111111111111111111111111111111111111111",
+        );
+        let result = engine.evaluate(
+            std::slice::from_ref(&policy),
+            &PolicyAttachment::AllPolicies,
+            &action,
+            &[],
+            Uuid::new_v4(),
+            OffsetDateTime::now_utc(),
+        );
+        assert!(
+            matches!(
+                &result,
+                Err(PolicyError::Eip712ValueBearingTypeDenied {
+                    policy_id,
+                    primary_type: denied,
+                }) if *policy_id == policy.id && denied == primary_type
+            ),
+            "{primary_type} must be denied under an allow policy, got {result:?}"
+        );
+    }
+}
+
+#[test]
+fn eip712_allow_policy_denies_permit2_domain_for_any_primary_type() {
+    let engine = PolicyEngine::default();
+    let policy = SpendingPolicy::new_eip712_signing(1, ApprovalType::Allow, EntityScope::All)
+        .expect("policy");
+    let action = eip712_action_with(1, "Mail", PERMIT2_CHECKSUMMED);
+
+    let result = engine.evaluate(
+        std::slice::from_ref(&policy),
+        &PolicyAttachment::AllPolicies,
+        &action,
+        &[],
+        Uuid::new_v4(),
+        OffsetDateTime::now_utc(),
+    );
+
+    assert!(matches!(
+        result,
+        Err(PolicyError::Eip712ValueBearingTypeDenied {
+            policy_id,
+            ref primary_type,
+        }) if policy_id == policy.id && primary_type == "Mail"
+    ));
+}
+
+#[test]
+fn eip712_allow_policy_fails_closed_on_unparseable_typed_data() {
+    let engine = PolicyEngine::default();
+    let policy = SpendingPolicy::new_eip712_signing(1, ApprovalType::Allow, EntityScope::All)
+        .expect("policy");
+    let action = AgentAction::Eip712TypedData {
+        typed_data: Eip712TypedData {
+            typed_data_json: "{ not typed data".to_string(),
+        },
+    };
+
+    let result = engine.evaluate(
+        std::slice::from_ref(&policy),
+        &PolicyAttachment::AllPolicies,
+        &action,
+        &[],
+        Uuid::new_v4(),
+        OffsetDateTime::now_utc(),
+    );
+
+    assert!(matches!(
+        result,
+        Err(PolicyError::Eip712ValueBearingTypeDenied { policy_id, .. }) if policy_id == policy.id
+    ));
+}
+
+#[test]
+fn eip712_manual_policy_routes_value_bearing_types_to_manual_approval() {
+    let engine = PolicyEngine::default();
+    let policy =
+        SpendingPolicy::new_eip712_signing(1, ApprovalType::ManualApproval, EntityScope::All)
+            .expect("policy");
+    let action = eip712_action_with(1, "PermitSingle", PERMIT2_CHECKSUMMED);
+
+    let result = engine.evaluate(
+        std::slice::from_ref(&policy),
+        &PolicyAttachment::AllPolicies,
+        &action,
+        &[],
+        Uuid::new_v4(),
+        OffsetDateTime::now_utc(),
+    );
+
+    // A human reviews it: manual approval is the intended path for value
+    // bearing typed data that is not submitted as a typed action.
+    assert!(matches!(
+        result,
+        Err(PolicyError::Eip712ManualApprovalRequired {
+            policy_id: Some(policy_id),
+            ..
+        }) if policy_id == policy.id
+    ));
+}
+
+#[test]
+fn eip712_allow_and_manual_policies_route_value_bearing_types_to_manual_approval() {
+    let engine = PolicyEngine::default();
+    // The allow policy has the higher priority, so it is evaluated first.
+    let allow = SpendingPolicy::new_eip712_signing(1, ApprovalType::Allow, EntityScope::All)
+        .expect("allow policy");
+    let manual =
+        SpendingPolicy::new_eip712_signing(2, ApprovalType::ManualApproval, EntityScope::All)
+            .expect("manual policy");
+    let policies = [allow.clone(), manual.clone()];
+
+    for action in [
+        eip712_action_with(1, "PermitSingle", PERMIT2_CHECKSUMMED),
+        eip712_action_with(1, "Mail", PERMIT2_CHECKSUMMED),
+        eip712_action_with(
+            1,
+            "TransferWithAuthorization",
+            "0x1111111111111111111111111111111111111111",
+        ),
+    ] {
+        let explanation = engine.explain(
+            &policies,
+            &PolicyAttachment::AllPolicies,
+            &action,
+            &[],
+            Uuid::new_v4(),
+            OffsetDateTime::now_utc(),
+        );
+        assert!(
+            matches!(
+                &explanation.decision,
+                PolicyDecision::Deny(PolicyError::Eip712ManualApprovalRequired {
+                    policy_id: Some(policy_id),
+                    ..
+                }) if *policy_id == manual.id
+            ),
+            "value-bearing typed data must route to manual approval, got {explanation:?}"
+        );
+        assert_eq!(explanation.evaluated_policy_ids, vec![allow.id, manual.id]);
+    }
+
+    // Non-value-bearing typed data still needs the manual approval because the
+    // manual policy applies.
+    let benign = eip712_action_with(1, "Mail", "0x1111111111111111111111111111111111111111");
+    let result = engine.evaluate(
+        &policies,
+        &PolicyAttachment::AllPolicies,
+        &benign,
+        &[],
+        Uuid::new_v4(),
+        OffsetDateTime::now_utc(),
+    );
+    assert!(matches!(
+        result,
+        Err(PolicyError::Eip712ManualApprovalRequired { .. })
+    ));
+
+    // An eip712 deny policy still hard-denies value-bearing typed data.
+    let deny = SpendingPolicy::new_eip712_signing(3, ApprovalType::Deny, EntityScope::All)
+        .expect("deny policy");
+    let result = engine.evaluate(
+        &[allow.clone(), manual.clone(), deny.clone()],
+        &PolicyAttachment::AllPolicies,
+        &eip712_action_with(1, "PermitSingle", PERMIT2_CHECKSUMMED),
+        &[],
+        Uuid::new_v4(),
+        OffsetDateTime::now_utc(),
+    );
+    assert!(matches!(
+        result,
+        Err(PolicyError::Eip712SigningDenied { policy_id }) if policy_id == deny.id
+    ));
+
+    // Without a manual policy the allow policy keeps hard-denying.
+    let result = engine.evaluate(
+        std::slice::from_ref(&allow),
+        &PolicyAttachment::AllPolicies,
+        &eip712_action_with(1, "PermitSingle", PERMIT2_CHECKSUMMED),
+        &[],
+        Uuid::new_v4(),
+        OffsetDateTime::now_utc(),
+    );
+    assert!(matches!(
+        result,
+        Err(PolicyError::Eip712ValueBearingTypeDenied { policy_id, .. }) if policy_id == allow.id
+    ));
+}
+
+#[test]
+fn typed_permit2_action_is_unaffected_by_eip712_value_bearing_denylist() {
+    // The typed Permit2 action is evaluated by the spending policies, not the
+    // eip712 path, so it keeps working with amount scoping intact.
+    let engine = PolicyEngine::default();
+    let policy = policy_all_per_tx(1_000);
+    let action = AgentAction::Permit2Permit {
+        permit: vault_domain::Permit2Permit {
+            chain_id: 1,
+            permit2_contract: addr(PERMIT2_CHECKSUMMED),
+            token: addr("0x3000000000000000000000000000000000000000"),
+            spender: addr("0x4000000000000000000000000000000000000000"),
+            amount_wei: 500,
+            expiration: 1_000,
+            nonce: 0,
+            sig_deadline: 1_000,
+        },
+    };
+
+    let result = engine.evaluate(
+        &[policy],
+        &PolicyAttachment::AllPolicies,
+        &action,
+        &[],
+        Uuid::new_v4(),
+        OffsetDateTime::now_utc(),
+    );
+
+    assert!(result.is_ok());
+}
+
+const TEMPO_TOKEN: &str = "0x20c0000000000000000000000000000000000001";
+const TEMPO_PAYEE: &str = "0x7777777777777777777777777777777777777777";
+const TEMPO_PAYER: &str = "0x1111111111111111111111111111111111111111";
+
+fn tempo_open_authorization(deposit_wei: u128) -> TempoSessionOpenTransaction {
+    TempoSessionOpenTransaction {
+        chain_id: TEMPO_MAINNET_CHAIN_ID,
+        escrow_contract: addr(TEMPO_MAINNET_ESCROW_CONTRACT),
+        token: addr(TEMPO_TOKEN),
+        recipient: addr(TEMPO_PAYEE),
+        payer: addr(TEMPO_PAYER),
+        authorized_signer: addr(TEMPO_PAYER),
+        salt_hex: format!("0x{}", "5a".repeat(32)),
+        deposit_wei,
+        tx: TempoTxParams {
+            nonce: 0,
+            nonce_key: None,
+            gas_limit: 400_000,
+            max_fee_per_gas_wei: 20_000_000_000,
+            max_priority_fee_per_gas_wei: 1_000_000,
+            valid_before: None,
+            valid_after: None,
+            fee_token: Some(addr(TEMPO_TOKEN)),
+            fee_payer: false,
+        },
+    }
+}
+
+fn tempo_voucher_action(cumulative_amount_wei: u128) -> AgentAction {
+    let open = tempo_open_authorization(1_000_000);
+    let channel_id = open.channel_id().expect("channel id");
+    AgentAction::TempoSessionVoucher {
+        authorization: TempoSessionVoucher {
+            chain_id: open.chain_id,
+            escrow_contract: open.escrow_contract,
+            token: open.token,
+            recipient: open.recipient,
+            payer: open.payer,
+            authorized_signer: open.authorized_signer,
+            salt_hex: open.salt_hex,
+            channel_id_hex: format!(
+                "0x{}",
+                channel_id
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            ),
+            cumulative_amount_wei,
+        },
+    }
+}
+
+fn tempo_spend_history(
+    agent_key_id: Uuid,
+    now: OffsetDateTime,
+    amount_wei: u128,
+) -> Vec<SpendEvent> {
+    vec![SpendEvent {
+        agent_key_id,
+        chain_id: TEMPO_MAINNET_CHAIN_ID,
+        asset: AssetId::Erc20(addr(TEMPO_TOKEN)),
+        recipient: addr(TEMPO_PAYEE).into(),
+        amount_wei,
+        at: now - Duration::minutes(5),
+        action_kind: ActionKind::Other,
+    }]
+}
+
+#[test]
+fn tempo_voucher_per_tx_limit_uses_full_cumulative_amount() {
+    let engine = PolicyEngine::default();
+    let now = OffsetDateTime::now_utc();
+    let policies = [policy_all_per_tx(500)];
+
+    let result = engine.evaluate(
+        &policies,
+        &PolicyAttachment::AllPolicies,
+        &tempo_voucher_action(501),
+        &[],
+        Uuid::new_v4(),
+        now,
+    );
+    assert!(matches!(
+        result,
+        Err(PolicyError::PerTxLimitExceeded {
+            requested_amount_wei: 501,
+            ..
+        })
+    ));
+    assert!(engine
+        .evaluate(
+            &policies,
+            &PolicyAttachment::AllPolicies,
+            &tempo_voucher_action(500),
+            &[],
+            Uuid::new_v4(),
+            now,
+        )
+        .is_ok());
+}
+
+#[test]
+fn tempo_voucher_skips_window_limits_but_open_does_not() {
+    let engine = PolicyEngine::default();
+    let now = OffsetDateTime::now_utc();
+    let agent_key_id = Uuid::new_v4();
+    let policies = [
+        SpendingPolicy::new(
+            1,
+            PolicyType::DailyMaxSpending,
+            1_000,
+            EntityScope::All,
+            EntityScope::All,
+            EntityScope::All,
+        )
+        .expect("daily"),
+        SpendingPolicy::new(
+            2,
+            PolicyType::WeeklyMaxSpending,
+            1_000,
+            EntityScope::All,
+            EntityScope::All,
+            EntityScope::All,
+        )
+        .expect("weekly"),
+        SpendingPolicy::new(
+            3,
+            PolicyType::DailyMaxTxCount,
+            1,
+            EntityScope::All,
+            EntityScope::All,
+            EntityScope::All,
+        )
+        .expect("count"),
+    ];
+    // The deposit that funded the channel already used the full window budget.
+    let history = tempo_spend_history(agent_key_id, now, 1_000);
+
+    assert!(engine
+        .evaluate(
+            &policies,
+            &PolicyAttachment::AllPolicies,
+            &tempo_voucher_action(900),
+            &history,
+            agent_key_id,
+            now,
+        )
+        .is_ok());
+
+    let open = AgentAction::TempoSessionOpenTransaction {
+        authorization: tempo_open_authorization(1),
+    };
+    assert!(matches!(
+        engine.evaluate(
+            &policies,
+            &PolicyAttachment::AllPolicies,
+            &open,
+            &history,
+            agent_key_id,
+            now,
+        ),
+        Err(PolicyError::WindowLimitExceeded { .. })
+    ));
+}
+
+#[test]
+fn tempo_voucher_still_honors_manual_approval() {
+    let engine = PolicyEngine::default();
+    let now = OffsetDateTime::now_utc();
+    let manual = SpendingPolicy::new_manual_approval(
+        1,
+        100,
+        u128::MAX,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::All,
+    )
+    .expect("manual");
+    let result = engine.evaluate(
+        &[manual],
+        &PolicyAttachment::AllPolicies,
+        &tempo_voucher_action(150),
+        &[],
+        Uuid::new_v4(),
+        now,
+    );
+    assert!(matches!(
+        result,
+        Err(PolicyError::ManualApprovalRequired { .. })
+    ));
 }

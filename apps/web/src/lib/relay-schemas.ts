@@ -61,4 +61,5 @@ export const secureApprovalLinkRecordSchema = z.object({
   approvalId: approvalIdSchema,
   approvalUrl: z.string().url(),
   daemonId: daemonIdSchema,
+  daemonPublicKey: x25519PublicKeySchema,
 });

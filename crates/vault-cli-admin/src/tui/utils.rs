@@ -124,7 +124,9 @@ pub(super) fn is_allowed_input_char(field: Field, ch: char) -> bool {
             // parser still rejects malformed values when the field is committed.
             ch.is_ascii_alphanumeric()
         }
-        _ => true,
+        // Free-text fields still refuse control characters (escape sequences, NUL, newlines)
+        // so pasted terminal input cannot inject them into persisted config values.
+        _ => !ch.is_control(),
     }
 }
 
@@ -230,5 +232,8 @@ mod tests {
         assert!(!is_allowed_input_char(Field::NetworkAddress, '!'));
 
         assert!(is_allowed_input_char(Field::TokenName, '!'));
+        assert!(!is_allowed_input_char(Field::TokenName, '\u{1b}'));
+        assert!(!is_allowed_input_char(Field::TokenName, '\n'));
+        assert!(!is_allowed_input_char(Field::TokenName, '\0'));
     }
 }

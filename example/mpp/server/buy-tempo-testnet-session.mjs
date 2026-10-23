@@ -15,7 +15,6 @@ const SERVER_PORT = 4021;
 const DEFAULT_RECIPIENT = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
 const PRICE_UNITS = '0.01';
 const DEPOSIT_UNITS = '0.02';
-const WLFI_AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE = 'wlfi-agent-agent-auth-token';
 const AGENTPAY_AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE = 'agentpay-agent-auth-token';
 
 function log(message) {
@@ -73,12 +72,12 @@ function writeExecutable(filePath, body) {
 
 async function loadWlfiWalletContext() {
   const [{ stdout: configRaw }, { stdout: walletRaw }] = await Promise.all([
-    runCommand('wlfi-agent', ['config', 'show', '--json']),
-    runCommand('wlfi-agent', ['wallet', '--json']),
+    runCommand('agentpay', ['config', 'show', '--json']),
+    runCommand('agentpay', ['wallet', '--json']),
   ]);
   const config = JSON.parse(configRaw);
   const wallet = JSON.parse(walletRaw);
-  const status = await runCommand('wlfi-agent', ['config', 'agent-auth', 'status', '--json']);
+  const status = await runCommand('agentpay', ['config', 'agent-auth', 'status', '--json']);
   const agentAuthStatus = JSON.parse(status.stdout);
 
   let agentAuthToken = '';
@@ -87,7 +86,7 @@ async function loadWlfiWalletContext() {
     const { stdout: keychainToken } = await runCommand('security', [
       'find-generic-password',
       '-s',
-      WLFI_AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE,
+      AGENTPAY_AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE,
       '-a',
       wallet.agentKeyId,
       '-w',
@@ -106,9 +105,9 @@ async function loadWlfiWalletContext() {
   if (!agentAuthToken) {
     throw new Error(
       [
-        `no wlfi-agent auth token is available for agentKeyId ${wallet.agentKeyId}`,
+        `no agentpay auth token is available for agentKeyId ${wallet.agentKeyId}`,
         'The session demo can use one of these sources:',
-        `1. Store the token in macOS Keychain via \`wlfi-agent config agent-auth rotate\` or another local import flow`,
+        `1. Store the token in macOS Keychain via \`agentpay config agent-auth rotate\` or another local import flow`,
         '2. Export a token into this process only:',
         '   `AGENTPAY_MPP_DEMO_AGENT_AUTH_TOKEN=<token> pnpm example:mpp:session-demo`',
       ].join('\n'),
@@ -119,11 +118,11 @@ async function loadWlfiWalletContext() {
     ? path.join(config.paths.wlfiHome, 'bin')
     : String(config.rustBinDir ?? '').trim();
   if (!wlfiBinDir) {
-    throw new Error('wlfi-agent config is missing rustBinDir');
+    throw new Error('agentpay config is missing rustBinDir');
   }
 
   return {
-    kind: 'wlfi-agent',
+    kind: 'legacy',
     agentAuthToken,
     agentAuthTokenSource,
     agentKeyId: String(wallet.agentKeyId),
@@ -174,7 +173,7 @@ async function loadDemoWalletContext() {
     return await loadAgentpayWalletContext();
   } catch (agentpayError) {
     log(
-      `local agentpay context unavailable, falling back to wlfi-agent compatibility: ${
+      `local agentpay context unavailable, falling back to legacy-layout compatibility: ${
         agentpayError instanceof Error ? agentpayError.message : String(agentpayError)
       }`,
     );
@@ -213,11 +212,11 @@ function streamWithPrefix(stream, prefix) {
 function createAgentpayWrappers({ rustBinDir, wlfiBinDir }) {
   writeExecutable(
     path.join(rustBinDir, 'agentpay-agent'),
-    `exec "${path.join(wlfiBinDir, 'wlfi-agent-agent')}" "$@"`,
+    `exec "${path.join(wlfiBinDir, 'agentpay-agent')}" "$@"`,
   );
   writeExecutable(
     path.join(rustBinDir, 'agentpay-admin'),
-    `exec "${path.join(wlfiBinDir, 'wlfi-agent-admin')}" "$@"`,
+    `exec "${path.join(wlfiBinDir, 'agentpay-admin')}" "$@"`,
   );
 }
 
@@ -413,7 +412,7 @@ async function main() {
         : path.join(agentpayHome, 'tempo-session.json');
     fs.rmSync(effectiveSessionStatePath, { force: true });
 
-    if (context.kind === 'wlfi-agent') {
+    if (context.kind === 'agentpay') {
       createAgentpayWrappers({
         rustBinDir,
         wlfiBinDir: context.wlfiBinDir,

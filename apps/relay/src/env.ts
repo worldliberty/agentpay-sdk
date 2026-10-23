@@ -24,6 +24,12 @@ const schema = z.object({
   RELAY_ALLOWED_ORIGINS: z.string().optional(),
   RELAY_BASE_URL: z.string().trim().url(),
   RELAY_CACHE_NAMESPACE: z.string().trim().min(1).default('agentpay:relay'),
+  RELAY_CLIENT_IP_HEADER: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .regex(/^[a-z0-9-]+$/u, 'RELAY_CLIENT_IP_HEADER must be an HTTP header name')
+    .optional(),
   RELAY_DAEMON_TOKEN: z.string().trim().min(24),
   RELAY_ENABLE_PRETTY_LOGS: booleanString,
   RELAY_FRONTEND_BASE_URL: z.string().trim().url().optional(),
@@ -42,6 +48,7 @@ export const env = (() => {
     RELAY_ALLOWED_ORIGINS: process.env.RELAY_ALLOWED_ORIGINS,
     RELAY_BASE_URL: process.env.RELAY_BASE_URL,
     RELAY_CACHE_NAMESPACE: process.env.RELAY_CACHE_NAMESPACE,
+    RELAY_CLIENT_IP_HEADER: process.env.RELAY_CLIENT_IP_HEADER || undefined,
     RELAY_DAEMON_TOKEN: process.env.RELAY_DAEMON_TOKEN,
     RELAY_ENABLE_PRETTY_LOGS: process.env.RELAY_ENABLE_PRETTY_LOGS,
     RELAY_FRONTEND_BASE_URL: process.env.RELAY_FRONTEND_BASE_URL,
@@ -49,9 +56,19 @@ export const env = (() => {
     RELAY_UPDATE_LEASE_SECONDS: process.env.RELAY_UPDATE_LEASE_SECONDS,
   });
 
+  const allowedOrigins = parseCsv(parsed.RELAY_ALLOWED_ORIGINS);
+  // A production relay must never fall back to a wildcard CORS origin: the
+  // approval console submits capability-bearing requests cross-origin.
+  if (parsed.NODE_ENV === 'production' && allowedOrigins.length === 0) {
+    throw new Error('RELAY_ALLOWED_ORIGINS must list the approval console origin(s) in production');
+  }
+  if (allowedOrigins.includes('*')) {
+    throw new Error("RELAY_ALLOWED_ORIGINS must list explicit origins, not '*'");
+  }
+
   return {
     ...parsed,
-    RELAY_ALLOWED_ORIGINS: parseCsv(parsed.RELAY_ALLOWED_ORIGINS),
+    RELAY_ALLOWED_ORIGINS: allowedOrigins,
   };
 })();
 

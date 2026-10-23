@@ -11,6 +11,25 @@ use super::*;
 sol! {
     function approve(address spender, uint256 value);
     function transfer(address to, uint256 value);
+    function increaseAllowance(address spender, uint256 addedValue);
+    function setApprovalForAll(address operator, bool approved);
+}
+
+fn broadcast_tx_with_calldata(data_hex: String, value_wei: u128) -> BroadcastTx {
+    BroadcastTx {
+        chain_id: 1,
+        nonce: 0,
+        to: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            .parse()
+            .expect("to"),
+        value_wei,
+        data_hex,
+        gas_limit: 60_000,
+        max_fee_per_gas_wei: 1_000_000_000,
+        max_priority_fee_per_gas_wei: 1_000_000_000,
+        tx_type: 0x02,
+        delegation_enabled: false,
+    }
 }
 
 fn unix_timestamp(value: OffsetDateTime) -> u64 {
@@ -208,11 +227,67 @@ fn solana_nonce_account_create_is_validated_as_wallet_maintenance() {
     assert_eq!(action.asset(), AssetId::NativeSol);
     assert_eq!(action.recipient(), create.nonce_account.clone());
 
-    let mut invalid_seed = create;
+    let mut invalid_seed = create.clone();
     invalid_seed.seed = "x".repeat(33);
     assert!(matches!(
         invalid_seed.validate(),
         Err(DomainError::InvalidSolanaNonceSeed)
+    ));
+}
+
+#[test]
+fn solana_nonce_account_rent_constants_follow_rent_formula() {
+    // (ACCOUNT_STORAGE_OVERHEAD 128 + 80 data bytes) * 3480 lamports/byte-year * 2 years.
+    assert_eq!(SOLANA_NONCE_ACCOUNT_DATA_LEN_BYTES, 80);
+    assert_eq!(SOLANA_NONCE_ACCOUNT_RENT_EXEMPT_MINIMUM_LAMPORTS, 1_447_680);
+    assert_eq!(SOLANA_NONCE_ACCOUNT_MAX_RENT_LAMPORTS, 2_895_360);
+}
+
+#[test]
+fn solana_nonce_account_create_caps_rent_at_twice_rent_exempt_minimum() {
+    let base = SolanaNonceAccountCreate {
+        chain_id: SOLANA_DEVNET_CHAIN_ID,
+        recent_blockhash: "11111111111111111111111111111111".to_string(),
+        fee_payer: "11111111111111111111111111111111"
+            .parse()
+            .expect("fee payer"),
+        nonce_account: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            .parse()
+            .expect("nonce account"),
+        seed: "agentpay-900000002-nonce".to_string(),
+        rent_lamports: SOLANA_NONCE_ACCOUNT_RENT_EXEMPT_MINIMUM_LAMPORTS,
+    };
+    base.validate().expect("rent-exempt minimum is accepted");
+
+    let at_cap = SolanaNonceAccountCreate {
+        rent_lamports: SOLANA_NONCE_ACCOUNT_MAX_RENT_LAMPORTS,
+        ..base.clone()
+    };
+    at_cap
+        .validate()
+        .expect("rent exactly at the cap is accepted");
+
+    let above_cap = SolanaNonceAccountCreate {
+        rent_lamports: SOLANA_NONCE_ACCOUNT_MAX_RENT_LAMPORTS + 1,
+        ..base.clone()
+    };
+    assert!(matches!(
+        above_cap.validate(),
+        Err(DomainError::SolanaNonceRentTooHigh { max_lamports })
+            if max_lamports == SOLANA_NONCE_ACCOUNT_MAX_RENT_LAMPORTS
+    ));
+    assert!(matches!(
+        AgentAction::SolanaNonceAccountCreate { create: above_cap }.validate(),
+        Err(DomainError::SolanaNonceRentTooHigh { .. })
+    ));
+
+    let drain_attempt = SolanaNonceAccountCreate {
+        rent_lamports: u128::from(u64::MAX),
+        ..base
+    };
+    assert!(matches!(
+        drain_attempt.validate(),
+        Err(DomainError::SolanaNonceRentTooHigh { .. })
     ));
 }
 
@@ -539,6 +614,134 @@ fn specialized_policy_deserialization_requires_dedicated_or_legacy_limit_field()
         .contains("missing field `max_calldata_bytes` or legacy `max_amount_wei`"));
 }
 
+#[test]
+fn spending_policy_deserialization_rejects_zero_and_inverted_amount_limits() {
+    let policy = SpendingPolicy::new_manual_approval(
+        1,
+        5,
+        10,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::All,
+    )
+    .expect("policy");
+    let base = serde_json::to_value(&policy).expect("serialize policy");
+    serde_json::from_value::<SpendingPolicy>(base.clone()).expect("valid policy round-trips");
+
+    let mut zero_max = base.clone();
+    zero_max["max_amount_wei"] = serde_json::json!("0");
+    let err = serde_json::from_value::<SpendingPolicy>(zero_max)
+        .expect_err("zero max_amount_wei must fail");
+    assert!(err
+        .to_string()
+        .contains("max_amount_wei must be greater than zero"));
+
+    let mut inverted_range = base.clone();
+    inverted_range["min_amount_wei"] = serde_json::json!("11");
+    let err = serde_json::from_value::<SpendingPolicy>(inverted_range)
+        .expect_err("min above max must fail");
+    assert!(err
+        .to_string()
+        .contains("min_amount_wei must not exceed max_amount_wei"));
+
+    let mut equal_range = base;
+    equal_range["min_amount_wei"] = serde_json::json!("10");
+    let equal = serde_json::from_value::<SpendingPolicy>(equal_range).expect("min == max is valid");
+    assert_eq!(equal.min_amount_wei, Some(10));
+
+    let per_tx = SpendingPolicy::new(
+        1,
+        PolicyType::PerTxMaxSpending,
+        10,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::All,
+    )
+    .expect("policy");
+    let mut zero_per_tx = serde_json::to_value(&per_tx).expect("serialize policy");
+    zero_per_tx["max_amount_wei"] = serde_json::json!("0");
+    assert!(serde_json::from_value::<SpendingPolicy>(zero_per_tx).is_err());
+}
+
+#[test]
+fn spending_policy_deserialization_rejects_zero_specialized_limits() {
+    let calldata_policy = SpendingPolicy::new_calldata_limit(
+        1,
+        4,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::All,
+    )
+    .expect("policy");
+    let mut zero_dedicated = serde_json::to_value(&calldata_policy).expect("serialize policy");
+    zero_dedicated["max_calldata_bytes"] = serde_json::json!("0");
+    zero_dedicated["max_amount_wei"] = serde_json::json!("0");
+    let err = serde_json::from_value::<SpendingPolicy>(zero_dedicated)
+        .expect_err("zero calldata limit must fail");
+    assert!(err
+        .to_string()
+        .contains("policy limit must be greater than zero"));
+
+    let tx_count_policy = SpendingPolicy::new_tx_count_limit(
+        1,
+        3,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::All,
+    )
+    .expect("policy");
+    let mut zero_legacy = serde_json::to_value(&tx_count_policy).expect("serialize policy");
+    let serde_json::Value::Object(ref mut fields) = zero_legacy else {
+        panic!("policy must serialize as an object");
+    };
+    fields.remove("max_tx_count");
+    fields.insert("max_amount_wei".to_string(), serde_json::json!("0"));
+    assert!(serde_json::from_value::<SpendingPolicy>(zero_legacy).is_err());
+}
+
+#[test]
+fn spending_policy_deserialization_validates_network_scope() {
+    let policy = SpendingPolicy::new(
+        1,
+        PolicyType::PerTxMaxSpending,
+        10,
+        EntityScope::All,
+        EntityScope::All,
+        EntityScope::Set(BTreeSet::from([1_u64])),
+    )
+    .expect("policy");
+    let base = serde_json::to_value(&policy).expect("serialize policy");
+
+    let mut zero_chain = base.clone();
+    zero_chain["networks"] =
+        serde_json::to_value(EntityScope::Set(BTreeSet::from([0_u64]))).expect("scope");
+    let err =
+        serde_json::from_value::<SpendingPolicy>(zero_chain).expect_err("chain id 0 must fail");
+    assert!(err
+        .to_string()
+        .contains("network set must not contain chain_id 0"));
+
+    let mut empty_networks = base;
+    empty_networks["networks"] =
+        serde_json::to_value(EntityScope::<u64>::Set(BTreeSet::new())).expect("scope");
+    let err = serde_json::from_value::<SpendingPolicy>(empty_networks)
+        .expect_err("empty network set must fail");
+    assert!(err
+        .to_string()
+        .contains("network set scope must not be empty"));
+
+    let eip712 = SpendingPolicy::new_eip712_signing(1, ApprovalType::Allow, EntityScope::All)
+        .expect("policy");
+    let mut eip712_zero_chain = serde_json::to_value(&eip712).expect("serialize policy");
+    eip712_zero_chain["networks"] =
+        serde_json::to_value(EntityScope::Set(BTreeSet::from([0_u64]))).expect("scope");
+    let err = serde_json::from_value::<SpendingPolicy>(eip712_zero_chain)
+        .expect_err("eip712 policy with chain id 0 must fail");
+    assert!(err
+        .to_string()
+        .contains("network set must not contain chain_id 0"));
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct U128Wrapper {
     #[serde(with = "super::u128_as_decimal_string")]
@@ -737,27 +940,80 @@ fn broadcast_action_derives_erc20_scope_from_calldata() {
 }
 
 #[test]
-fn broadcast_action_unknown_selector_uses_native_fields() {
-    let to: EvmAddress = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        .parse()
-        .expect("to");
-    let tx = BroadcastTx {
-        chain_id: 1,
-        nonce: 0,
-        to: to.clone(),
-        value_wei: 123,
-        data_hex: "0xdeadbeef".to_string(),
-        gas_limit: 21_000,
-        max_fee_per_gas_wei: 1_000_000_000,
-        max_priority_fee_per_gas_wei: 1_000_000_000,
-        tx_type: 0x02,
-        delegation_enabled: false,
-    };
-    let action = AgentAction::BroadcastTx { tx };
+fn broadcast_tx_rejects_unknown_calldata_selector() {
+    let tx = broadcast_tx_with_calldata("0xdeadbeef".to_string(), 123);
 
-    assert_eq!(action.asset(), AssetId::NativeEth);
-    assert_eq!(action.amount_wei(), 123);
-    assert_eq!(action.recipient(), to);
+    assert!(matches!(
+        tx.validate(),
+        Err(DomainError::UnrecognizedCalldata)
+    ));
+    assert!(matches!(
+        tx.eip1559_signing_message(),
+        Err(DomainError::UnrecognizedCalldata)
+    ));
+    assert!(matches!(
+        tx.eip1559_signed_raw_transaction(0, [0x11; 32], [0x22; 32]),
+        Err(DomainError::UnrecognizedCalldata)
+    ));
+    assert!(matches!(
+        AgentAction::BroadcastTx { tx }.validate(),
+        Err(DomainError::UnrecognizedCalldata)
+    ));
+}
+
+#[test]
+fn broadcast_tx_with_empty_calldata_stays_a_native_transfer() {
+    for data_hex in ["", "0x"] {
+        let tx = broadcast_tx_with_calldata(data_hex.to_string(), 123);
+        tx.validate().expect("plain native transfer validates");
+
+        let action = AgentAction::BroadcastTx { tx: tx.clone() };
+        assert_eq!(action.asset(), AssetId::NativeEth);
+        assert_eq!(action.amount_wei(), 123);
+        assert_eq!(action.recipient(), tx.to);
+    }
+}
+
+#[test]
+fn broadcast_tx_rejects_increase_allowance_calldata() {
+    let calldata = increaseAllowanceCall {
+        spender: alloy_primitives::Address::from([0x33; 20]),
+        addedValue: U256::from(1_u64),
+    }
+    .abi_encode();
+    let tx = broadcast_tx_with_calldata(format!("0x{}", hex::encode(calldata)), 0);
+
+    assert!(matches!(
+        tx.validate(),
+        Err(DomainError::UnrecognizedCalldata)
+    ));
+}
+
+#[test]
+fn broadcast_tx_rejects_set_approval_for_all_calldata() {
+    let calldata = setApprovalForAllCall {
+        operator: alloy_primitives::Address::from([0x33; 20]),
+        approved: true,
+    }
+    .abi_encode();
+    let tx = broadcast_tx_with_calldata(format!("0x{}", hex::encode(calldata)), 0);
+
+    assert!(matches!(
+        tx.validate(),
+        Err(DomainError::UnrecognizedCalldata)
+    ));
+}
+
+#[test]
+fn broadcast_tx_rejects_truncated_selector_calldata() {
+    // Fewer than 4 bytes can never be a recognized call; must not be treated
+    // as a native transfer either.
+    let tx = broadcast_tx_with_calldata("0xdead".to_string(), 0);
+
+    assert!(matches!(
+        tx.validate(),
+        Err(DomainError::UnrecognizedCalldata)
+    ));
 }
 
 #[test]
@@ -768,7 +1024,7 @@ fn debug_output_redacts_secret_fields() {
         expires_at: OffsetDateTime::UNIX_EPOCH + time::Duration::minutes(5),
     };
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease: lease.clone(),
     };
     let credentials = AgentCredentials {
@@ -1137,39 +1393,13 @@ fn permit2_and_eip3009_actions_produce_signing_hashes() {
     .expect("eip3009 receive hash")
     .expect("receive typed hash");
     let tempo_open_hash = AgentAction::TempoSessionOpenTransaction {
-        authorization: TempoSessionOpenTransaction {
-            chain_id: 4217,
-            token: "0x6666666666666666666666666666666666666666"
-                .parse()
-                .expect("token"),
-            recipient: "0x7777777777777777777777777777777777777777"
-                .parse()
-                .expect("recipient"),
-            deposit_wei: 1_000_000,
-            initial_amount_wei: 1_000_000,
-            signing_hash_hex: format!("0x{}", hex::encode([0x44u8; 32])),
-        },
+        authorization: sample_tempo_open(),
     }
     .signing_hash()
     .expect("tempo open hash")
     .expect("tempo open typed hash");
     let tempo_voucher_hash = AgentAction::TempoSessionVoucher {
-        authorization: TempoSessionVoucher {
-            chain_id: 4217,
-            escrow_contract: "0x8888888888888888888888888888888888888888"
-                .parse()
-                .expect("escrow"),
-            token: "0x6666666666666666666666666666666666666666"
-                .parse()
-                .expect("token"),
-            recipient: "0x7777777777777777777777777777777777777777"
-                .parse()
-                .expect("recipient"),
-            channel_id_hex: format!("0x{}", hex::encode([0x55u8; 32])),
-            amount_wei: 1_000_000,
-            cumulative_amount_wei: 1_000_000,
-            signing_hash_hex: format!("0x{}", hex::encode([0x66u8; 32])),
-        },
+        authorization: sample_tempo_voucher(),
     }
     .signing_hash()
     .expect("tempo voucher hash")
@@ -1461,36 +1691,16 @@ fn permit2_and_eip3009_validation_reject_invalid_inputs() {
     ));
     assert!(matches!(
         TempoSessionOpenTransaction {
-            chain_id: 4217,
-            token: "0x1111111111111111111111111111111111111111"
-                .parse()
-                .expect("token"),
-            recipient: "0x2222222222222222222222222222222222222222"
-                .parse()
-                .expect("recipient"),
-            deposit_wei: 1,
-            initial_amount_wei: 2,
-            signing_hash_hex: format!("0x{}", hex::encode([0x11u8; 32])),
+            deposit_wei: 0,
+            ..sample_tempo_open()
         }
         .validate(),
         Err(DomainError::InvalidAmount)
     ));
     assert!(matches!(
         TempoSessionVoucher {
-            chain_id: 4217,
-            escrow_contract: "0x3333333333333333333333333333333333333333"
-                .parse()
-                .expect("escrow"),
-            token: "0x1111111111111111111111111111111111111111"
-                .parse()
-                .expect("token"),
-            recipient: "0x2222222222222222222222222222222222222222"
-                .parse()
-                .expect("recipient"),
             channel_id_hex: "0x1234".to_string(),
-            amount_wei: 1,
-            cumulative_amount_wei: 1,
-            signing_hash_hex: format!("0x{}", hex::encode([0x22u8; 32])),
+            ..sample_tempo_voucher()
         }
         .validate(),
         Err(DomainError::InvalidTypedDataDomain(_))
@@ -1808,6 +2018,14 @@ fn broadcast_action_derives_approve_and_receive_with_authorization_scope() {
 
 #[test]
 fn broadcast_tx_supports_long_rlp_payloads_and_rejects_out_of_range_token_amounts() {
+    // A 68-byte ERC-20 transfer call exceeds the 55-byte RLP short-string
+    // bound, exercising the long-form length prefix with recognized calldata.
+    let long_calldata = transferCall {
+        to: alloy_primitives::Address::from([0x33; 20]),
+        value: U256::from(u128::MAX),
+    }
+    .abi_encode();
+    assert!(long_calldata.len() > 55);
     let tx = BroadcastTx {
         chain_id: 1,
         nonce: 0,
@@ -1815,7 +2033,7 @@ fn broadcast_tx_supports_long_rlp_payloads_and_rejects_out_of_range_token_amount
             .parse()
             .expect("to"),
         value_wei: 0,
-        data_hex: format!("0x{}", "11".repeat(64)),
+        data_hex: format!("0x{}", hex::encode(long_calldata)),
         gas_limit: 21_000,
         max_fee_per_gas_wei: 1_000_000_000,
         max_priority_fee_per_gas_wei: 1_000_000_000,
@@ -1950,4 +2168,606 @@ fn nonce_release_request_debug_redacts_agent_auth_token() {
     let rendered = format!("{request:?}");
     assert!(rendered.contains("<redacted>"));
     assert!(!rendered.contains("super-secret-token"));
+}
+
+fn sample_railgun_address() -> RailgunAddress {
+    "0zk1qyqqqqqdl645pcpreh6dga7xa0dfwx5ehmkmrkpaczj9cyqr0e0vchcaxfsa6au6f93dvr64skspz"
+        .parse::<RailgunAddress>()
+        .expect("valid railgun address")
+}
+
+#[test]
+fn railgun_address_parser_validates_prefix_and_charset() {
+    let valid = sample_railgun_address();
+    assert!(valid.as_str().starts_with("0zk1"));
+
+    assert!(matches!(
+        "0xnot-a-railgun-address".parse::<RailgunAddress>(),
+        Err(DomainError::InvalidRailgunAddress)
+    ));
+    assert!(matches!(
+        "0zk1".parse::<RailgunAddress>(),
+        Err(DomainError::InvalidRailgunAddress)
+    ));
+    assert!(matches!(
+        "0zk1qyqqq!!!invalid-chars".parse::<RailgunAddress>(),
+        Err(DomainError::InvalidRailgunAddress)
+    ));
+
+    // Characters outside the bech32 alphabet (`b`, `i`, `o`, `1`) and the
+    // previously tolerated `_` are rejected even when otherwise well-formed.
+    let canonical = sample_railgun_address().as_str().to_string();
+    for forbidden in ['b', 'i', 'o', '1', '_', '-'] {
+        let mut mutated = canonical.clone();
+        mutated.replace_range(canonical.len() - 1.., &forbidden.to_string());
+        assert!(
+            matches!(
+                mutated.parse::<RailgunAddress>(),
+                Err(DomainError::InvalidRailgunAddress)
+            ),
+            "{forbidden:?} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn railgun_address_parser_normalizes_case_to_lowercase() {
+    let canonical = sample_railgun_address();
+    let upper = canonical.as_str().to_ascii_uppercase();
+    assert_ne!(upper, canonical.as_str());
+
+    let from_upper = upper
+        .parse::<RailgunAddress>()
+        .expect("upper-case input parses");
+    assert_eq!(from_upper, canonical);
+    assert_eq!(from_upper.as_str(), canonical.as_str());
+
+    let mut mixed = String::new();
+    for (index, ch) in canonical.as_str().chars().enumerate() {
+        if index % 2 == 0 {
+            mixed.extend(ch.to_uppercase());
+        } else {
+            mixed.push(ch);
+        }
+    }
+    let from_mixed = format!("  {mixed}  ")
+        .parse::<RailgunAddress>()
+        .expect("mixed-case input with padding parses");
+    assert_eq!(from_mixed, canonical);
+
+    // Scope matching relies on one canonical spelling: both spellings must
+    // deserialize to the same RecipientId.
+    let recipient_upper: RecipientId =
+        serde_json::from_value(serde_json::json!(upper)).expect("deserialize upper");
+    assert_eq!(recipient_upper, RecipientId::Railgun(canonical));
+}
+
+#[test]
+fn recipient_id_round_trips_railgun_variant_via_json() {
+    let recipient: RecipientId = sample_railgun_address().into();
+    let json = serde_json::to_string(&recipient).expect("serialize");
+    let decoded: RecipientId = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(recipient, decoded);
+}
+
+#[test]
+fn shield_action_reports_railgun_recipient_and_erc20_asset() {
+    let token: EvmAddress = "0x1111111111111111111111111111111111111111"
+        .parse()
+        .expect("token");
+    let action = AgentAction::Shield {
+        chain_id: 56,
+        token: token.clone(),
+        to_railgun_address: sample_railgun_address(),
+        amount_wei: 1_000,
+    };
+    assert_eq!(action.amount_wei(), 1_000);
+    assert_eq!(action.chain_id(), 56);
+    assert_eq!(action.asset(), AssetId::Erc20(token));
+    assert!(matches!(action.recipient(), RecipientId::Railgun(_)));
+    assert_eq!(action.action_kind(), ActionKind::Shield);
+    assert!(action.records_spend_event());
+    action.validate().expect("shield is valid");
+}
+
+#[test]
+fn unshield_action_uses_evm_recipient_and_unshield_kind() {
+    let token: EvmAddress = "0x1111111111111111111111111111111111111111"
+        .parse()
+        .expect("token");
+    let to: EvmAddress = "0x2222222222222222222222222222222222222222"
+        .parse()
+        .expect("recipient");
+    let action = AgentAction::Unshield {
+        chain_id: 1,
+        token,
+        to: to.clone(),
+        amount_wei: 500,
+        via_broadcaster: false,
+    };
+    assert_eq!(action.recipient(), RecipientId::Evm(to));
+    assert_eq!(action.action_kind(), ActionKind::Unshield);
+}
+
+#[test]
+fn private_transfer_action_is_classified_as_private_transfer_kind() {
+    let token: EvmAddress = "0x1111111111111111111111111111111111111111"
+        .parse()
+        .expect("token");
+    let action = AgentAction::PrivateTransfer {
+        chain_id: 137,
+        token,
+        to_railgun_address: sample_railgun_address(),
+        amount_wei: 42,
+        via_broadcaster: true,
+    };
+    assert_eq!(action.action_kind(), ActionKind::PrivateTransfer);
+    assert!(matches!(action.recipient(), RecipientId::Railgun(_)));
+}
+
+#[test]
+fn shield_action_rejects_zero_amount() {
+    let token: EvmAddress = "0x1111111111111111111111111111111111111111"
+        .parse()
+        .expect("token");
+    let action = AgentAction::Shield {
+        chain_id: 1,
+        token,
+        to_railgun_address: sample_railgun_address(),
+        amount_wei: 0,
+    };
+    assert!(matches!(action.validate(), Err(DomainError::InvalidAmount)));
+}
+
+#[test]
+fn shield_action_rejects_zero_chain_id() {
+    let token: EvmAddress = "0x1111111111111111111111111111111111111111"
+        .parse()
+        .expect("token");
+    let action = AgentAction::Shield {
+        chain_id: 0,
+        token,
+        to_railgun_address: sample_railgun_address(),
+        amount_wei: 1,
+    };
+    assert!(matches!(
+        action.validate(),
+        Err(DomainError::InvalidChainId)
+    ));
+}
+
+#[test]
+fn railgun_domain_types_round_trip_via_json() {
+    use crate::railgun::{
+        RailgunDecryptedNote, RailgunMerklePath, RailgunNoteCiphertext, RailgunNoteInput,
+        RailgunNullifier, RailgunTreeNumber, RailgunViewingPublicKeys, RailgunWitnessBundle,
+    };
+
+    let token: EvmAddress = "0x1111111111111111111111111111111111111111"
+        .parse()
+        .expect("token");
+
+    let note = RailgunNoteInput {
+        chain_id: 56,
+        tree_number: RailgunTreeNumber::Utxo,
+        leaf_index: 42,
+        commitment_hex: "00".repeat(32),
+        random_hex: "11".repeat(32),
+        token: token.clone(),
+        value_wei: 1_000,
+    };
+    let decoded: RailgunNoteInput =
+        serde_json::from_str(&serde_json::to_string(&note).expect("ser")).expect("de");
+    assert_eq!(note, decoded);
+
+    let ciphertext = RailgunNoteCiphertext {
+        ephemeral_pubkey_hex: "22".repeat(32),
+        iv_hex: "33".repeat(16),
+        tag_hex: "44".repeat(16),
+        data_chunks_hex: vec!["55".repeat(32), "66".repeat(32), "77".repeat(32)],
+    };
+    let decoded: RailgunNoteCiphertext =
+        serde_json::from_str(&serde_json::to_string(&ciphertext).expect("ser")).expect("de");
+    assert_eq!(ciphertext, decoded);
+
+    let decrypted = RailgunDecryptedNote {
+        chunks_hex: vec!["88".repeat(32), "99".repeat(32), "aa".repeat(32)],
+    };
+    let decoded: RailgunDecryptedNote =
+        serde_json::from_str(&serde_json::to_string(&decrypted).expect("ser")).expect("de");
+    assert_eq!(decrypted, decoded);
+
+    let pubkeys = RailgunViewingPublicKeys {
+        viewing_pubkey_hex: "77".repeat(32),
+        master_pubkey_hex: "88".repeat(32),
+    };
+    let decoded: RailgunViewingPublicKeys =
+        serde_json::from_str(&serde_json::to_string(&pubkeys).expect("ser")).expect("de");
+    assert_eq!(pubkeys, decoded);
+
+    let path = RailgunMerklePath {
+        tree_number: RailgunTreeNumber::LegacyUtxo,
+        leaf_index: 42,
+        path_elements_hex: vec!["aa".repeat(32), "bb".repeat(32)],
+        root_hex: "cc".repeat(32),
+    };
+    let decoded: RailgunMerklePath =
+        serde_json::from_str(&serde_json::to_string(&path).expect("ser")).expect("de");
+    assert_eq!(path, decoded);
+
+    let bundle = RailgunWitnessBundle {
+        nullifiers_hex: vec!["dd".repeat(32)],
+        spending_signatures_hex: vec!["ee".repeat(64)],
+        spend_authority_pubkey_hex: "ff".repeat(32),
+    };
+    let decoded: RailgunWitnessBundle =
+        serde_json::from_str(&serde_json::to_string(&bundle).expect("ser")).expect("de");
+    assert_eq!(bundle, decoded);
+
+    let nullifier = RailgunNullifier {
+        nullifier_hex: "01".repeat(32),
+    };
+    let decoded: RailgunNullifier =
+        serde_json::from_str(&serde_json::to_string(&nullifier).expect("ser")).expect("de");
+    assert_eq!(nullifier, decoded);
+}
+
+#[test]
+fn key_algorithm_serializes_railgun_variants_in_snake_case() {
+    let spending: KeyAlgorithm = serde_json::from_str("\"railgun_spending\"").expect("de");
+    assert_eq!(spending, KeyAlgorithm::RailgunSpending);
+    assert_eq!(
+        serde_json::to_string(&KeyAlgorithm::RailgunSpending).expect("ser"),
+        "\"railgun_spending\"",
+    );
+
+    let viewing: KeyAlgorithm = serde_json::from_str("\"railgun_viewing\"").expect("de");
+    assert_eq!(viewing, KeyAlgorithm::RailgunViewing);
+    assert_eq!(
+        serde_json::to_string(&KeyAlgorithm::RailgunViewing).expect("ser"),
+        "\"railgun_viewing\"",
+    );
+}
+
+#[test]
+fn spend_event_default_action_kind_is_other_for_legacy_payloads() {
+    let original = SpendEvent {
+        agent_key_id: Uuid::nil(),
+        chain_id: 1,
+        asset: AssetId::NativeEth,
+        recipient: RecipientId::Evm(
+            "0x1111111111111111111111111111111111111111"
+                .parse()
+                .expect("addr"),
+        ),
+        amount_wei: 1,
+        at: OffsetDateTime::UNIX_EPOCH,
+        action_kind: ActionKind::Shield,
+    };
+    let mut value =
+        serde_json::to_value(&original).expect("serialize spend event for legacy round-trip");
+    // Drop the action_kind field to simulate persisted state from before the
+    // Railgun migration. Deserialization must default it to `Other` instead
+    // of failing.
+    if let serde_json::Value::Object(map) = &mut value {
+        map.remove("action_kind");
+    }
+    let legacy: SpendEvent =
+        serde_json::from_value(value).expect("legacy spend event deserialises");
+    assert_eq!(legacy.action_kind, ActionKind::Other);
+}
+
+#[derive(Debug, Deserialize)]
+struct TempoVectorFile {
+    vectors: Vec<TempoVector>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TempoVector {
+    name: String,
+    open: TempoSessionOpenTransaction,
+    top_up: TempoSessionTopUpTransaction,
+    voucher: TempoSessionVoucher,
+    expected: TempoVectorExpected,
+}
+
+#[derive(Debug, Deserialize)]
+struct TempoVectorCall {
+    to: String,
+    data: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TempoVectorExpected {
+    channel_id_hex: String,
+    open_calls: Vec<TempoVectorCall>,
+    top_up_calls: Vec<TempoVectorCall>,
+    open_signing_hash_hex: String,
+    top_up_signing_hash_hex: String,
+    voucher_signing_hash_hex: String,
+}
+
+fn load_tempo_vectors() -> Vec<TempoVector> {
+    let raw = include_str!("../tests/fixtures/tempo_session_vectors.json");
+    serde_json::from_str::<TempoVectorFile>(raw)
+        .expect("tempo fixture parses")
+        .vectors
+}
+
+fn hex0x(bytes: &[u8]) -> String {
+    format!("0x{}", hex::encode(bytes))
+}
+
+fn sample_tempo_vector() -> TempoVector {
+    load_tempo_vectors()
+        .into_iter()
+        .find(|vector| vector.name == "4217-unsponsored-expiring-nonce")
+        .expect("sample vector")
+}
+
+fn sample_tempo_open() -> TempoSessionOpenTransaction {
+    sample_tempo_vector().open
+}
+
+fn sample_tempo_top_up() -> TempoSessionTopUpTransaction {
+    sample_tempo_vector().top_up
+}
+
+fn sample_tempo_voucher() -> TempoSessionVoucher {
+    sample_tempo_vector().voucher
+}
+
+#[test]
+fn tempo_session_digests_match_viem_reference_vectors() {
+    let vectors = load_tempo_vectors();
+    assert_eq!(vectors.len(), 8, "2 chains x 2 fee modes x 2 nonce modes");
+    for vector in vectors {
+        let name = &vector.name;
+        assert_eq!(
+            hex0x(&vector.open.channel_id().expect("channel id")),
+            vector.expected.channel_id_hex,
+            "{name}: channel id"
+        );
+        let open_calls = vector.open.encoded_calls().expect("open calls");
+        assert_eq!(open_calls.len(), vector.expected.open_calls.len(), "{name}");
+        for ((to, data), expected) in open_calls.iter().zip(&vector.expected.open_calls) {
+            assert_eq!(to.as_str(), expected.to, "{name}: open call target");
+            assert_eq!(hex0x(data), expected.data, "{name}: open calldata");
+        }
+        let top_up_calls = vector.top_up.encoded_calls().expect("topUp calls");
+        for ((to, data), expected) in top_up_calls.iter().zip(&vector.expected.top_up_calls) {
+            assert_eq!(to.as_str(), expected.to, "{name}: topUp call target");
+            assert_eq!(hex0x(data), expected.data, "{name}: topUp calldata");
+        }
+        assert_eq!(
+            hex0x(&vector.open.signing_hash().expect("open digest")),
+            vector.expected.open_signing_hash_hex,
+            "{name}: open digest"
+        );
+        assert_eq!(
+            hex0x(&vector.top_up.signing_hash().expect("topUp digest")),
+            vector.expected.top_up_signing_hash_hex,
+            "{name}: topUp digest"
+        );
+        assert_eq!(
+            hex0x(&vector.voucher.signing_hash().expect("voucher digest")),
+            vector.expected.voucher_signing_hash_hex,
+            "{name}: voucher digest"
+        );
+    }
+}
+
+#[test]
+fn tempo_session_rejects_unpinned_escrow_and_unsupported_chain() {
+    let wrong_escrow: EvmAddress = "0x3333333333333333333333333333333333333333"
+        .parse()
+        .expect("escrow");
+    assert!(matches!(
+        TempoSessionOpenTransaction {
+            escrow_contract: wrong_escrow.clone(),
+            ..sample_tempo_open()
+        }
+        .signing_hash(),
+        Err(DomainError::InvalidTempoEscrowContract)
+    ));
+    assert!(matches!(
+        TempoSessionVoucher {
+            escrow_contract: wrong_escrow,
+            ..sample_tempo_voucher()
+        }
+        .signing_hash(),
+        Err(DomainError::InvalidTempoEscrowContract)
+    ));
+    // Mainnet escrow on the testnet chain id is still rejected.
+    assert!(matches!(
+        TempoSessionTopUpTransaction {
+            chain_id: TEMPO_TESTNET_CHAIN_ID,
+            ..sample_tempo_top_up()
+        }
+        .validate(),
+        Err(DomainError::InvalidTempoEscrowContract)
+    ));
+    assert!(matches!(
+        TempoSessionOpenTransaction {
+            chain_id: 1,
+            ..sample_tempo_open()
+        }
+        .validate(),
+        Err(DomainError::UnsupportedTempoChain(1))
+    ));
+}
+
+#[test]
+fn tempo_session_rejects_channel_id_that_does_not_match_fields() {
+    let other_recipient: EvmAddress = "0x8888888888888888888888888888888888888888"
+        .parse()
+        .expect("recipient");
+    // Claimed channel id stays the same while the payee is swapped: the
+    // recomputed id no longer matches, so the voucher cannot be mislabeled.
+    assert!(matches!(
+        TempoSessionVoucher {
+            recipient: other_recipient.clone(),
+            ..sample_tempo_voucher()
+        }
+        .signing_hash(),
+        Err(DomainError::TempoChannelIdMismatch)
+    ));
+    assert!(matches!(
+        TempoSessionTopUpTransaction {
+            recipient: other_recipient,
+            ..sample_tempo_top_up()
+        }
+        .signing_hash(),
+        Err(DomainError::TempoChannelIdMismatch)
+    ));
+    assert!(matches!(
+        TempoSessionTopUpTransaction {
+            channel_id_hex: format!("0x{}", hex::encode([0x55u8; 32])),
+            ..sample_tempo_top_up()
+        }
+        .validate(),
+        Err(DomainError::TempoChannelIdMismatch)
+    ));
+}
+
+#[test]
+fn tempo_session_rejects_foreign_authorized_signer_and_bad_params() {
+    let open = sample_tempo_open();
+    assert!(matches!(
+        TempoSessionOpenTransaction {
+            authorized_signer: "0x9999999999999999999999999999999999999999"
+                .parse()
+                .expect("signer"),
+            ..open.clone()
+        }
+        .validate(),
+        Err(DomainError::InvalidTempoTransactionParams(_))
+    ));
+    assert!(matches!(
+        TempoSessionOpenTransaction {
+            salt_hex: "0x12".to_string(),
+            ..open.clone()
+        }
+        .validate(),
+        Err(DomainError::InvalidTypedDataDomain(_))
+    ));
+    let mut tx = open.tx.clone();
+    tx.max_priority_fee_per_gas_wei = tx.max_fee_per_gas_wei + 1;
+    assert!(matches!(
+        TempoSessionOpenTransaction { tx, ..open.clone() }.validate(),
+        Err(DomainError::InvalidTempoTransactionParams(_))
+    ));
+    let mut tx = open.tx.clone();
+    tx.fee_payer = true;
+    assert!(
+        matches!(
+            TempoSessionOpenTransaction { tx, ..open.clone() }.validate(),
+            Err(DomainError::InvalidTempoTransactionParams(_))
+        ),
+        "sponsored transactions must not name a fee token"
+    );
+    let mut tx = open.tx.clone();
+    tx.nonce_key = Some("not-a-number".to_string());
+    assert!(matches!(
+        TempoSessionOpenTransaction { tx, ..open.clone() }.validate(),
+        Err(DomainError::InvalidTempoTransactionParams(_))
+    ));
+    let mut tx = open.tx.clone();
+    tx.valid_before = Some(0);
+    assert!(matches!(
+        TempoSessionOpenTransaction { tx, ..open }.validate(),
+        Err(DomainError::InvalidTempoTransactionParams(_))
+    ));
+    assert!(matches!(
+        TempoSessionVoucher {
+            cumulative_amount_wei: 0,
+            ..sample_tempo_voucher()
+        }
+        .validate(),
+        Err(DomainError::InvalidAmount)
+    ));
+    assert!(matches!(
+        TempoSessionTopUpTransaction {
+            additional_deposit_wei: 0,
+            ..sample_tempo_top_up()
+        }
+        .validate(),
+        Err(DomainError::InvalidAmount)
+    ));
+}
+
+#[test]
+fn tempo_session_sponsored_and_unsponsored_digests_differ() {
+    let open = sample_tempo_open();
+    let mut sponsored_tx = open.tx.clone();
+    sponsored_tx.fee_payer = true;
+    sponsored_tx.fee_token = None;
+    let sponsored = TempoSessionOpenTransaction {
+        tx: sponsored_tx,
+        ..open.clone()
+    };
+    assert_ne!(
+        open.signing_hash().expect("unsponsored"),
+        sponsored.signing_hash().expect("sponsored")
+    );
+}
+
+#[test]
+fn tempo_session_digest_binds_every_policy_field() {
+    let open = sample_tempo_open();
+    let base = open.signing_hash().expect("digest");
+    assert_ne!(
+        TempoSessionOpenTransaction {
+            deposit_wei: open.deposit_wei + 1,
+            ..open.clone()
+        }
+        .signing_hash()
+        .expect("digest"),
+        base
+    );
+    assert_ne!(
+        TempoSessionOpenTransaction {
+            recipient: "0x8888888888888888888888888888888888888888"
+                .parse()
+                .expect("recipient"),
+            ..open.clone()
+        }
+        .signing_hash()
+        .expect("digest"),
+        base
+    );
+    assert_ne!(
+        TempoSessionOpenTransaction {
+            token: "0x20c0000000000000000000000000000000000002"
+                .parse()
+                .expect("token"),
+            ..open.clone()
+        }
+        .signing_hash()
+        .expect("digest"),
+        base
+    );
+}
+
+#[test]
+fn tempo_session_policy_semantics() {
+    let open = AgentAction::TempoSessionOpenTransaction {
+        authorization: sample_tempo_open(),
+    };
+    let top_up = AgentAction::TempoSessionTopUpTransaction {
+        authorization: sample_tempo_top_up(),
+    };
+    let voucher_auth = sample_tempo_voucher();
+    let cumulative = voucher_auth.cumulative_amount_wei;
+    let voucher = AgentAction::TempoSessionVoucher {
+        authorization: voucher_auth,
+    };
+    assert_eq!(open.amount_wei(), 2_500_000);
+    assert_eq!(top_up.amount_wei(), 750_000);
+    assert_eq!(voucher.amount_wei(), cumulative);
+    assert!(open.records_spend_event());
+    assert!(top_up.records_spend_event());
+    assert!(!voucher.records_spend_event());
+    assert!(voucher.is_escrow_redistribution());
+    assert!(!open.is_escrow_redistribution());
 }

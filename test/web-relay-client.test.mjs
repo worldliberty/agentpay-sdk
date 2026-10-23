@@ -17,9 +17,10 @@ test('requestSecureApprovalLink sends admin bearer auth and parses the secure-li
         approvalCapability: 'aa'.repeat(32),
         approvalId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
         approvalUrl:
-          'http://127.0.0.1:8787/approvals/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa?approvalCapability=' +
+          'http://127.0.0.1:8787/approvals/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa#approvalCapability=' +
           'aa'.repeat(32),
         daemonId: 'bb'.repeat(32),
+        daemonPublicKey: 'cc'.repeat(32),
       }),
       {
         status: 200,
@@ -45,6 +46,7 @@ test('requestSecureApprovalLink sends admin bearer auth and parses the secure-li
     assert.equal(calls[0].init.method, 'POST');
     assert.equal(calls[0].init.headers.authorization, 'Bearer relay-admin-token');
     assert.equal(result.approvalCapability, 'aa'.repeat(32));
+    assert.equal(result.daemonPublicKey, 'cc'.repeat(32));
   } finally {
     globalThis.fetch = originalFetch;
   }

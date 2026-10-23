@@ -78,7 +78,7 @@ export async function promptHiddenTty(
           finish(() => resolve(answer));
           return;
         }
-        if (char === '\u0003') {
+        if (char === '\u0003' || char === '\u0004') {
           finish(() => reject(new Error('prompt canceled')));
           return;
         }
@@ -92,6 +92,7 @@ export async function promptHiddenTty(
           answer = '';
           continue;
         }
+        // biome-ignore lint/suspicious/noControlCharactersInRegex: drops control characters from hidden TTY input
         if (/[\u0000-\u001f\u007f]/u.test(char)) {
           continue;
         }

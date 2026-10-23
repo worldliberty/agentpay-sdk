@@ -23,6 +23,7 @@ import {
   isHex,
   keccak256,
   parseSignature,
+  recoverAddress,
   toHex,
 } from 'viem';
 import { prepareTransactionRequest } from 'viem/actions';
@@ -39,6 +40,7 @@ import * as rpcPackage from '../packages/rpc/src/index.js';
 import { resolveValidatedAdminDaemonSocket } from './lib/admin-daemon-socket.js';
 import {
   blockedRawAdminPassthroughMessage,
+  parseNestedAdminCommand,
   rewriteAdminHelpText,
 } from './lib/admin-passthrough.js';
 import { runAdminResetCli, runAdminUninstallCli } from './lib/admin-reset.js';
@@ -68,6 +70,8 @@ import {
 } from './lib/agent-auth-storage.js';
 import { assertValidAgentAuthToken } from './lib/agent-auth-token.js';
 import {
+  type AssetBroadcastPlan,
+  type CompletedAssetBroadcast,
   completeAssetBroadcast,
   encodeErc20ApproveData,
   encodeErc20TransferData,
@@ -124,6 +128,11 @@ import {
   resolveCliNetworkProfile,
   resolveCliRpcUrl,
 } from './lib/network-selection.js';
+import {
+  assertRailgunAddress,
+  RAILGUN_BROADCAST_PENDING_MESSAGE,
+  RAILGUN_PRIVATE_BALANCE_UNAVAILABLE_REASON,
+} from './lib/railgun.js';
 import { assertRpcChainIdMatches } from './lib/rpc-guard.js';
 import {
   passthroughRustBinary,
@@ -134,6 +143,32 @@ import {
 import { applySharedConfigToExistingWallet } from './lib/shared-config-apply.js';
 import { assertSignedBroadcastTransactionMatchesRequest } from './lib/signed-tx.js';
 import { registerRepairCommand, registerStatusCommand } from './lib/status-repair-cli.js';
+import {
+  type BalanceMutationEvent,
+  type BalanceMutationResult,
+  beginCommand,
+  endCommand,
+  initTelemetry,
+  isTelemetryEnabled,
+  reportTelemetryError,
+  shutdownTelemetry,
+  suspendTelemetry,
+  trackBalanceMutation,
+  trackWalletBalanceSnapshot,
+} from './lib/telemetry.js';
+import {
+  type AgentCommandTelemetryContext,
+  describeAgentCommand,
+} from './lib/telemetry-agent-command.js';
+import {
+  readTelemetryState,
+  resolveTelemetryConsent,
+  setTelemetryEnabled,
+} from './lib/telemetry-consent.js';
+import {
+  tempoTransactionCliArgs,
+  withoutZeroTempoValidityBounds,
+} from './lib/tempo-transaction-args.js';
 import { resolveWalletBackupPassword, verifyWalletBackupFile } from './lib/wallet-backup.js';
 import { exportEncryptedWalletBackup } from './lib/wallet-backup-admin.js';
 import {
@@ -547,6 +582,14 @@ function assertHex(value: string, label: string): Hex {
   return value as Hex;
 }
 
+function assertBytes32Hex(value: string, label: string): Hex {
+  const hex = assertHex(value, label);
+  if (hex.length !== 66) {
+    throw new Error(`${label} must be a 32-byte hex value`);
+  }
+  return hex;
+}
+
 function parseBigIntString(value: string, label: string): bigint {
   const normalized = value.trim();
   if (!/^(0|[1-9][0-9]*)$/u.test(normalized)) {
@@ -939,7 +982,7 @@ async function rewriteMppSessionInsufficientFundsError(input: {
 }
 
 interface TempoSessionState {
-  version: 1;
+  version: 2;
   kind: 'tempo_session';
   chainId: number;
   rpcUrl: string;
@@ -947,6 +990,8 @@ interface TempoSessionState {
   token: Address;
   recipient: Address;
   walletAddress: Address;
+  authorizedSigner: Address;
+  salt: Hex;
   channelId: Hex;
   depositWei: string;
   cumulativeAmountWei: string;
@@ -981,12 +1026,34 @@ function parseTempoSessionState(value: unknown): TempoSessionState {
   if (!isPlainObject(value)) {
     throw new Error('tempo session state must be an object');
   }
-  if (value.version !== 1 || value.kind !== 'tempo_session') {
+  if (value.version === 1 && value.kind === 'tempo_session') {
+    // v1 state lacks the channel salt and authorized signer the daemon needs to rebuild the
+    // channel id, so a v1 channel can no longer be topped up or vouched for from this CLI.
+    // The old channel still holds the escrowed deposit on-chain, so point the user at it
+    // instead of telling them to discard the only local record of it.
+    const legacyField = (key: string) =>
+      typeof value[key] === 'string' || typeof value[key] === 'number'
+        ? String(value[key]).trim()
+        : '';
+    const legacyDetails = [
+      ['channel id', legacyField('channelId')],
+      ['escrow contract', legacyField('escrowContract')],
+      ['chain id', legacyField('chainId')],
+    ]
+      .filter(([, detail]) => detail)
+      .map(([label, detail]) => `${label} ${detail}`);
+    throw new Error(
+      'tempo session state file uses the legacy v1 format without the channel salt and can no longer be used by this CLI. ' +
+        `The v1 channel still holds your escrow deposit${legacyDetails.length > 0 ? ` (${legacyDetails.join(', ')})` : ''}. ` +
+        'Close the channel and withdraw the deposit with the server or directly on the escrow contract before deleting this file, then open a new session.',
+    );
+  }
+  if (value.version !== 2 || value.kind !== 'tempo_session') {
     throw new Error('tempo session state file has an unsupported format');
   }
 
   return {
-    version: 1,
+    version: 2,
     kind: 'tempo_session',
     chainId: parsePositiveIntegerString(String(value.chainId), 'tempo session state.chainId'),
     rpcUrl: assertSafeRpcUrl(
@@ -1008,6 +1075,14 @@ function parseTempoSessionState(value: unknown): TempoSessionState {
     walletAddress: assertAddress(
       requiredString(String(value.walletAddress ?? ''), 'tempo session state.walletAddress'),
       'tempo session state.walletAddress',
+    ),
+    authorizedSigner: assertAddress(
+      requiredString(String(value.authorizedSigner ?? ''), 'tempo session state.authorizedSigner'),
+      'tempo session state.authorizedSigner',
+    ),
+    salt: assertBytes32Hex(
+      requiredString(String(value.salt ?? ''), 'tempo session state.salt'),
+      'tempo session state.salt',
     ),
     channelId: assertHex(
       requiredString(String(value.channelId ?? ''), 'tempo session state.channelId'),
@@ -1102,26 +1177,24 @@ function deleteTempoSessionStateFile(sessionStatePath: string | undefined): void
 }
 
 function createTempoSessionState(input: {
-  chainId: number;
+  channel: TempoSessionChannel;
   rpcUrl: string;
-  escrowContract: Address;
-  token: Address;
-  recipient: Address;
   walletAddress: Address;
-  channelId: Hex;
   depositWei: bigint;
   cumulativeAmountWei: bigint;
 }): TempoSessionState {
   return {
-    version: 1,
+    version: 2,
     kind: 'tempo_session',
-    chainId: input.chainId,
+    chainId: input.channel.chainId,
     rpcUrl: input.rpcUrl,
-    escrowContract: input.escrowContract,
-    token: input.token,
-    recipient: input.recipient,
+    escrowContract: input.channel.escrowContract,
+    token: input.channel.token,
+    recipient: input.channel.recipient,
     walletAddress: input.walletAddress,
-    channelId: input.channelId,
+    authorizedSigner: input.channel.authorizedSigner,
+    salt: input.channel.salt,
+    channelId: input.channel.channelId,
     depositWei: input.depositWei.toString(),
     cumulativeAmountWei: input.cumulativeAmountWei.toString(),
   };
@@ -1324,6 +1397,73 @@ function computeTempoSessionVoucherSigningHash(input: {
   );
 }
 
+/**
+ * Every field the daemon needs to recompute a Tempo stream-channel id. The daemon rebuilds the
+ * channel id, the escrow calls, and the transaction digest from these values, so nothing it signs
+ * depends on a digest supplied by the CLI.
+ */
+interface TempoSessionChannel {
+  chainId: number;
+  escrowContract: Address;
+  token: Address;
+  recipient: Address;
+  payer: Address;
+  authorizedSigner: Address;
+  salt: Hex;
+  channelId: Hex;
+}
+
+function createTempoSessionChannel(
+  input: Omit<TempoSessionChannel, 'channelId'>,
+): TempoSessionChannel {
+  return { ...input, channelId: computeTempoSessionChannelId(input) };
+}
+
+function assertTempoSessionChannelId(
+  channel: TempoSessionChannel,
+  claimed: string,
+  label: string,
+): void {
+  if (assertHex(claimed, label).toLowerCase() !== channel.channelId.toLowerCase()) {
+    throw new Error(
+      `${label} ${claimed} does not match the locally derived tempo channel id ${channel.channelId}`,
+    );
+  }
+}
+
+function tempoSessionChannelCliArgs(channel: TempoSessionChannel): string[] {
+  return [
+    '--network',
+    String(channel.chainId),
+    '--escrow-contract',
+    channel.escrowContract,
+    '--token',
+    channel.token,
+    '--recipient',
+    channel.recipient,
+    '--payer',
+    channel.payer,
+    '--authorized-signer',
+    channel.authorizedSigner,
+    '--salt-hex',
+    channel.salt,
+  ];
+}
+
+async function assertTempoSignatureRecoversWallet(input: {
+  hash: Hex;
+  signatureHex: Hex;
+  walletAddress: Address;
+  label: string;
+}): Promise<void> {
+  const recovered = await recoverAddress({ hash: input.hash, signature: input.signatureHex });
+  if (recovered.toLowerCase() !== input.walletAddress.toLowerCase()) {
+    throw new Error(
+      `${input.label} signature does not recover to wallet ${input.walletAddress}; the daemon signed a digest that differs from the locally serialized payload`,
+    );
+  }
+}
+
 function normalizeUnsignedIntegerValue(
   value: unknown,
   label: string,
@@ -1498,74 +1638,68 @@ async function signAgentEip3009TransferWithAuthorization(input: {
   return normalizeRecoverableSignatureHex(result, 'signatureHex');
 }
 
-async function signAgentTempoSessionOpenTransaction(input: {
+/**
+ * Signs a Tempo session open/topUp transaction. The daemon rebuilds the envelope digest from the
+ * semantic channel fields and transaction parameters; the signature is then checked locally against
+ * viem's reference serialization so any encoding drift fails closed before broadcast.
+ */
+async function signAgentTempoSessionTransaction(input: {
   auth: AgentCommandAuthOptions;
   config: WlfiConfig;
-  chainId: number;
-  token: Address;
-  recipient: Address;
-  depositWei: bigint;
-  initialAmountWei: bigint;
-  signingHashHex: Hex;
+  command: 'tempo-session-open-transaction' | 'tempo-session-top-up-transaction';
+  commandArgs: string[];
+  unsignedTransaction: Record<string, unknown>;
+  walletAddress: Address;
+  label: string;
 }): Promise<Hex> {
+  const expectedSigningHash = keccak256(
+    assertHex(
+      await TempoTransaction.serialize(input.unsignedTransaction as never),
+      `${input.label} unsigned serialization`,
+    ),
+  );
+  // The arguments stay fixed across manual-approval polling: the approval is bound to the exact
+  // request payload, so re-preparing the transaction would orphan the pending approval.
   const result = await runAgentCommandJson<RustBroadcastOutput>({
-    commandArgs: [
-      'tempo-session-open-transaction',
-      '--network',
-      String(input.chainId),
-      '--token',
-      input.token,
-      '--recipient',
-      input.recipient,
-      '--deposit-wei',
-      input.depositWei.toString(),
-      '--initial-amount-wei',
-      input.initialAmountWei.toString(),
-      '--signing-hash-hex',
-      input.signingHashHex,
-    ],
+    commandArgs: [input.command, ...input.commandArgs],
     auth: input.auth,
     config: input.config,
     asJson: false,
     waitForManualApproval: true,
   });
   if (!result) {
-    throw new Error('agentpay-agent did not return a Tempo session open transaction signature');
+    throw new Error(`agentpay-agent did not return a ${input.label} signature`);
   }
-  return normalizeRecoverableSignatureHex(result, 'signatureHex');
+  const signatureHex = normalizeRecoverableSignatureHex(result, 'signatureHex');
+  await assertTempoSignatureRecoversWallet({
+    hash: expectedSigningHash,
+    signatureHex,
+    walletAddress: input.walletAddress,
+    label: input.label,
+  });
+  return signatureHex;
 }
 
 async function signAgentTempoSessionVoucher(input: {
   auth: AgentCommandAuthOptions;
   config: WlfiConfig;
-  chainId: number;
-  escrowContract: Address;
-  token: Address;
-  recipient: Address;
-  channelId: Hex;
-  amountWei: bigint;
+  channel: TempoSessionChannel;
   cumulativeAmountWei: bigint;
-  signingHashHex: Hex;
 }): Promise<Hex> {
+  const signingHashHex = computeTempoSessionVoucherSigningHash({
+    chainId: input.channel.chainId,
+    escrowContract: input.channel.escrowContract,
+    channelId: input.channel.channelId,
+    cumulativeAmountWei: input.cumulativeAmountWei,
+  });
   const result = await runAgentCommandJson<RustBroadcastOutput>({
     commandArgs: [
       'tempo-session-voucher',
-      '--network',
-      String(input.chainId),
-      '--escrow-contract',
-      input.escrowContract,
-      '--token',
-      input.token,
-      '--recipient',
-      input.recipient,
+      ...tempoSessionChannelCliArgs(input.channel),
       '--channel-id-hex',
-      input.channelId,
-      '--amount-wei',
-      input.amountWei.toString(),
+      input.channel.channelId,
       '--cumulative-amount-wei',
       input.cumulativeAmountWei.toString(),
-      '--signing-hash-hex',
-      input.signingHashHex,
     ],
     auth: input.auth,
     config: input.config,
@@ -1575,44 +1709,14 @@ async function signAgentTempoSessionVoucher(input: {
   if (!result) {
     throw new Error('agentpay-agent did not return a Tempo session voucher signature');
   }
-  return normalizeRecoverableSignatureHex(result, 'signatureHex');
-}
-
-async function signAgentTempoSessionTopUpTransaction(input: {
-  auth: AgentCommandAuthOptions;
-  config: WlfiConfig;
-  chainId: number;
-  token: Address;
-  recipient: Address;
-  channelId: Hex;
-  additionalDepositWei: bigint;
-  signingHashHex: Hex;
-}): Promise<Hex> {
-  const result = await runAgentCommandJson<RustBroadcastOutput>({
-    commandArgs: [
-      'tempo-session-top-up-transaction',
-      '--network',
-      String(input.chainId),
-      '--token',
-      input.token,
-      '--recipient',
-      input.recipient,
-      '--channel-id-hex',
-      input.channelId,
-      '--additional-deposit-wei',
-      input.additionalDepositWei.toString(),
-      '--signing-hash-hex',
-      input.signingHashHex,
-    ],
-    auth: input.auth,
-    config: input.config,
-    asJson: false,
-    waitForManualApproval: true,
+  const signatureHex = normalizeRecoverableSignatureHex(result, 'signatureHex');
+  await assertTempoSignatureRecoversWallet({
+    hash: signingHashHex,
+    signatureHex,
+    walletAddress: input.channel.payer,
+    label: 'tempo session voucher',
   });
-  if (!result) {
-    throw new Error('agentpay-agent did not return a Tempo session topUp transaction signature');
-  }
-  return normalizeRecoverableSignatureHex(result, 'signatureHex');
+  return signatureHex;
 }
 
 async function buildTempoSessionOpenPayload(input: {
@@ -1629,6 +1733,7 @@ async function buildTempoSessionOpenPayload(input: {
   depositWei: bigint;
   feePayer: boolean;
 }): Promise<{
+  channel: TempoSessionChannel;
   channelId: Hex;
   payload: {
     action: 'open';
@@ -1640,17 +1745,16 @@ async function buildTempoSessionOpenPayload(input: {
     authorizedSigner: Address;
   };
 }> {
-  const authorizedSigner = input.walletAddress;
-  const salt = randomHex(32, 'tempo session salt');
-  const channelId = computeTempoSessionChannelId({
-    payer: input.walletAddress,
-    recipient: input.recipient,
-    token: input.token,
-    salt,
-    authorizedSigner,
-    escrowContract: input.escrowContract,
+  const channel = createTempoSessionChannel({
     chainId: input.chainId,
+    escrowContract: input.escrowContract,
+    token: input.token,
+    recipient: input.recipient,
+    payer: input.walletAddress,
+    authorizedSigner: input.walletAddress,
+    salt: randomHex(32, 'tempo session salt'),
   });
+  const { authorizedSigner, salt, channelId } = channel;
 
   const client = createPublicClient({
     chain: resolveTempoChainDefinition(input.chainId),
@@ -1694,24 +1798,24 @@ async function buildTempoSessionOpenPayload(input: {
     }
   })();
   const unsignedTransaction = {
-    ...prepared,
+    ...withoutZeroTempoValidityBounds(prepared),
     from: input.walletAddress,
     type: 'tempo' as const,
+    ...(input.feePayer ? { feePayer: true } : {}),
   };
-  const envelope = TempoTransaction.z_TxEnvelopeTempo.from(unsignedTransaction as never);
-  const signingHashHex = assertHex(
-    TempoTransaction.z_TxEnvelopeTempo.getSignPayload(envelope) as Hex,
-    'tempo session open signing hash',
-  );
-  const transactionSignatureHex = await signAgentTempoSessionOpenTransaction({
+  const transactionSignatureHex = await signAgentTempoSessionTransaction({
     auth: input.auth,
     config: input.config,
-    chainId: input.chainId,
-    token: input.token,
-    recipient: input.recipient,
-    depositWei: input.depositWei,
-    initialAmountWei: input.amountWei,
-    signingHashHex,
+    command: 'tempo-session-open-transaction',
+    commandArgs: [
+      ...tempoSessionChannelCliArgs(channel),
+      '--deposit-wei',
+      input.depositWei.toString(),
+      ...tempoTransactionCliArgs(prepared as Record<string, unknown>, input.feePayer),
+    ],
+    unsignedTransaction,
+    walletAddress: input.walletAddress,
+    label: 'tempo session open transaction',
   });
   const transaction = assertHex(
     await TempoTransaction.serialize(
@@ -1720,26 +1824,15 @@ async function buildTempoSessionOpenPayload(input: {
     ),
     'tempo session serialized transaction',
   );
-  const voucherSigningHashHex = computeTempoSessionVoucherSigningHash({
-    chainId: input.chainId,
-    escrowContract: input.escrowContract,
-    channelId,
-    cumulativeAmountWei: input.amountWei,
-  });
   const voucherSignatureHex = await signAgentTempoSessionVoucher({
     auth: input.auth,
     config: input.config,
-    chainId: input.chainId,
-    escrowContract: input.escrowContract,
-    token: input.token,
-    recipient: input.recipient,
-    channelId,
-    amountWei: input.amountWei,
+    channel,
     cumulativeAmountWei: input.amountWei,
-    signingHashHex: voucherSigningHashHex,
   });
 
   return {
+    channel,
     channelId,
     payload: {
       action: 'open',
@@ -1756,11 +1849,7 @@ async function buildTempoSessionOpenPayload(input: {
 async function buildTempoSessionClosePayload(input: {
   auth: AgentCommandAuthOptions;
   config: WlfiConfig;
-  chainId: number;
-  escrowContract: Address;
-  token: Address;
-  recipient: Address;
-  channelId: Hex;
+  channel: TempoSessionChannel;
   cumulativeAmountWei: bigint;
 }): Promise<{
   action: 'voucher' | 'close';
@@ -1770,7 +1859,6 @@ async function buildTempoSessionClosePayload(input: {
 }> {
   return buildTempoSessionVoucherPayload({
     ...input,
-    amountWei: input.cumulativeAmountWei,
     action: 'close',
   });
 }
@@ -1778,12 +1866,7 @@ async function buildTempoSessionClosePayload(input: {
 async function buildTempoSessionVoucherPayload(input: {
   auth: AgentCommandAuthOptions;
   config: WlfiConfig;
-  chainId: number;
-  escrowContract: Address;
-  token: Address;
-  recipient: Address;
-  channelId: Hex;
-  amountWei: bigint;
+  channel: TempoSessionChannel;
   cumulativeAmountWei: bigint;
   action: 'voucher' | 'close';
 }): Promise<{
@@ -1792,28 +1875,16 @@ async function buildTempoSessionVoucherPayload(input: {
   cumulativeAmount: string;
   signature: Hex;
 }> {
-  const signingHashHex = computeTempoSessionVoucherSigningHash({
-    chainId: input.chainId,
-    escrowContract: input.escrowContract,
-    channelId: input.channelId,
-    cumulativeAmountWei: input.cumulativeAmountWei,
-  });
   const signatureHex = await signAgentTempoSessionVoucher({
     auth: input.auth,
     config: input.config,
-    chainId: input.chainId,
-    escrowContract: input.escrowContract,
-    token: input.token,
-    recipient: input.recipient,
-    channelId: input.channelId,
-    amountWei: input.amountWei,
+    channel: input.channel,
     cumulativeAmountWei: input.cumulativeAmountWei,
-    signingHashHex,
   });
 
   return {
     action: input.action,
-    channelId: input.channelId,
+    channelId: input.channel.channelId,
     cumulativeAmount: input.cumulativeAmountWei.toString(),
     signature: signatureHex,
   };
@@ -1823,13 +1894,9 @@ async function buildTempoSessionTopUpPayload(input: {
   auth: AgentCommandAuthOptions;
   config: WlfiConfig;
   rpcUrl: string;
-  chainId: number;
-  token: Address;
-  recipient: Address;
-  escrowContract: Address;
+  channel: TempoSessionChannel;
   walletAddress: Address;
   decimals: number;
-  channelId: Hex;
   requestAmountWei?: bigint;
   additionalDepositWei: bigint;
   targetDepositWei?: bigint;
@@ -1844,19 +1911,20 @@ async function buildTempoSessionTopUpPayload(input: {
     additionalDeposit: string;
   };
 }> {
+  const { channel } = input;
   const client = createPublicClient({
-    chain: resolveTempoChainDefinition(input.chainId),
+    chain: resolveTempoChainDefinition(channel.chainId),
     transport: http(input.rpcUrl),
   });
   const approveData = encodeFunctionData({
     abi: TempoAbis.tip20,
     functionName: 'approve',
-    args: [input.escrowContract, input.additionalDepositWei],
+    args: [channel.escrowContract, input.additionalDepositWei],
   });
   const topUpData = encodeFunctionData({
     abi: tempoEscrowAbi,
     functionName: 'topUp',
-    args: [input.channelId, input.additionalDepositWei],
+    args: [channel.channelId, input.additionalDepositWei],
   });
   const prepared = await (async () => {
     try {
@@ -1865,10 +1933,10 @@ async function buildTempoSessionTopUpPayload(input: {
         {
           account: input.walletAddress,
           calls: [
-            { to: input.token, data: approveData },
-            { to: input.escrowContract, data: topUpData },
+            { to: channel.token, data: approveData },
+            { to: channel.escrowContract, data: topUpData },
           ],
-          feeToken: input.token,
+          feeToken: channel.token,
           ...(input.feePayer ? { feePayer: true } : {}),
         } as never,
       );
@@ -1877,7 +1945,7 @@ async function buildTempoSessionTopUpPayload(input: {
         error,
         stage: 'topUp',
         rpcUrl: input.rpcUrl,
-        token: input.token,
+        token: channel.token,
         walletAddress: input.walletAddress,
         decimals: input.decimals,
         requestAmountWei: input.requestAmountWei,
@@ -1888,24 +1956,26 @@ async function buildTempoSessionTopUpPayload(input: {
     }
   })();
   const unsignedTransaction = {
-    ...prepared,
+    ...withoutZeroTempoValidityBounds(prepared),
     from: input.walletAddress,
     type: 'tempo' as const,
+    ...(input.feePayer ? { feePayer: true } : {}),
   };
-  const envelope = TempoTransaction.z_TxEnvelopeTempo.from(unsignedTransaction as never);
-  const signingHashHex = assertHex(
-    TempoTransaction.z_TxEnvelopeTempo.getSignPayload(envelope) as Hex,
-    'tempo session topUp signing hash',
-  );
-  const transactionSignatureHex = await signAgentTempoSessionTopUpTransaction({
+  const transactionSignatureHex = await signAgentTempoSessionTransaction({
     auth: input.auth,
     config: input.config,
-    chainId: input.chainId,
-    token: input.token,
-    recipient: input.recipient,
-    channelId: input.channelId,
-    additionalDepositWei: input.additionalDepositWei,
-    signingHashHex,
+    command: 'tempo-session-top-up-transaction',
+    commandArgs: [
+      ...tempoSessionChannelCliArgs(channel),
+      '--channel-id-hex',
+      channel.channelId,
+      '--additional-deposit-wei',
+      input.additionalDepositWei.toString(),
+      ...tempoTransactionCliArgs(prepared as Record<string, unknown>, input.feePayer),
+    ],
+    unsignedTransaction,
+    walletAddress: input.walletAddress,
+    label: 'tempo session topUp transaction',
   });
   const transaction = assertHex(
     await TempoTransaction.serialize(
@@ -1919,7 +1989,7 @@ async function buildTempoSessionTopUpPayload(input: {
     payload: {
       action: 'topUp',
       type: 'transaction',
-      channelId: input.channelId,
+      channelId: channel.channelId,
       transaction,
       additionalDeposit: input.additionalDepositWei.toString(),
     },
@@ -1933,17 +2003,13 @@ async function handleTempoSessionStreamResponse(input: {
   auth: AgentCommandAuthOptions;
   config: WlfiConfig;
   targetUrl: string;
-  chainId: number;
   rpcUrl: string;
-  token: Address;
-  recipient: Address;
-  escrowContract: Address;
+  channel: TempoSessionChannel;
   walletAddress: Address;
   decimals: number;
   sessionStatePath?: string;
   closeSession: boolean;
   defaultDepositWei: bigint;
-  activeChannelId: Hex;
   activeDepositWei: bigint;
   activeCumulativeAmountWei: bigint;
   source: string;
@@ -1956,7 +2022,8 @@ async function handleTempoSessionStreamResponse(input: {
   const decoder = new TextDecoder();
   let buffer = '';
   let latestReceipt: MppReceipt | null = parseMppReceiptFromHeaders(input.response.headers);
-  let activeChannelId = input.activeChannelId;
+  const { channel } = input;
+  const activeChannelId = channel.channelId;
   let activeDepositWei = input.activeDepositWei;
   let activeCumulativeAmountWei = input.activeCumulativeAmountWei;
   let spentWei = resolveTempoSessionCumulativeAmountWei(latestReceipt, activeCumulativeAmountWei);
@@ -2016,7 +2083,7 @@ async function handleTempoSessionStreamResponse(input: {
           latestReceipt = event.data;
           emitJsonEvent('mppStreamReceipt', { receipt: event.data });
           if (typeof event.data.channelId === 'string' && event.data.channelId.trim()) {
-            activeChannelId = assertHex(event.data.channelId, 'payment.receipt.channelId');
+            assertTempoSessionChannelId(channel, event.data.channelId, 'payment.receipt.channelId');
           }
           activeCumulativeAmountWei = resolveTempoSessionCumulativeAmountWei(
             event.data,
@@ -2030,13 +2097,9 @@ async function handleTempoSessionStreamResponse(input: {
             writeTempoSessionStateFile(
               input.sessionStatePath,
               createTempoSessionState({
-                chainId: input.chainId,
+                channel,
                 rpcUrl: input.rpcUrl,
-                escrowContract: input.escrowContract,
-                token: input.token,
-                recipient: input.recipient,
                 walletAddress: input.walletAddress,
-                channelId: activeChannelId,
                 depositWei: activeDepositWei,
                 cumulativeAmountWei: activeCumulativeAmountWei,
               }),
@@ -2059,6 +2122,11 @@ async function handleTempoSessionStreamResponse(input: {
         emitJsonEvent('mppStreamNeedVoucher', {
           needVoucher: event.data,
         });
+        assertTempoSessionChannelId(
+          channel,
+          event.data.channelId,
+          'payment-need-voucher.channelId',
+        );
         if (requiredCumulativeWei > activeDepositWei) {
           const targetDepositWei =
             input.defaultDepositWei > requiredCumulativeWei
@@ -2069,13 +2137,9 @@ async function handleTempoSessionStreamResponse(input: {
             auth: input.auth,
             config: input.config,
             rpcUrl: input.rpcUrl,
-            chainId: input.chainId,
-            token: input.token,
-            recipient: input.recipient,
-            escrowContract: input.escrowContract,
+            channel,
             walletAddress: input.walletAddress,
             decimals: input.decimals,
-            channelId: activeChannelId,
             requestAmountWei:
               requiredCumulativeWei > acceptedCumulativeWei
                 ? requiredCumulativeWei - acceptedCumulativeWei
@@ -2114,12 +2178,7 @@ async function handleTempoSessionStreamResponse(input: {
           const voucherPayload = await buildTempoSessionVoucherPayload({
             auth: input.auth,
             config: input.config,
-            chainId: input.chainId,
-            escrowContract: input.escrowContract,
-            token: input.token,
-            recipient: input.recipient,
-            channelId: activeChannelId,
-            amountWei: requiredCumulativeWei - activeCumulativeAmountWei,
+            channel,
             cumulativeAmountWei: requiredCumulativeWei,
             action: 'voucher',
           });
@@ -2159,11 +2218,7 @@ async function handleTempoSessionStreamResponse(input: {
     const closePayload = await buildTempoSessionClosePayload({
       auth: input.auth,
       config: input.config,
-      chainId: input.chainId,
-      escrowContract: input.escrowContract,
-      token: input.token,
-      recipient: input.recipient,
-      channelId: activeChannelId,
+      channel,
       cumulativeAmountWei: spentWei > 0n ? spentWei : activeCumulativeAmountWei,
     });
     const closeResponse = await globalThis.fetch(input.targetUrl, {
@@ -2189,13 +2244,9 @@ async function handleTempoSessionStreamResponse(input: {
     writeTempoSessionStateFile(
       input.sessionStatePath,
       createTempoSessionState({
-        chainId: input.chainId,
+        channel,
         rpcUrl: input.rpcUrl,
-        escrowContract: input.escrowContract,
-        token: input.token,
-        recipient: input.recipient,
         walletAddress: input.walletAddress,
-        channelId: activeChannelId,
         depositWei: activeDepositWei,
         cumulativeAmountWei: activeCumulativeAmountWei,
       }),
@@ -2708,6 +2759,7 @@ async function runAgentCommandJson<T>(input: {
   config: WlfiConfig;
   asJson: boolean;
   waitForManualApproval?: boolean;
+  telemetry?: AgentCommandTelemetryContext;
 }): Promise<T | null> {
   const { agentKeyId, agentAuthToken, daemonSocket } = await resolveAgentCommandContext(
     input.auth,
@@ -2717,21 +2769,44 @@ async function runAgentCommandJson<T>(input: {
   const resolveCommandArgs = async () =>
     typeof input.commandArgs === 'function' ? await input.commandArgs() : input.commandArgs;
 
-  const runOnce = async () =>
-    runAgentCommandJsonOnce<T>({
-      commandArgs: await resolveCommandArgs(),
+  let lastCommandArgs: string[] = [];
+  const runOnce = async () => {
+    lastCommandArgs = await resolveCommandArgs();
+    return runAgentCommandJsonOnce<T>({
+      commandArgs: lastCommandArgs,
       config: input.config,
       agentKeyId,
       agentAuthToken,
       daemonSocket,
     });
+  };
 
-  const firstAttempt = await runOnce();
+  const recordOutcome = (result: BalanceMutationResult) => {
+    // For broadcast flows this function only sees the signing step; the balance has not moved yet,
+    // so the caller records the final outcome after the network accepts the transaction.
+    if (result === 'success' && input.telemetry?.broadcast) {
+      return;
+    }
+    const event = describeAgentCommand(lastCommandArgs, result, input.telemetry);
+    if (event) {
+      trackBalanceMutation(event);
+    }
+  };
+
+  let firstAttempt: AgentCommandAttemptResult<T>;
+  try {
+    firstAttempt = await runOnce();
+  } catch (error) {
+    recordOutcome('failed');
+    throw error;
+  }
   if (firstAttempt.type === 'success') {
+    recordOutcome('success');
     return firstAttempt.value;
   }
 
   if (!input.waitForManualApproval) {
+    recordOutcome('awaiting_approval');
     printManualApprovalRequired(firstAttempt.output, input.asJson);
     process.exitCode = firstAttempt.exitCode;
     return null;
@@ -2742,24 +2817,32 @@ async function runAgentCommandJson<T>(input: {
   const pendingApprovalRequestId = firstAttempt.output.approval_request_id;
   const startedWaitingAt = Date.now();
 
-  for (;;) {
-    await sleep(MANUAL_APPROVAL_POLL_INTERVAL_MS);
-    const nextAttempt = await runOnce();
-    if (nextAttempt.type === 'success') {
-      return nextAttempt.value;
-    }
+  // Anything that escapes the polling loop — a dead daemon, a swapped approval id, or the wait
+  // timeout — is a failed mutation and must be recorded as one.
+  try {
+    for (;;) {
+      await sleep(MANUAL_APPROVAL_POLL_INTERVAL_MS);
+      const nextAttempt = await runOnce();
+      if (nextAttempt.type === 'success') {
+        recordOutcome('success');
+        return nextAttempt.value;
+      }
 
-    if (nextAttempt.output.approval_request_id !== pendingApprovalRequestId) {
-      throw new Error(
-        `manual approval request changed while waiting for a decision (${pendingApprovalRequestId} -> ${nextAttempt.output.approval_request_id}); stop and rerun the command after checking the approval status.`,
-      );
-    }
+      if (nextAttempt.output.approval_request_id !== pendingApprovalRequestId) {
+        throw new Error(
+          `manual approval request changed while waiting for a decision (${pendingApprovalRequestId} -> ${nextAttempt.output.approval_request_id}); stop and rerun the command after checking the approval status.`,
+        );
+      }
 
-    if (Date.now() - startedWaitingAt >= MANUAL_APPROVAL_WAIT_TIMEOUT_MS) {
-      throw new Error(
-        `Timed out after ${Math.ceil(MANUAL_APPROVAL_WAIT_TIMEOUT_MS / 1000)}s waiting for manual approval decision: ${pendingApprovalRequestId}`,
-      );
+      if (Date.now() - startedWaitingAt >= MANUAL_APPROVAL_WAIT_TIMEOUT_MS) {
+        throw new Error(
+          `Timed out after ${Math.ceil(MANUAL_APPROVAL_WAIT_TIMEOUT_MS / 1000)}s waiting for manual approval decision: ${pendingApprovalRequestId}`,
+        );
+      }
     }
+  } catch (error) {
+    recordOutcome('failed');
+    throw error;
   }
 }
 
@@ -3270,20 +3353,8 @@ async function runLocalAdminCommand(forwarded: string[]): Promise<boolean> {
         ? buildAdminTokenCommand()
         : buildAdminDaemonCommand();
   const args = forwarded[0] === 'help' ? ['--help'] : forwarded.slice(1);
-  command.exitOverride();
-
-  try {
-    await command.parseAsync(args, { from: 'user' });
-    return true;
-  } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error) {
-      const code = String((error as { code?: unknown }).code ?? '');
-      if (code === 'commander.helpDisplayed') {
-        return true;
-      }
-    }
-    throw error;
-  }
+  await parseNestedAdminCommand(command, args);
+  return true;
 }
 
 function normalizeAdminPassthroughArgs(forwarded: string[]): string[] {
@@ -3406,7 +3477,7 @@ async function runAdminWalletBackupCli(argv: string[]): Promise<void> {
       );
     });
 
-  await command.parseAsync(argv, { from: 'user' });
+  await parseNestedAdminCommand(command, argv);
 }
 
 async function runAdminResumeManualApprovalCli(argv: string[]): Promise<void> {
@@ -3550,19 +3621,91 @@ async function runAdminResumeManualApprovalCli(argv: string[]): Promise<void> {
       }
     });
 
-  command.exitOverride();
+  await parseNestedAdminCommand(command, argv);
+}
 
+/**
+ * Broadcasts a signed transaction and records the balance mutation only once the network has
+ * accepted it. Signing succeeding does not mean the balance moved: the RPC can still reject the
+ * transaction for nonce, gas, or replacement reasons.
+ */
+async function completeAssetBroadcastTracked(
+  plan: AssetBroadcastPlan,
+  signed: RustBroadcastOutput,
+  event: Omit<BalanceMutationEvent, 'result'>,
+): Promise<CompletedAssetBroadcast> {
   try {
-    await command.parseAsync(argv, { from: 'user' });
+    const completed = await completeAssetBroadcast(plan, signed, {
+      assertSignedBroadcastTransactionMatchesRequest,
+      broadcastRawTransaction,
+    });
+    trackBalanceMutation({ ...event, result: 'success' });
+    return completed;
   } catch (error) {
-    if (error && typeof error === 'object' && 'code' in error) {
-      const code = String((error as { code?: unknown }).code ?? '');
-      if (code === 'commander.helpDisplayed') {
-        return;
-      }
-    }
+    trackBalanceMutation({ ...event, result: 'failed' });
     throw error;
   }
+}
+
+function resolveCommandPath(actionCommand: Command): [string, string | undefined] {
+  const names: string[] = [];
+  let current: Command | null = actionCommand;
+  while (current?.parent) {
+    names.unshift(current.name());
+    current = current.parent;
+  }
+
+  // Keep every level below the top command: the leaf verb is what distinguishes a destructive
+  // `config agent-auth revoke` from a read-only `config agent-auth status`.
+  const [command, ...rest] = names;
+  return [command ?? 'agentpay', rest.length > 0 ? rest.join(' ') : undefined];
+}
+
+function registerTelemetryCommand(program: Command) {
+  const telemetry = program
+    .command('telemetry')
+    .description('Manage anonymous usage analytics and crash reporting');
+
+  telemetry
+    .command('status')
+    .description('Show whether telemetry is currently enabled')
+    .option('--json', 'Print JSON output', false)
+    .action((options) => {
+      const consent = resolveTelemetryConsent();
+      print(
+        {
+          command: 'telemetry status',
+          enabled: consent.enabled,
+          disabledReason: consent.reason,
+          noticeShownAt: readTelemetryState()?.noticeShownAt,
+        },
+        options.json,
+      );
+    });
+
+  telemetry
+    .command('enable')
+    .description('Opt in to telemetry')
+    .option('--json', 'Print JSON output', false)
+    .action((options) => {
+      setTelemetryEnabled(true);
+      // Report resolved consent, not the stored flag: an env opt-out still wins over this write.
+      const consent = resolveTelemetryConsent();
+      print(
+        { command: 'telemetry enable', enabled: consent.enabled, disabledReason: consent.reason },
+        options.json,
+      );
+    });
+
+  telemetry
+    .command('disable')
+    .description('Opt out of telemetry')
+    .option('--json', 'Print JSON output', false)
+    .action((options) => {
+      setTelemetryEnabled(false);
+      suspendTelemetry();
+      print({ command: 'telemetry disable', enabled: false }, options.json);
+    });
 }
 
 async function main() {
@@ -3574,12 +3717,22 @@ async function main() {
   }
 
   ensureAgentPayHome();
+  await initTelemetry();
   const program = new Command();
   program
     .name('agentpay')
     .description('Single entrypoint for AgentPay admin and signing operations')
     .version(CLI_VERSION, '-V, --version', 'Print CLI version')
-    .showHelpAfterError();
+    .showHelpAfterError()
+    // commander would otherwise call process.exit() itself after printing help, the version, or a
+    // usage error, skipping the telemetry flush and proxy teardown in main().finally.
+    .exitOverride()
+    .hook('preAction', (_thisCommand, actionCommand) => {
+      const [command, subcommand] = resolveCommandPath(actionCommand);
+      beginCommand(command, subcommand);
+    });
+
+  registerTelemetryCommand(program);
 
   const configCommand = program.command('config').description('Manage ~/.agentpay configuration');
   configCommand
@@ -3903,7 +4056,34 @@ async function main() {
         getSplTokenBalance,
         getSolanaNativeBalance,
       });
+      trackWalletBalanceSnapshot(profile.balances);
       print(options.json ? profile : formatWalletProfileText(profile), options.json);
+    });
+
+  program
+    .command('railgun-address')
+    .description("Print the wallet's Railgun shielded address (0zk1…) from local config")
+    .option('--json', 'Print JSON output', false)
+    .action((options) => {
+      const config = readConfig();
+      const address = config.wallet?.railgunAddress;
+      if (!address) {
+        // Two reasons this can happen:
+        //  - admin setup has not been run yet (no wallet)
+        //  - Track 2 Phase B was not deployed when setup ran; rerun setup or
+        //    derive on demand via `agentpay admin railgun-public-key`.
+        const reason = config.wallet
+          ? 'Railgun shielded address has not been derived yet; re-run `agentpay admin setup` to populate it'
+          : 'wallet metadata is unavailable; run `agentpay admin setup` first';
+        if (options.json) {
+          print({ status: 'unavailable', reason }, true);
+        } else {
+          process.stderr.write(`${reason}\n`);
+        }
+        process.exitCode = 2;
+        return;
+      }
+      print(options.json ? { railgunAddress: address } : address, options.json);
     });
 
   registerStatusCommand(program, {
@@ -4005,11 +4185,29 @@ async function main() {
         forwarded.includes('-h');
       const normalizedForwarded = wantsHelp ? forwarded : normalizeAdminPassthroughArgs(forwarded);
       if (wantsHelp) {
-        const rendered = await runRustBinary(
-          'agentpay-admin',
-          normalizedForwarded.length === 0 ? ['--help'] : normalizedForwarded,
-          config,
-        );
+        const wantsTopLevelHelp =
+          forwarded.length === 0 ||
+          (forwarded.length === 1 &&
+            (forwarded[0] === 'help' || forwarded[0] === '--help' || forwarded[0] === '-h'));
+        let rendered: { stdout: string; stderr: string };
+        try {
+          rendered = await runRustBinary(
+            'agentpay-admin',
+            normalizedForwarded.length === 0 ? ['--help'] : normalizedForwarded,
+            config,
+          );
+        } catch (error) {
+          if (!wantsTopLevelHelp) {
+            throw error;
+          }
+          // The TypeScript-owned subcommands remain documented even when the Rust admin binary
+          // is missing; rewriteAdminHelpText('') renders just that table.
+          process.stderr.write(
+            `warning: Rust admin help is unavailable (${error instanceof Error ? error.message : String(error)}); showing TypeScript-owned admin commands only.\n`,
+          );
+          process.stdout.write(rewriteAdminHelpText(''));
+          return;
+        }
         if (rendered.stdout) {
           process.stdout.write(rewriteAdminHelpText(rendered.stdout));
         }
@@ -4111,9 +4309,11 @@ async function main() {
             })
           : Promise.resolve(null);
 
+      let signedDurableNonce: SolanaDurableNonceContext | null = null;
       const signed = await runAgentCommandJson<RustBroadcastOutput>({
         commandArgs: async () => {
           const durableNonce = await resolveDurableNonce();
+          signedDurableNonce = durableNonce;
           return [
             'solana-sol-transfer',
             '--network',
@@ -4139,6 +4339,11 @@ async function main() {
         config,
         asJson: options.json,
         waitForManualApproval: options.broadcast,
+        telemetry: {
+          amountWei,
+          assetDecimals: context.asset.decimals,
+          assetSymbol: context.asset.symbol,
+        },
       });
       if (!signed) {
         return;
@@ -4160,7 +4365,17 @@ async function main() {
         throw new Error('Rust agent did not return raw_tx_base64 for Solana transfer signing');
       }
 
-      const networkTxId = await broadcastSignedSolanaTransaction(rpcUrl, signed.raw_tx_base64);
+      const nonceUsed = signedDurableNonce as SolanaDurableNonceContext | null;
+      const networkTxId = await broadcastSignedSolanaTransaction(rpcUrl, signed.raw_tx_base64, {
+        feePayer: context.feePayer,
+        recentBlockhash: nonceUsed?.nonce ?? context.recentBlockhash,
+        durableNonceAccount: nonceUsed?.nonceAccount ?? null,
+        transfer: {
+          kind: 'sol',
+          recipient: context.recipient,
+          lamports: amountWei,
+        },
+      });
       print(
         {
           ...normalized,
@@ -4268,9 +4483,11 @@ async function main() {
             })
           : Promise.resolve(null);
 
+      let signedDurableNonce: SolanaDurableNonceContext | null = null;
       const signed = await runAgentCommandJson<RustBroadcastOutput>({
         commandArgs: async () => {
           const durableNonce = await resolveDurableNonce();
+          signedDurableNonce = durableNonce;
           return [
             'solana-spl-transfer',
             '--network',
@@ -4305,6 +4522,11 @@ async function main() {
         config,
         asJson: options.json,
         waitForManualApproval: options.broadcast,
+        telemetry: {
+          amountWei,
+          assetDecimals: context.asset.decimals,
+          assetSymbol: context.asset.symbol,
+        },
       });
       if (!signed) {
         return;
@@ -4331,7 +4553,22 @@ async function main() {
         throw new Error('Rust agent did not return raw_tx_base64 for Solana transfer signing');
       }
 
-      const networkTxId = await broadcastSignedSolanaTransaction(rpcUrl, signed.raw_tx_base64);
+      const nonceUsed = signedDurableNonce as SolanaDurableNonceContext | null;
+      const networkTxId = await broadcastSignedSolanaTransaction(rpcUrl, signed.raw_tx_base64, {
+        feePayer: context.feePayer,
+        recentBlockhash: nonceUsed?.nonce ?? context.recentBlockhash,
+        durableNonceAccount: nonceUsed?.nonceAccount ?? null,
+        transfer: {
+          kind: 'spl',
+          mint: context.mint,
+          sourceAta: context.sourceAta,
+          destinationAta: context.destinationAta,
+          amountWei,
+          decimals: context.asset.decimals,
+          tokenProgram: context.tokenProgram,
+          transferFeeWei: transferFee.transferFeeWei,
+        },
+      });
       print(
         {
           ...normalized,
@@ -4458,13 +4695,22 @@ async function main() {
           config,
           asJson: options.json,
           waitForManualApproval: true,
+          telemetry: {
+            amountWei,
+            assetDecimals: asset.decimals,
+            assetSymbol: asset.symbol,
+            broadcast: true,
+          },
         });
         if (!signed) {
           return;
         }
-        const completed = await completeAssetBroadcast(plan, signed, {
-          assertSignedBroadcastTransactionMatchesRequest,
-          broadcastRawTransaction,
+        const completed = await completeAssetBroadcastTracked(plan, signed, {
+          action: 'transfer',
+          amount: Number(amountWei) / 10 ** asset.decimals,
+          asset: asset.symbol,
+          broadcast: true,
+          chainId: plan.chainId,
         });
         print(
           formatBroadcastedAssetOutput({
@@ -4505,6 +4751,7 @@ async function main() {
         auth: options,
         config,
         asJson: options.json,
+        telemetry: { assetDecimals: asset.decimals, assetSymbol: asset.symbol },
       });
       if (result) {
         print(normalizeAgentAmountOutput(result, asset), options.json);
@@ -4600,6 +4847,12 @@ async function main() {
             '--tx-type',
             plan.txType,
           ],
+          telemetry: {
+            amountWei,
+            assetDecimals: asset.decimals,
+            assetSymbol: asset.symbol,
+            broadcast: true,
+          },
           auth: options,
           config,
           asJson: options.json,
@@ -4608,9 +4861,12 @@ async function main() {
         if (!signed) {
           return;
         }
-        const completed = await completeAssetBroadcast(plan, signed, {
-          assertSignedBroadcastTransactionMatchesRequest,
-          broadcastRawTransaction,
+        const completed = await completeAssetBroadcastTracked(plan, signed, {
+          action: 'transfer_native',
+          amount: Number(amountWei) / 10 ** asset.decimals,
+          asset: asset.symbol,
+          broadcast: true,
+          chainId: plan.chainId,
         });
         print(
           formatBroadcastedAssetOutput({
@@ -4649,6 +4905,7 @@ async function main() {
         auth: options,
         config,
         asJson: options.json,
+        telemetry: { assetDecimals: asset.decimals, assetSymbol: asset.symbol },
       });
       if (result) {
         print(normalizeAgentAmountOutput(result, asset), options.json);
@@ -4757,13 +5014,22 @@ async function main() {
           config,
           asJson: options.json,
           waitForManualApproval: true,
+          telemetry: {
+            amountWei,
+            assetDecimals: asset.decimals,
+            assetSymbol: asset.symbol,
+            broadcast: true,
+          },
         });
         if (!signed) {
           return;
         }
-        const completed = await completeAssetBroadcast(plan, signed, {
-          assertSignedBroadcastTransactionMatchesRequest,
-          broadcastRawTransaction,
+        const completed = await completeAssetBroadcastTracked(plan, signed, {
+          action: 'approve',
+          amount: Number(amountWei) / 10 ** asset.decimals,
+          asset: asset.symbol,
+          broadcast: true,
+          chainId: plan.chainId,
         });
         print(
           formatBroadcastedAssetOutput({
@@ -4804,6 +5070,7 @@ async function main() {
         auth: options,
         config,
         asJson: options.json,
+        telemetry: { assetDecimals: asset.decimals, assetSymbol: asset.symbol },
       });
       if (result) {
         print(normalizeAgentAmountOutput(result, asset), options.json);
@@ -4930,6 +5197,246 @@ async function main() {
 
     await broadcastRawTransaction(rpcUrl, signed.raw_tx_hex as Hex);
     print(signed, options.json);
+  });
+
+  addAgentCommandAuthOptions(
+    program
+      .command('shield')
+      .description(
+        'Authorize a Railgun shield (public ERC-20 -> shielded pool) through policy checks',
+      )
+      .requiredOption('--network <name>', 'Network name')
+      .requiredOption('--token <address>', 'ERC-20 token contract')
+      .requiredOption('--amount <amount>', 'Shield amount in token units')
+      .option(
+        '--to-railgun-address <address>',
+        'Destination Railgun shielded address (0zk1...); defaults to wallet self when omitted',
+      )
+      .option('--rpc-url <url>', 'Ethereum RPC URL override for token metadata + broadcast')
+      .option(
+        '--broadcast',
+        'Assemble and broadcast the shield contract call (requires Track 4)',
+        false,
+      ),
+  ).action(async (options) => {
+    const config = readConfig();
+    const network = resolveCliNetworkProfile(options.network, config).chainId;
+    const token = assertAddress(options.token, 'token');
+    const rpcUrl = resolveCliRpcUrl(options.rpcUrl, options.network, config);
+    const asset = await resolveErc20AssetWithRpcFallback(
+      config,
+      network,
+      token,
+      rpcUrl,
+      getTokenMetadata,
+    );
+    const amountWei = parseConfiguredAmount(options.amount, asset.decimals, 'amount');
+    if (!options.toRailgunAddress) {
+      throw new Error(
+        '--to-railgun-address is required; self-shield default resolution lands with Track 2 Phase B',
+      );
+    }
+    const toRailgunAddress = assertRailgunAddress(options.toRailgunAddress, 'toRailgunAddress');
+    try {
+      const result = await runAgentCommandJson<RustBroadcastOutput>({
+        commandArgs: [
+          'shield',
+          '--network',
+          String(network),
+          '--token',
+          token,
+          '--to-railgun-address',
+          toRailgunAddress,
+          '--amount-wei',
+          amountWei.toString(),
+        ],
+        auth: options,
+        config,
+        asJson: options.json,
+        waitForManualApproval: true,
+        telemetry: { assetDecimals: asset.decimals, assetSymbol: asset.symbol },
+      });
+      if (!result) {
+        return;
+      }
+      print(normalizeAgentAmountOutput(result, asset), options.json);
+      if (options.broadcast) {
+        console.error(RAILGUN_BROADCAST_PENDING_MESSAGE);
+      }
+    } catch (error) {
+      throw rewriteAgentAmountError(error, asset);
+    }
+  });
+
+  addAgentCommandAuthOptions(
+    program
+      .command('unshield')
+      .description(
+        'Authorize a Railgun unshield (shielded pool -> public address) through policy checks',
+      )
+      .requiredOption('--network <name>', 'Network name')
+      .requiredOption('--token <address>', 'ERC-20 token contract')
+      .requiredOption('--amount <amount>', 'Unshield amount in token units')
+      .requiredOption('--to <address>', 'Public recipient EVM address')
+      .option('--rpc-url <url>', 'Ethereum RPC URL override for token metadata + broadcast')
+      .option(
+        '--via-broadcaster',
+        'Relay outer tx through a Waku broadcaster instead of self-broadcasting',
+        false,
+      )
+      .option(
+        '--broadcast',
+        'Assemble and broadcast the unshield contract call (requires Track 4)',
+        false,
+      ),
+  ).action(async (options) => {
+    const config = readConfig();
+    const network = resolveCliNetworkProfile(options.network, config).chainId;
+    const token = assertAddress(options.token, 'token');
+    const rpcUrl = resolveCliRpcUrl(options.rpcUrl, options.network, config);
+    const recipient = assertAddress(options.to, 'to');
+    const asset = await resolveErc20AssetWithRpcFallback(
+      config,
+      network,
+      token,
+      rpcUrl,
+      getTokenMetadata,
+    );
+    const amountWei = parseConfiguredAmount(options.amount, asset.decimals, 'amount');
+    const args: string[] = [
+      'unshield',
+      '--network',
+      String(network),
+      '--token',
+      token,
+      '--to',
+      recipient,
+      '--amount-wei',
+      amountWei.toString(),
+    ];
+    if (options.viaBroadcaster) {
+      args.push('--via-broadcaster');
+    }
+    try {
+      const result = await runAgentCommandJson<RustBroadcastOutput>({
+        commandArgs: args,
+        auth: options,
+        config,
+        asJson: options.json,
+        waitForManualApproval: true,
+        telemetry: { assetDecimals: asset.decimals, assetSymbol: asset.symbol },
+      });
+      if (!result) {
+        return;
+      }
+      print(normalizeAgentAmountOutput(result, asset), options.json);
+      if (options.broadcast) {
+        console.error(RAILGUN_BROADCAST_PENDING_MESSAGE);
+      }
+    } catch (error) {
+      throw rewriteAgentAmountError(error, asset);
+    }
+  });
+
+  addAgentCommandAuthOptions(
+    program
+      .command('private-transfer')
+      .description(
+        'Authorize a Railgun shielded-to-shielded private transfer through policy checks',
+      )
+      .requiredOption('--network <name>', 'Network name')
+      .requiredOption('--token <address>', 'ERC-20 token contract')
+      .requiredOption('--amount <amount>', 'Transfer amount in token units')
+      .requiredOption(
+        '--to-railgun-address <address>',
+        'Destination Railgun shielded address (0zk1...)',
+      )
+      .option('--rpc-url <url>', 'Ethereum RPC URL override for token metadata + broadcast')
+      .option(
+        '--self-broadcast',
+        'Skip the Waku broadcaster relay and self-broadcast the outer tx (leaks gas-payer link)',
+        false,
+      )
+      .option(
+        '--broadcast',
+        'Assemble and broadcast the private-transfer contract call (requires Track 4)',
+        false,
+      ),
+  ).action(async (options) => {
+    const config = readConfig();
+    const network = resolveCliNetworkProfile(options.network, config).chainId;
+    const token = assertAddress(options.token, 'token');
+    const rpcUrl = resolveCliRpcUrl(options.rpcUrl, options.network, config);
+    const asset = await resolveErc20AssetWithRpcFallback(
+      config,
+      network,
+      token,
+      rpcUrl,
+      getTokenMetadata,
+    );
+    const amountWei = parseConfiguredAmount(options.amount, asset.decimals, 'amount');
+    const toRailgunAddress = assertRailgunAddress(options.toRailgunAddress, 'toRailgunAddress');
+    const args: string[] = [
+      'private-transfer',
+      '--network',
+      String(network),
+      '--token',
+      token,
+      '--to-railgun-address',
+      toRailgunAddress,
+      '--amount-wei',
+      amountWei.toString(),
+    ];
+    if (options.selfBroadcast) {
+      // The Rust subcommand models broadcaster relay as the privacy-preserving
+      // default; --self-broadcast is a pure switch (clap parses bool fields as
+      // presence flags, so passing a value would fail).
+      args.push('--self-broadcast');
+    }
+    try {
+      const result = await runAgentCommandJson<RustBroadcastOutput>({
+        commandArgs: args,
+        auth: options,
+        config,
+        asJson: options.json,
+        waitForManualApproval: true,
+        telemetry: { assetDecimals: asset.decimals, assetSymbol: asset.symbol },
+      });
+      if (!result) {
+        return;
+      }
+      print(normalizeAgentAmountOutput(result, asset), options.json);
+      if (options.broadcast) {
+        console.error(RAILGUN_BROADCAST_PENDING_MESSAGE);
+      }
+    } catch (error) {
+      throw rewriteAgentAmountError(error, asset);
+    }
+  });
+
+  addAgentCommandAuthOptions(
+    program
+      .command('private-balance')
+      .description(
+        'Report Railgun shielded balance state (requires the Track 4 railgun-prover sidecar)',
+      )
+      .requiredOption('--network <name>', 'Network name')
+      .option('--token <address>', 'Optional ERC-20 token contract to scope the lookup')
+      .option('--rpc-url <url>', 'Ethereum RPC URL override for token metadata'),
+  ).action(async (options) => {
+    const config = readConfig();
+    const network = resolveCliNetworkProfile(options.network, config).chainId;
+    const token = options.token ? assertAddress(options.token, 'token') : undefined;
+    const payload = {
+      command: 'private-balance',
+      network: String(network),
+      token: token ?? null,
+      status: 'unavailable',
+      reason: RAILGUN_PRIVATE_BALANCE_UNAVAILABLE_REASON,
+    };
+    print(payload, options.json);
+    // Matches the Rust agent's `Unavailable` outcome (exit code 3).
+    process.exitCode = 3;
   });
 
   registerBuiltinCliPlugins(program, {
@@ -5147,13 +5654,13 @@ async function main() {
 
       const source = `did:pkh:eip155:${chainId}:${walletAddress}`;
       const persistedSession = readTempoSessionStateFile(sessionStatePath);
-      let activeChannelId: Hex;
+      let activeChannel: TempoSessionChannel;
       let activeDepositWei: bigint;
       let activeCumulativeAmountWei: bigint;
       let paidResponse: Response;
 
       if (persistedSession) {
-        if (persistedSession.kind !== 'tempo_session' || persistedSession.version !== 1) {
+        if (persistedSession.kind !== 'tempo_session' || persistedSession.version !== 2) {
           throw new Error('tempo session state file has an unsupported format');
         }
         if (persistedSession.chainId !== chainId) {
@@ -5194,7 +5701,20 @@ async function main() {
           );
         }
 
-        activeChannelId = persistedSession.channelId;
+        activeChannel = createTempoSessionChannel({
+          chainId,
+          escrowContract,
+          token,
+          recipient,
+          payer: walletAddress,
+          authorizedSigner: persistedSession.authorizedSigner,
+          salt: persistedSession.salt,
+        });
+        assertTempoSessionChannelId(
+          activeChannel,
+          persistedSession.channelId,
+          'tempo session state.channelId',
+        );
         activeDepositWei = parseBigIntString(
           persistedSession.depositWei,
           'tempo session state.depositWei',
@@ -5212,13 +5732,9 @@ async function main() {
             auth: options,
             config,
             rpcUrl,
-            chainId,
-            token,
-            recipient,
-            escrowContract,
+            channel: activeChannel,
             walletAddress,
             decimals,
-            channelId: activeChannelId,
             requestAmountWei: challengeAmountWei,
             additionalDepositWei,
             targetDepositWei,
@@ -5247,13 +5763,9 @@ async function main() {
             writeTempoSessionStateFile(
               sessionStatePath,
               createTempoSessionState({
-                chainId,
+                channel: activeChannel,
                 rpcUrl,
-                escrowContract,
-                token,
-                recipient,
                 walletAddress,
-                channelId: activeChannelId,
                 depositWei: activeDepositWei,
                 cumulativeAmountWei: persistedCumulativeAmountWei,
               }),
@@ -5265,12 +5777,7 @@ async function main() {
         const voucherPayload = await buildTempoSessionVoucherPayload({
           auth: options,
           config,
-          chainId,
-          escrowContract,
-          token,
-          recipient,
-          channelId: activeChannelId,
-          amountWei: challengeAmountWei,
+          channel: activeChannel,
           cumulativeAmountWei: nextCumulativeAmountWei,
           action: 'voucher',
         });
@@ -5301,7 +5808,7 @@ async function main() {
           depositWei,
           feePayer: challenge.request.methodDetails?.feePayer === true,
         });
-        activeChannelId = open.channelId;
+        activeChannel = open.channel;
         activeDepositWei = depositWei;
         activeCumulativeAmountWei = challengeAmountWei;
         paidResponse = await globalThis.fetch(targetUrl, {
@@ -5329,8 +5836,15 @@ async function main() {
         ?.toLowerCase()
         .includes('text/event-stream');
       if (paymentReceipt?.channelId) {
-        activeChannelId = assertHex(paymentReceipt.channelId, 'payment.receipt.channelId');
+        // The server cannot redirect later vouchers to a different channel: the daemon only signs
+        // for the channel id it derives from the salt, payer, payee, token, and pinned escrow.
+        assertTempoSessionChannelId(
+          activeChannel,
+          paymentReceipt.channelId,
+          'payment.receipt.channelId',
+        );
       }
+      const activeChannelId = activeChannel.channelId;
       activeCumulativeAmountWei = resolveTempoSessionCumulativeAmountWei(
         paymentReceipt,
         activeCumulativeAmountWei,
@@ -5344,17 +5858,13 @@ async function main() {
           auth: options,
           config,
           targetUrl,
-          chainId,
           rpcUrl,
-          token,
-          recipient,
-          escrowContract,
+          channel: activeChannel,
           walletAddress,
           decimals,
           sessionStatePath,
           closeSession: Boolean(options.closeSession),
           defaultDepositWei: depositWei,
-          activeChannelId,
           activeDepositWei,
           activeCumulativeAmountWei,
           source,
@@ -5368,11 +5878,7 @@ async function main() {
         const closePayload = await buildTempoSessionClosePayload({
           auth: options,
           config,
-          chainId,
-          escrowContract,
-          token,
-          recipient,
-          channelId: activeChannelId,
+          channel: activeChannel,
           cumulativeAmountWei: activeCumulativeAmountWei,
         });
         const closeResponse = await globalThis.fetch(targetUrl, {
@@ -5399,13 +5905,9 @@ async function main() {
         writeTempoSessionStateFile(
           sessionStatePath,
           createTempoSessionState({
-            chainId,
+            channel: activeChannel,
             rpcUrl,
-            escrowContract,
-            token,
-            recipient,
             walletAddress,
-            channelId: activeChannelId,
             depositWei: activeDepositWei,
             cumulativeAmountWei: activeCumulativeAmountWei,
           }),
@@ -5477,14 +5979,16 @@ async function main() {
       config,
       asJson: options.json,
       waitForManualApproval: true,
+      telemetry: { broadcast: true },
     });
     if (!signed) {
       return;
     }
 
-    const completed = await completeAssetBroadcast(plan, signed, {
-      assertSignedBroadcastTransactionMatchesRequest,
-      broadcastRawTransaction,
+    const completed = await completeAssetBroadcastTracked(plan, signed, {
+      action: 'mpp',
+      broadcast: true,
+      chainId,
     });
     const networkTxHash = completed.networkTxHash;
 
@@ -5574,7 +6078,11 @@ async function main() {
       const config = readConfig();
       const rpcUrl = resolveRpcUrl(options.rpcUrl, config);
       const address = assertAddress(options.address, 'address');
-      const snapshot = await getAccountSnapshot(rpcUrl, address);
+      const snapshotNativeDecimals =
+        config.chainId === undefined
+          ? 18
+          : resolveConfiguredNativeAsset(config, config.chainId).decimals;
+      const snapshot = await getAccountSnapshot(rpcUrl, address, snapshotNativeDecimals);
       print(
         {
           ...snapshot,
@@ -5622,12 +6130,17 @@ async function main() {
         return;
       }
 
-      const result = await getNativeBalance(rpcUrl, owner);
+      const nativeDecimals =
+        config.chainId === undefined
+          ? 18
+          : resolveConfiguredNativeAsset(config, config.chainId).decimals;
+      const result = await getNativeBalance(rpcUrl, owner, nativeDecimals);
       print(
         {
           kind: 'native',
           owner,
           balanceWei: result.raw.toString(),
+          decimals: nativeDecimals,
           formatted: result.formatted,
         },
         options.json,
@@ -5887,11 +6400,70 @@ async function main() {
   await program.parseAsync(process.argv);
 }
 
+/** commander codes for invocations that ended by printing help or the version. */
+const COMMANDER_INFORMATIONAL_CODES: ReadonlySet<string> = new Set([
+  'commander.helpDisplayed',
+  'commander.help',
+  'commander.version',
+]);
+
+function readCommanderError(error: unknown): { code: string; exitCode: number } | undefined {
+  if (!error || typeof error !== 'object' || !('code' in error)) {
+    return undefined;
+  }
+  const code = String((error as { code?: unknown }).code ?? '');
+  if (!code.startsWith('commander.')) {
+    return undefined;
+  }
+  const exitCode = (error as { exitCode?: unknown }).exitCode;
+  return { code, exitCode: typeof exitCode === 'number' ? exitCode : 1 };
+}
+
+const STDIO_DRAIN_TIMEOUT_MS = 1_000;
+
+/**
+ * Pipes are written asynchronously once their buffer is full, so a slow reader could otherwise
+ * lose the tail of a large `--json` payload to `process.exit()`.
+ */
+async function waitForStdioDrain(): Promise<void> {
+  const deadline = Date.now() + STDIO_DRAIN_TIMEOUT_MS;
+  while (
+    Date.now() < deadline &&
+    (process.stdout.writableLength > 0 || process.stderr.writableLength > 0)
+  ) {
+    await sleep(10);
+  }
+}
+
 void main()
   .catch((error) => {
+    const commanderError = readCommanderError(error);
+    if (commanderError) {
+      // commander has already written the help text, version, or usage error; only the exit code
+      // is left to set.
+      process.exitCode = COMMANDER_INFORMATIONAL_CODES.has(commanderError.code)
+        ? 0
+        : commanderError.exitCode;
+      return;
+    }
+    reportTelemetryError(error);
     console.error(error instanceof Error ? error.message : String(error));
     process.exitCode = 1;
   })
   .finally(async () => {
+    try {
+      if (isTelemetryEnabled()) {
+        endCommand(Number(process.exitCode ?? 0));
+        // Must flush before the proxy dispatcher is torn down, or queued events lose their
+        // transport.
+        await shutdownTelemetry();
+      }
+    } catch {
+      // Telemetry must never change the exit code.
+    }
     await closeGlobalFetchProxyDispatcherFromEnv();
+    // Every command has finished by now. A telemetry endpoint that accepted the socket but never
+    // answered would otherwise keep the event loop alive long after the flush deadline.
+    await waitForStdioDrain();
+    process.exit(Number(process.exitCode ?? 0));
   });

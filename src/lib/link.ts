@@ -3,6 +3,9 @@ import fs from 'node:fs';
 import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
+import { assertTrustedExecutablePath } from './fs-trust.js';
+import { writeChildStdin } from './rust.js';
+import { buildAllowlistedChildEnv } from './rust-spawn-options.js';
 
 const moduleRequire = createRequire(
   typeof __filename === 'string' ? __filename : path.join(process.cwd(), 'agentpay-link.js'),
@@ -62,9 +65,13 @@ export interface LinkCardJsonResult {
   retrieved: unknown;
 }
 
-function envWithQuietLinkUpdates(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+/**
+ * link-cli is a third-party process: hand it only the allowlisted runtime environment and none of
+ * the `AGENTPAY_*` variables (daemon socket, home, telemetry, ...) that belong to this CLI.
+ */
+function buildLinkCliEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   return {
-    ...env,
+    ...buildAllowlistedChildEnv(env, { includeAgentPayVars: false }),
     NO_UPDATE_NOTIFIER: env.NO_UPDATE_NOTIFIER ?? '1',
   };
 }
@@ -74,7 +81,9 @@ export function resolveBundledLinkCliInvocation(
 ): LinkCliInvocation {
   const override = env.AGENTPAY_LINK_CLI_BIN?.trim();
   if (override) {
-    return { command: override, args: [] };
+    const resolvedOverride = path.resolve(override);
+    assertTrustedExecutablePath(resolvedOverride, 'link-cli binary');
+    return { command: resolvedOverride, args: [] };
   }
 
   const packageJsonPath = moduleRequire.resolve('@stripe/link-cli/package.json');
@@ -120,7 +129,7 @@ export function runLinkCliSync(
     {
       cwd: options.cwd,
       encoding: 'utf8',
-      env: envWithQuietLinkUpdates(options.env),
+      env: buildLinkCliEnv(options.env),
       input: options.input,
       stdio: options.inheritStdio ? 'inherit' : 'pipe',
     },
@@ -135,33 +144,34 @@ export function runLinkCliSync(
   };
 }
 
-export function runLinkCli(
+export async function runLinkCli(
   commandArgs: string[],
   options: LinkCliRunOptions = {},
 ): Promise<LinkCliResult> {
   const invocation = resolveBundledLinkCliInvocation(options.env);
   const stdio = options.inheritStdio ? 'inherit' : 'pipe';
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      invocation.command,
-      [...invocation.args, ...buildLinkCliArgs(commandArgs, options)],
-      {
-        cwd: options.cwd,
-        env: envWithQuietLinkUpdates(options.env),
-        stdio,
-      },
-    );
+  const child = spawn(
+    invocation.command,
+    [...invocation.args, ...buildLinkCliArgs(commandArgs, options)],
+    {
+      cwd: options.cwd,
+      env: buildLinkCliEnv(options.env),
+      stdio,
+    },
+  );
 
-    let stdout = '';
-    let stderr = '';
-    if (!options.inheritStdio) {
-      child.stdout?.on('data', (chunk) => {
-        stdout += chunk.toString();
-      });
-      child.stderr?.on('data', (chunk) => {
-        stderr += chunk.toString();
-      });
-    }
+  const stdoutChunks: Buffer[] = [];
+  const stderrChunks: Buffer[] = [];
+  if (!options.inheritStdio) {
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdoutChunks.push(chunk);
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderrChunks.push(chunk);
+    });
+  }
+
+  const closePromise = new Promise<LinkCliResult>((resolve, reject) => {
     child.on('error', reject);
     child.on('close', (status, signal) => {
       resolve({
@@ -170,19 +180,18 @@ export function runLinkCli(
           (typeof signal === 'string' && typeof os.constants.signals[signal] === 'number'
             ? 128 + os.constants.signals[signal]
             : 1),
-        stdout,
-        stderr,
+        stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+        stderr: Buffer.concat(stderrChunks).toString('utf8'),
       });
     });
-
-    if (options.input !== undefined && !options.inheritStdio) {
-      child.stdin?.end(options.input);
-      return;
-    }
-    if (!options.inheritStdio) {
-      child.stdin?.end();
-    }
   });
+  // A link-cli that exits before draining stdin must surface as its exit status, never as an
+  // unhandled EPIPE on our side.
+  const stdinPromise = options.inheritStdio
+    ? Promise.resolve()
+    : writeChildStdin(child, options.input);
+  const [result] = await Promise.all([closePromise, stdinPromise]);
+  return result;
 }
 
 export async function runLinkCliJson<T = unknown>(

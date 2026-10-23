@@ -65,7 +65,7 @@ fn poison_mutex<T>(lock: &Arc<Mutex<T>>) {
 async fn admin_session(client: &XpcDaemonClient) -> AdminSession {
     let lease = client.issue_lease("vault-password").await.expect("lease");
     AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     }
 }
@@ -304,7 +304,7 @@ async fn daemon_error_variants_roundtrip_over_xpc() {
 
     let lease = client.issue_lease("vault-password").await.expect("lease");
     let bad_session = vault_domain::AdminSession {
-        vault_password: "wrong-password".to_string(),
+        vault_password: "wrong-password".to_string().into(),
         lease,
     };
 
@@ -346,7 +346,7 @@ async fn invalid_policy_attachment_roundtrips_over_xpc() {
 
     let lease = client.issue_lease("vault-password").await.expect("lease");
     let admin = vault_domain::AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -397,7 +397,7 @@ async fn invalid_policy_error_roundtrips_over_xpc() {
 
     let lease = client.issue_lease("vault-password").await.expect("lease");
     let admin = vault_domain::AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -423,7 +423,10 @@ async fn invalid_policy_error_roundtrips_over_xpc() {
         .add_policy(&admin, invalid_policy)
         .await
         .expect_err("invalid policy must fail");
-    assert!(matches!(err, DaemonError::InvalidPolicy(_)));
+    assert!(
+        matches!(err, DaemonError::Transport(ref msg) if msg.starts_with("invalid daemon request")),
+        "unexpected error: {err:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -457,7 +460,7 @@ async fn signer_error_variants_roundtrip_over_xpc() {
 
     let lease = client.issue_lease("vault-password").await.expect("lease");
     let admin = vault_domain::AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -465,7 +468,7 @@ async fn signer_error_variants_roundtrip_over_xpc() {
         .create_vault_key(
             &admin,
             KeyCreateRequest::Import {
-                private_key_hex: "0x1234".to_string(),
+                private_key_hex: "0x1234".to_string().into(),
             },
         )
         .await
@@ -611,7 +614,7 @@ async fn lifecycle_and_evaluation_roundtrip_over_xpc() {
 
     let lease = client.issue_lease("vault-password").await.expect("lease");
     let admin = vault_domain::AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -893,7 +896,7 @@ async fn oversized_wire_response_body_is_rejected_without_timeout() {
         .await
         .expect("issue lease");
     let admin = vault_domain::AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -1097,6 +1100,16 @@ fn wire_daemon_error_roundtrip_covers_all_variants() {
         DaemonError::TooManyActiveNonceReservations { max_active } if max_active == 64
     );
     assert_roundtrip!(
+        DaemonError::NonceSkipTooLarge {
+            requested_skip: 4096,
+            max_skip: 1024,
+        },
+        DaemonError::NonceSkipTooLarge {
+            requested_skip,
+            max_skip,
+        } if requested_skip == 4096 && max_skip == 1024
+    );
+    assert_roundtrip!(
         DaemonError::UnknownNonceReservation(reservation_id),
         DaemonError::UnknownNonceReservation(id) if id == reservation_id
     );
@@ -1110,6 +1123,10 @@ fn wire_daemon_error_roundtrip_covers_all_variants() {
     assert_roundtrip!(
         DaemonError::InvalidPolicy("bad policy".to_string()),
         DaemonError::InvalidPolicy(ref msg) if msg == "bad policy"
+    );
+    assert_roundtrip!(
+        DaemonError::InvalidAction("bad action".to_string()),
+        DaemonError::InvalidAction(ref msg) if msg == "bad action"
     );
     assert_roundtrip!(
         DaemonError::InvalidRelayConfig("bad relay".to_string()),
@@ -1142,6 +1159,16 @@ fn wire_daemon_error_roundtrip_covers_all_variants() {
             approval_request_id: id,
             status,
         } if id == approval_request_id && status == ManualApprovalStatus::Completed
+    );
+    assert_roundtrip!(
+        DaemonError::TooManyPendingManualApprovalRequests {
+            agent_key_id: approval_request_id,
+            max_pending: 64,
+        },
+        DaemonError::TooManyPendingManualApprovalRequests {
+            agent_key_id,
+            max_pending,
+        } if agent_key_id == approval_request_id && max_pending == 64
     );
     assert_roundtrip!(
         DaemonError::Policy(PolicyError::NoAttachedPolicies),
@@ -1358,18 +1385,18 @@ async fn remaining_admin_methods_roundtrip_over_xpc() {
     let client = connect_test_client(&server);
     let admin = admin_session(&client).await;
 
-    let imported_key =
-        client
-            .create_vault_key(
-                &admin,
-                KeyCreateRequest::Import {
-                    private_key_hex:
-                        "0x1111111111111111111111111111111111111111111111111111111111111111"
-                            .to_string(),
-                },
-            )
-            .await
-            .expect("imported key");
+    let imported_key = client
+        .create_vault_key(
+            &admin,
+            KeyCreateRequest::Import {
+                private_key_hex:
+                    "0x1111111111111111111111111111111111111111111111111111111111111111"
+                        .to_string()
+                        .into(),
+            },
+        )
+        .await
+        .expect("imported key");
     let exported = client
         .export_vault_private_key(&admin, imported_key.id)
         .await

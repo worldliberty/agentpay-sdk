@@ -15,3 +15,5 @@ apps/*/node_modules/
 .coverage/
 .docs/
 .hermes/
+.env
+.env.local

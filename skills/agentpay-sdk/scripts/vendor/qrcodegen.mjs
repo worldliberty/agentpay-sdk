@@ -20,9 +20,9 @@
  *   out of or in connection with the Software or the use or other dealings in the
  *   Software.
  */
-
+'use strict';
 var qrcodegen;
-((qrcodegen) => {
+(function (qrcodegen) {
   /*---- QR Code symbol class ----*/
   /*
    * A QR Code symbol, which is a type of two-dimension barcode.
@@ -101,7 +101,7 @@ var qrcodegen;
           ecl = newEcl;
       }
       // Concatenate all segments to create the data bit string
-      const bb = [];
+      let bb = [];
       for (const seg of segs) {
         appendBits(seg.mode.modeBits, 4, bb);
         appendBits(seg.numChars, seg.mode.numCharCountBits(version), bb);
@@ -118,7 +118,7 @@ var qrcodegen;
       for (let padByte = 0xec; bb.length < dataCapacityBits; padByte ^= 0xec ^ 0x11)
         appendBits(padByte, 8, bb);
       // Pack bits into bytes in big endian
-      const dataCodewords = [];
+      let dataCodewords = [];
       while (dataCodewords.length * 8 < bb.length) dataCodewords.push(0);
       bb.forEach((b, i) => (dataCodewords[i >>> 3] |= b << (7 - (i & 7))));
       // Create the QR Code object
@@ -151,7 +151,7 @@ var qrcodegen;
       if (msk < -1 || msk > 7) throw new RangeError('Mask value out of range');
       this.size = version * 4 + 17;
       // Initialize both grids to be size*size arrays of Boolean false
-      const row = [];
+      let row = [];
       for (let i = 0; i < this.size; i++) row.push(false);
       for (let i = 0; i < this.size; i++) {
         this.modules.push(row.slice()); // Initially all light
@@ -297,17 +297,17 @@ var qrcodegen;
       const numShortBlocks = numBlocks - (rawCodewords % numBlocks);
       const shortBlockLen = Math.floor(rawCodewords / numBlocks);
       // Split data into blocks and append ECC to each block
-      const blocks = [];
+      let blocks = [];
       const rsDiv = QrCode.reedSolomonComputeDivisor(blockEccLen);
       for (let i = 0, k = 0; i < numBlocks; i++) {
-        const dat = data.slice(k, k + shortBlockLen - blockEccLen + (i < numShortBlocks ? 0 : 1));
+        let dat = data.slice(k, k + shortBlockLen - blockEccLen + (i < numShortBlocks ? 0 : 1));
         k += dat.length;
         const ecc = QrCode.reedSolomonComputeRemainder(dat, rsDiv);
         if (i < numShortBlocks) dat.push(0);
         blocks.push(dat.concat(ecc));
       }
       // Interleave (not concatenate) the bytes from every block into a single sequence
-      const result = [];
+      let result = [];
       for (let i = 0; i < blocks[0].length; i++) {
         blocks.forEach((block, j) => {
           // Skip the padding byte in short blocks
@@ -394,7 +394,7 @@ var qrcodegen;
       for (let y = 0; y < this.size; y++) {
         let runColor = false;
         let runX = 0;
-        const runHistory = [0, 0, 0, 0, 0, 0, 0];
+        let runHistory = [0, 0, 0, 0, 0, 0, 0];
         for (let x = 0; x < this.size; x++) {
           if (this.modules[y][x] == runColor) {
             runX++;
@@ -415,7 +415,7 @@ var qrcodegen;
       for (let x = 0; x < this.size; x++) {
         let runColor = false;
         let runY = 0;
-        const runHistory = [0, 0, 0, 0, 0, 0, 0];
+        let runHistory = [0, 0, 0, 0, 0, 0, 0];
         for (let y = 0; y < this.size; y++) {
           if (this.modules[y][x] == runColor) {
             runY++;
@@ -465,7 +465,7 @@ var qrcodegen;
       else {
         const numAlign = Math.floor(this.version / 7) + 2;
         const step = Math.floor((this.version * 8 + numAlign * 3 + 5) / (numAlign * 4 - 4)) * 2;
-        const result = [6];
+        let result = [6];
         for (let pos = this.size - 7; result.length < numAlign; pos -= step)
           result.splice(1, 0, pos);
         return result;
@@ -502,7 +502,7 @@ var qrcodegen;
       if (degree < 1 || degree > 255) throw new RangeError('Degree out of range');
       // Polynomial coefficients are stored from highest to lowest power, excluding the leading term which is always 1.
       // For example the polynomial x^3 + 255x^2 + 8x + 93 is stored as the uint8 array [255, 8, 93].
-      const result = [];
+      let result = [];
       for (let i = 0; i < degree - 1; i++) result.push(0);
       result.push(1); // Start off with the monomial x^0
       // Compute the product polynomial (x - r^0) * (x - r^1) * (x - r^2) * ... * (x - r^{degree-1}),
@@ -521,7 +521,7 @@ var qrcodegen;
     }
     // Returns the Reed-Solomon error correction codeword for the given data and divisor polynomials.
     static reedSolomonComputeRemainder(data, divisor) {
-      const result = divisor.map((_) => 0);
+      let result = divisor.map((_) => 0);
       for (const b of data) {
         // Polynomial division
         const factor = b ^ result.shift();
@@ -665,7 +665,7 @@ var qrcodegen;
     // byte mode. All input byte arrays are acceptable. Any text string
     // can be converted to UTF-8 bytes and encoded as a byte mode segment.
     static makeBytes(data) {
-      const bb = [];
+      let bb = [];
       for (const b of data) appendBits(b, 8, bb);
       return new QrSegment(QrSegment.Mode.BYTE, data.length, bb);
     }
@@ -673,7 +673,7 @@ var qrcodegen;
     static makeNumeric(digits) {
       if (!QrSegment.isNumeric(digits))
         throw new RangeError('String contains non-numeric characters');
-      const bb = [];
+      let bb = [];
       for (let i = 0; i < digits.length; ) {
         // Consume up to 3 digits per iteration
         const n = Math.min(digits.length - i, 3);
@@ -688,7 +688,7 @@ var qrcodegen;
     static makeAlphanumeric(text) {
       if (!QrSegment.isAlphanumeric(text))
         throw new RangeError('String contains unencodable characters in alphanumeric mode');
-      const bb = [];
+      let bb = [];
       let i;
       for (i = 0; i + 2 <= text.length; i += 2) {
         // Process groups of 2
@@ -713,7 +713,7 @@ var qrcodegen;
     // Returns a segment representing an Extended Channel Interpretation
     // (ECI) designator with the given assignment value.
     static makeEci(assignVal) {
-      const bb = [];
+      let bb = [];
       if (assignVal < 0) throw new RangeError('ECI assignment value out of range');
       else if (assignVal < 1 << 7) appendBits(assignVal, 8, bb);
       else if (assignVal < 1 << 14) {
@@ -775,7 +775,7 @@ var qrcodegen;
     // Returns a new array of bytes representing the given string encoded in UTF-8.
     static toUtf8ByteArray(str) {
       str = encodeURI(str);
-      const result = [];
+      let result = [];
       for (let i = 0; i < str.length; i++) {
         if (str.charAt(i) != '%') result.push(str.charCodeAt(i));
         else {
@@ -790,16 +790,16 @@ var qrcodegen;
   // Describes precisely all strings that are encodable in numeric mode.
   QrSegment.NUMERIC_REGEX = /^[0-9]*$/;
   // Describes precisely all strings that are encodable in alphanumeric mode.
-  QrSegment.ALPHANUMERIC_REGEX = /^[A-Z0-9 $%*+./:-]*$/;
+  QrSegment.ALPHANUMERIC_REGEX = /^[A-Z0-9 $%*+.\/:-]*$/;
   // The set of all legal characters in alphanumeric mode,
   // where each character value maps to the index in the string.
   QrSegment.ALPHANUMERIC_CHARSET = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:';
   qrcodegen.QrSegment = QrSegment;
 })(qrcodegen || (qrcodegen = {}));
 /*---- Public helper enumeration ----*/
-((qrcodegen) => {
+(function (qrcodegen) {
   var QrCode;
-  ((QrCode) => {
+  (function (QrCode) {
     /*
      * The error correction level in a QR Code symbol. Immutable.
      */
@@ -824,9 +824,9 @@ var qrcodegen;
   })((QrCode = qrcodegen.QrCode || (qrcodegen.QrCode = {})));
 })(qrcodegen || (qrcodegen = {}));
 /*---- Public helper enumeration ----*/
-((qrcodegen) => {
+(function (qrcodegen) {
   var QrSegment;
-  ((QrSegment) => {
+  (function (QrSegment) {
     /*
      * Describes how a segment's data bits are interpreted. Immutable.
      */

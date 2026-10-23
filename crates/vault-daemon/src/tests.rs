@@ -29,6 +29,7 @@ use super::{
     InMemoryDaemon, KeyCreateRequest, KeyManagerDaemonApi, PersistedDaemonState,
     PersistentStoreConfig, PolicyError, PolicySummary,
 };
+use super::{relay_envelope_aad, seal_relay_envelope, RELAY_ENVELOPE_ALGORITHM};
 
 fn policy_all_per_tx(max: u128) -> SpendingPolicy {
     SpendingPolicy::new(
@@ -290,6 +291,11 @@ impl VaultSignerBackend for CleanupTrackingSignerBackend {
                 let public_key_hex = match algorithm {
                     KeyAlgorithm::Secp256k1 => "11".repeat(33),
                     KeyAlgorithm::Ed25519 => "11".repeat(32),
+                    KeyAlgorithm::RailgunSpending | KeyAlgorithm::RailgunViewing => {
+                        return Err(SignerError::Unsupported(
+                            "tracking test backend does not create Railgun keys".to_string(),
+                        ));
+                    }
                 };
                 (KeySource::Generated, algorithm, public_key_hex)
             }
@@ -302,6 +308,11 @@ impl VaultSignerBackend for CleanupTrackingSignerBackend {
                 let public_key_hex = match algorithm {
                     KeyAlgorithm::Secp256k1 => "11".repeat(33),
                     KeyAlgorithm::Ed25519 => "11".repeat(32),
+                    KeyAlgorithm::RailgunSpending | KeyAlgorithm::RailgunViewing => {
+                        return Err(SignerError::Unsupported(
+                            "tracking test backend does not import Railgun keys".to_string(),
+                        ));
+                    }
                 };
                 (KeySource::Imported, algorithm, public_key_hex)
             }
@@ -401,6 +412,11 @@ impl VaultSignerBackend for TrackingNonExportableSignerBackend {
                     created_at: time::OffsetDateTime::now_utc(),
                 })
             }
+            KeyCreateRequest::GenerateWithAlgorithm {
+                algorithm: KeyAlgorithm::RailgunSpending | KeyAlgorithm::RailgunViewing,
+            } => Err(SignerError::Unsupported(
+                "tracking test backend does not create Railgun keys".to_string(),
+            )),
             KeyCreateRequest::Import { .. } | KeyCreateRequest::ImportWithAlgorithm { .. } => Err(
                 SignerError::Unsupported("imports not supported in test backend".to_string()),
             ),
@@ -458,7 +474,7 @@ fn sample_lease() -> Lease {
 
 fn sample_session() -> AdminSession {
     AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease: sample_lease(),
     }
 }
@@ -579,7 +595,7 @@ fn daemon_rpc_request_zeroize_secrets_clears_nested_secret_material() {
     let now = time::OffsetDateTime::now_utc();
     let mut admin_request = DaemonRpcRequest::CreateAgentKey {
         session: AdminSession {
-            vault_password: "super-secret-password".to_string(),
+            vault_password: "super-secret-password".to_string().into(),
             lease: Lease {
                 lease_id: Uuid::new_v4(),
                 issued_at: now,
@@ -965,13 +981,15 @@ fn ensure_relay_identity_populates_missing_fields_and_preserves_existing_values(
 fn manual_approval_frontend_url_prefers_frontend_and_falls_back_to_relay() {
     let approval_request_id =
         Uuid::parse_str("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa").expect("uuid");
+    let daemon_id = "11".repeat(32);
+    let daemon_key = "22".repeat(32);
 
     let preferred = manual_approval_frontend_url(
         &RelayConfig {
             relay_url: Some("https://relay.example".to_string()),
             frontend_url: Some("https://frontend.example/".to_string()),
-            daemon_id_hex: "11".repeat(32),
-            daemon_public_key_hex: "22".repeat(32),
+            daemon_id_hex: daemon_id.clone(),
+            daemon_public_key_hex: daemon_key.clone(),
         },
         approval_request_id,
         "capability-token",
@@ -980,17 +998,27 @@ fn manual_approval_frontend_url_prefers_frontend_and_falls_back_to_relay() {
     assert_eq!(
         preferred,
         format!(
-            "https://frontend.example/approvals/{approval_request_id}?daemonId={}&approvalCapability=capability-token",
-            "11".repeat(32)
+            "https://frontend.example/approvals/{approval_request_id}#approvalCapability=capability-token&daemonId={daemon_id}&daemonKey={daemon_key}"
         )
+    );
+    // Secrets must travel in the fragment, never in the query string.
+    assert!(!preferred.contains('?'));
+    let (base, fragment) = preferred.split_once('#').expect("fragment separator");
+    assert_eq!(
+        base,
+        format!("https://frontend.example/approvals/{approval_request_id}")
+    );
+    assert_eq!(
+        fragment,
+        format!("approvalCapability=capability-token&daemonId={daemon_id}&daemonKey={daemon_key}")
     );
 
     let fallback = manual_approval_frontend_url(
         &RelayConfig {
             relay_url: Some("https://relay.example".to_string()),
             frontend_url: None,
-            daemon_id_hex: "   ".to_string(),
-            daemon_public_key_hex: "22".repeat(32),
+            daemon_id_hex: format!("  {daemon_id}  "),
+            daemon_public_key_hex: format!(" {daemon_key}\n"),
         },
         approval_request_id,
         "capability-token",
@@ -999,9 +1027,21 @@ fn manual_approval_frontend_url_prefers_frontend_and_falls_back_to_relay() {
     assert_eq!(
         fallback,
         format!(
-            "https://relay.example/approvals/{approval_request_id}?approvalCapability=capability-token"
+            "https://relay.example/approvals/{approval_request_id}#approvalCapability=capability-token&daemonId={daemon_id}&daemonKey={daemon_key}"
         )
     );
+
+    assert!(manual_approval_frontend_url(
+        &RelayConfig {
+            relay_url: None,
+            frontend_url: None,
+            daemon_id_hex: daemon_id,
+            daemon_public_key_hex: daemon_key,
+        },
+        approval_request_id,
+        "capability-token",
+    )
+    .is_none());
 }
 
 #[test]
@@ -1025,7 +1065,7 @@ async fn relay_registration_snapshot_and_address_helpers_use_latest_vault_key() 
     .expect("daemon");
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -1076,9 +1116,6 @@ async fn relay_registration_snapshot_and_address_helpers_use_latest_vault_key() 
 
 #[test]
 fn decrypt_relay_envelope_round_trips_and_validates_inputs() {
-    use chacha20poly1305::aead::Aead;
-    use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
-
     let daemon = InMemoryDaemon::new(
         "vault-password",
         SoftwareSignerBackend::default(),
@@ -1088,50 +1125,183 @@ fn decrypt_relay_envelope_round_trips_and_validates_inputs() {
     let snapshot = daemon.snapshot_state().expect("snapshot");
     let daemon_public_bytes =
         hex::decode(snapshot.relay_config.daemon_public_key_hex).expect("daemon public key");
-    let daemon_public = x25519_dalek::PublicKey::from(
-        <[u8; 32]>::try_from(daemon_public_bytes.as_slice()).expect("public key bytes"),
-    );
+    let daemon_public: [u8; 32] =
+        <[u8; 32]>::try_from(daemon_public_bytes.as_slice()).expect("public key bytes");
     let secret = x25519_dalek::StaticSecret::from([9u8; 32]);
-    let shared_secret = secret.diffie_hellman(&daemon_public);
-    let cipher = XChaCha20Poly1305::new(shared_secret.as_bytes().into());
     let nonce = [4u8; 24];
     let plaintext = br#"{"update":"payload"}"#;
-    let ciphertext = cipher
-        .encrypt((&nonce).into(), plaintext.as_slice())
-        .expect("encrypt");
-    let encapsulated_key_hex = hex::encode(x25519_dalek::PublicKey::from(&secret).as_bytes());
+    let approval_id = "6f1b8f5e-3a52-4c1e-9d0b-2b7f2f0b9a11";
+    let daemon_id = "ab".repeat(32);
+    let (ephemeral_public, ciphertext) = seal_relay_envelope(
+        &daemon_public,
+        &secret,
+        &nonce,
+        approval_id,
+        &daemon_id,
+        plaintext,
+    )
+    .expect("encrypt");
+    let encapsulated_key_hex = hex::encode(ephemeral_public);
+    let ciphertext_hex = hex::encode(&ciphertext);
+    let nonce_hex = hex::encode(nonce);
+    let algo = RELAY_ENVELOPE_ALGORITHM;
+    assert_eq!(algo, "x25519-hkdf-xchacha20poly1305-v2");
 
     let decrypted = daemon
         .decrypt_relay_envelope(
-            "x25519-xchacha20poly1305-v1",
+            algo,
             &encapsulated_key_hex,
-            &hex::encode(nonce),
-            &hex::encode(ciphertext),
+            &nonce_hex,
+            &ciphertext_hex,
+            approval_id,
+            &daemon_id,
         )
         .expect("decrypt");
     assert_eq!(decrypted, plaintext);
 
+    // AAD binds approval id and daemon id.
+    for (aad_approval, aad_daemon) in [
+        ("00000000-0000-0000-0000-000000000000", daemon_id.as_str()),
+        (approval_id, "cd".repeat(32).as_str()),
+        ("", ""),
+    ] {
+        assert!(matches!(
+            daemon.decrypt_relay_envelope(algo, &encapsulated_key_hex, &nonce_hex, &ciphertext_hex, aad_approval, aad_daemon),
+            Err(DaemonError::InvalidRelayConfig(message)) if message.contains("failed to decrypt relay update payload")
+        ));
+    }
+
+    // The v1 construction (raw shared secret as key, no AAD) must no longer decrypt.
+    {
+        use chacha20poly1305::aead::Aead;
+        use chacha20poly1305::{KeyInit, XChaCha20Poly1305};
+        let shared_secret = secret.diffie_hellman(&x25519_dalek::PublicKey::from(daemon_public));
+        let v1_ciphertext = XChaCha20Poly1305::new(shared_secret.as_bytes().into())
+            .encrypt((&nonce).into(), plaintext.as_slice())
+            .expect("encrypt v1");
+        assert!(daemon
+            .decrypt_relay_envelope(
+                algo,
+                &encapsulated_key_hex,
+                &nonce_hex,
+                &hex::encode(v1_ciphertext),
+                approval_id,
+                &daemon_id,
+            )
+            .is_err());
+        assert!(matches!(
+            daemon.decrypt_relay_envelope("x25519-xchacha20poly1305-v1", &encapsulated_key_hex, &nonce_hex, &ciphertext_hex, approval_id, &daemon_id),
+            Err(DaemonError::InvalidRelayConfig(message)) if message.contains("unsupported relay encryption algorithm")
+        ));
+    }
+
+    // Non-contributory (low-order) ephemeral keys are rejected before decryption.
+    for low_order_point in [[0u8; 32], {
+        let mut one = [0u8; 32];
+        one[0] = 1;
+        one
+    }] {
+        assert!(matches!(
+            daemon.decrypt_relay_envelope(algo, &hex::encode(low_order_point), &nonce_hex, &ciphertext_hex, approval_id, &daemon_id),
+            Err(DaemonError::InvalidRelayConfig(message)) if message.contains("non-contributory")
+        ));
+    }
+
     assert!(matches!(
-        daemon.decrypt_relay_envelope("invalid", &encapsulated_key_hex, &hex::encode(nonce), "00"),
+        daemon.decrypt_relay_envelope("invalid", &encapsulated_key_hex, &nonce_hex, "00", approval_id, &daemon_id),
         Err(DaemonError::InvalidRelayConfig(message)) if message.contains("unsupported relay encryption algorithm")
     ));
     assert!(matches!(
-        daemon.decrypt_relay_envelope("x25519-xchacha20poly1305-v1", "aa", &hex::encode(nonce), "00"),
+        daemon.decrypt_relay_envelope(algo, "aa", &nonce_hex, "00", approval_id, &daemon_id),
         Err(DaemonError::InvalidRelayConfig(message)) if message.contains("encapsulated key must be 32 bytes")
     ));
     assert!(matches!(
-        daemon.decrypt_relay_envelope("x25519-xchacha20poly1305-v1", &encapsulated_key_hex, "aa", "00"),
+        daemon.decrypt_relay_envelope(algo, &encapsulated_key_hex, "aa", "00", approval_id, &daemon_id),
         Err(DaemonError::InvalidRelayConfig(message)) if message.contains("nonce must be 24 bytes")
     ));
     assert!(matches!(
         daemon.decrypt_relay_envelope(
-            "x25519-xchacha20poly1305-v1",
+            algo,
             &encapsulated_key_hex,
-            &hex::encode(nonce),
-            "zz"
+            &nonce_hex,
+            "zz",
+            approval_id,
+            &daemon_id,
         ),
         Err(DaemonError::InvalidRelayConfig(message)) if message.contains("ciphertext is invalid hex")
     ));
+}
+
+#[test]
+fn decrypt_relay_envelope_matches_web_console_vector() {
+    // Produced by scripts/generate-relay-envelope-vector.mjs using apps/web/src/lib/crypto.ts.
+    let vector: serde_json::Value =
+        serde_json::from_str(include_str!("../tests/fixtures/relay_envelope_v2.json"))
+            .expect("vector json");
+    let field = |name: &str| vector[name].as_str().expect(name).to_string();
+    let envelope = &vector["envelope"];
+    let envelope_field = |name: &str| envelope[name].as_str().expect(name).to_string();
+
+    assert_eq!(field("algorithm"), RELAY_ENVELOPE_ALGORITHM);
+    assert_eq!(envelope_field("algorithm"), RELAY_ENVELOPE_ALGORITHM);
+    assert_eq!(
+        hex::encode(relay_envelope_aad(&field("approvalId"), &field("daemonId"))),
+        field("aadHex")
+    );
+
+    let daemon = InMemoryDaemon::new(
+        "vault-password",
+        SoftwareSignerBackend::default(),
+        DaemonConfig::default(),
+    )
+    .expect("daemon");
+    *daemon
+        .relay_private_key_hex
+        .write()
+        .expect("relay key lock") = Zeroizing::new(field("daemonPrivateKeyHex"));
+
+    let decrypted = daemon
+        .decrypt_relay_envelope(
+            &envelope_field("algorithm"),
+            &envelope_field("ephemeralPublicKey"),
+            &envelope_field("nonce"),
+            &envelope_field("ciphertext"),
+            &field("approvalId"),
+            &field("daemonId"),
+        )
+        .expect("decrypt web console vector");
+    assert_eq!(
+        String::from_utf8(decrypted).expect("utf8"),
+        field("plaintext")
+    );
+
+    // Re-sealing with the same inputs in Rust must be byte-identical to the web output.
+    let daemon_public: [u8; 32] = hex::decode(field("daemonPublicKeyHex"))
+        .expect("daemon public hex")
+        .try_into()
+        .expect("daemon public len");
+    let ephemeral_secret: [u8; 32] = hex::decode(field("ephemeralSecretKeyHex"))
+        .expect("ephemeral secret hex")
+        .try_into()
+        .expect("ephemeral secret len");
+    let nonce: [u8; 24] = hex::decode(envelope_field("nonce"))
+        .expect("nonce hex")
+        .try_into()
+        .expect("nonce len");
+    let (ephemeral_public, ciphertext) = seal_relay_envelope(
+        &daemon_public,
+        &x25519_dalek::StaticSecret::from(ephemeral_secret),
+        &nonce,
+        &field("approvalId"),
+        &field("daemonId"),
+        field("plaintext").as_bytes(),
+    )
+    .expect("seal");
+    assert_eq!(
+        hex::encode(ephemeral_public),
+        envelope_field("ephemeralPublicKey")
+    );
+    assert_eq!(hex::encode(ciphertext), envelope_field("ciphertext"));
 }
 
 #[tokio::test]
@@ -1144,7 +1314,7 @@ async fn snapshot_restore_and_non_persistent_helpers_cover_state_management_path
     .expect("daemon");
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1231,7 +1401,7 @@ async fn create_vault_key_cleans_up_backend_key_on_post_create_failure() {
     .expect("daemon");
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -1432,6 +1602,46 @@ fn api_validation_helpers_cover_url_password_config_and_token_paths() {
         }),
         Err(DaemonError::InvalidConfig(message)) if message.contains("argon2_parallelism")
     ));
+    assert!(matches!(
+        validate_config(&DaemonConfig {
+            max_pending_manual_approval_requests_per_agent: 0,
+            ..DaemonConfig::default()
+        }),
+        Err(DaemonError::InvalidConfig(message))
+            if message.contains("max_pending_manual_approval_requests_per_agent")
+    ));
+    assert!(matches!(
+        validate_config(&DaemonConfig {
+            max_recoverable_agent_results: 0,
+            ..DaemonConfig::default()
+        }),
+        Err(DaemonError::InvalidConfig(message))
+            if message.contains("max_recoverable_agent_results")
+    ));
+    assert!(matches!(
+        validate_config(&DaemonConfig {
+            max_persisted_argon2_memory_kib: 1,
+            ..DaemonConfig::default()
+        }),
+        Err(DaemonError::InvalidConfig(message))
+            if message.contains("max_persisted_argon2_memory_kib")
+    ));
+    assert!(matches!(
+        validate_config(&DaemonConfig {
+            max_persisted_argon2_time_cost: 1,
+            ..DaemonConfig::default()
+        }),
+        Err(DaemonError::InvalidConfig(message))
+            if message.contains("max_persisted_argon2_time_cost")
+    ));
+    assert!(matches!(
+        validate_config(&DaemonConfig {
+            max_persisted_argon2_parallelism: 0,
+            ..DaemonConfig::default()
+        }),
+        Err(DaemonError::InvalidConfig(message))
+            if message.contains("max_persisted_argon2_parallelism")
+    ));
 
     let token = generate_agent_auth_token();
     assert!(token.contains('.'));
@@ -1453,7 +1663,7 @@ async fn parsing_policy_and_loaded_state_helpers_cover_remaining_error_paths() {
     .expect("daemon");
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     let key = daemon
@@ -1895,7 +2105,7 @@ async fn new_with_loaded_state_normalizes_disabled_policy_set_members() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -1950,3 +2160,4 @@ include!("tests_parts/part1.rs");
 include!("tests_parts/part2.rs");
 include!("tests_parts/part3.rs");
 include!("tests_parts/part4.rs");
+include!("tests_parts/part5.rs");

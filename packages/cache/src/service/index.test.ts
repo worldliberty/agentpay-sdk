@@ -8,9 +8,12 @@ class InMemoryCacheClient {
   private readonly store = new Map<string, string>();
   private readonly sets = new Map<string, Set<string>>();
   private readonly zsets = new Map<string, Array<{ member: string; score: number }>>();
+  readonly ttls = new Map<string, number>();
+  readonly zrangeCalls: Array<{ key: string; start: number; stop: number }> = [];
 
   async del(key: string): Promise<number> {
     const existed = this.store.delete(key);
+    this.ttls.delete(key);
     this.sets.delete(key);
     this.zsets.delete(key);
     return existed ? 1 : 0;
@@ -41,7 +44,22 @@ class InMemoryCacheClient {
     return added;
   }
 
-  async set(key: string, value: string, mode?: 'NX' | 'XX'): Promise<'OK' | null> {
+  async set(
+    key: string,
+    value: string,
+    ...args: Array<'EX' | 'NX' | 'XX' | number>
+  ): Promise<'OK' | null> {
+    let mode: 'NX' | 'XX' | undefined;
+    let ttlSeconds: number | undefined;
+    for (let index = 0; index < args.length; index += 1) {
+      const argument = args[index];
+      if (argument === 'NX' || argument === 'XX') {
+        mode = argument;
+      } else if (argument === 'EX') {
+        ttlSeconds = Number(args[index + 1]);
+        index += 1;
+      }
+    }
     if (mode === 'NX' && this.store.has(key)) {
       return null;
     }
@@ -49,6 +67,11 @@ class InMemoryCacheClient {
       return null;
     }
     this.store.set(key, value);
+    if (ttlSeconds === undefined) {
+      this.ttls.delete(key);
+    } else {
+      this.ttls.set(key, ttlSeconds);
+    }
     return 'OK';
   }
 
@@ -66,6 +89,7 @@ class InMemoryCacheClient {
   }
 
   async zrange(key: string, start: number, stop: number, ...args: string[]): Promise<string[]> {
+    this.zrangeCalls.push({ key, start, stop });
     const bucket = [...(this.zsets.get(key) ?? [])].sort((left, right) => left.score - right.score);
     const ordered = args.includes('REV') ? bucket.reverse() : bucket;
     const normalizedStop = stop < 0 ? ordered.length + stop : stop;
@@ -238,16 +262,21 @@ describe('RelayCacheService approval capability guards', () => {
 
     const rotated = await service.rotateApprovalCapability('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
 
-    expect(rotated.metadata?.source).toBe('daemon');
-    expect(rotated.metadata?.approvalCapabilityToken).toMatch(/^[a-f0-9]{64}$/u);
-    expect(rotated.metadata?.approvalCapabilityToken).not.toBe(originalToken);
-    expect(rotated.metadata?.approvalCapabilityHash).toMatch(/^[a-f0-9]{64}$/u);
-    expect(rotated.metadata?.approvalCapabilityHash).not.toBe(originalHash);
-    expect(rotated.metadata?.approvalCapabilityHash).toBe(
-      createHash('sha256')
-        .update(rotated.metadata?.approvalCapabilityToken ?? '')
-        .digest('hex'),
+    expect(rotated.approval.metadata?.source).toBe('daemon');
+    expect(rotated.approvalCapability).toMatch(/^[a-f0-9]{64}$/u);
+    expect(rotated.approvalCapability).not.toBe(originalToken);
+    expect(rotated.approval.metadata?.approvalCapabilityToken).toBeUndefined();
+    expect(rotated.approval.metadata?.approvalCapabilityHash).toMatch(/^[a-f0-9]{64}$/u);
+    expect(rotated.approval.metadata?.approvalCapabilityHash).not.toBe(originalHash);
+    expect(rotated.approval.metadata?.approvalCapabilityHash).toBe(
+      createHash('sha256').update(rotated.approvalCapability).digest('hex'),
     );
+
+    const stored = await service.getApprovalRequest('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
+    expect(stored?.metadata).toEqual({
+      approvalCapabilityHash: rotated.approval.metadata?.approvalCapabilityHash,
+      source: 'daemon',
+    });
 
     await expect(
       service.recordApprovalCapabilityFailure('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'),
@@ -294,14 +323,13 @@ describe('RelayCacheService approval capability guards', () => {
 
     const rotated = await service.rotateApprovalCapability('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
 
-    expect(rotated.metadata).toMatchObject({
+    expect(rotated.approval.metadata).toMatchObject({
       source: 'legacy-daemon',
     });
-    expect(rotated.metadata?.approvalCapabilityToken).toMatch(/^[a-f0-9]{64}$/u);
-    expect(rotated.metadata?.approvalCapabilityHash).toBe(
-      createHash('sha256')
-        .update(rotated.metadata?.approvalCapabilityToken ?? '')
-        .digest('hex'),
+    expect(rotated.approvalCapability).toMatch(/^[a-f0-9]{64}$/u);
+    expect(rotated.approval.metadata?.approvalCapabilityToken).toBeUndefined();
+    expect(rotated.approval.metadata?.approvalCapabilityHash).toBe(
+      createHash('sha256').update(rotated.approvalCapability).digest('hex'),
     );
   });
 
@@ -376,12 +404,12 @@ describe('RelayCacheService approval capability guards', () => {
 
     const synced = await service.getApprovalRequest(approvalRequestId);
 
-    expect(synced?.metadata).toMatchObject({
+    expect(synced?.metadata).toEqual({
       source: 'daemon',
-      approvalCapabilityHash: rotated.metadata?.approvalCapabilityHash,
-      approvalCapabilityToken: rotated.metadata?.approvalCapabilityToken,
+      approvalCapabilityHash: rotated.approval.metadata?.approvalCapabilityHash,
     });
-    expect(synced?.metadata?.approvalCapabilityToken).not.toBe(originalToken);
+    expect(synced?.metadata?.approvalCapabilityHash).not.toBe(originalHash);
+    expect(synced?.metadata?.approvalCapabilityToken).toBeUndefined();
   });
 
   it('removes approvals omitted from a later daemon sync snapshot', async () => {
@@ -982,5 +1010,313 @@ describe('RelayCacheService approval capability guards', () => {
       code: cacheErrorCodes.invalidPayload,
       message: `Claim for update '${update.updateId}' has expired`,
     });
+  });
+});
+
+describe('RelayCacheService daemon identity binding', () => {
+  const daemonId = '13'.repeat(32);
+  const registration = (daemonPublicKey: string) => ({
+    daemon: {
+      daemonId,
+      daemonPublicKey,
+      ethereumAddress: '0x1313131313131313131313131313131313131313',
+      lastSeenAt: new Date().toISOString(),
+      registeredAt: '2026-01-01T00:00:00.000Z',
+      status: 'active' as const,
+      updatedAt: new Date().toISOString(),
+    },
+  });
+
+  it('pins the daemon public key on first registration and rejects a different key', async () => {
+    const service = new RelayCacheService({
+      client: new InMemoryCacheClient() as never,
+      namespace: 'test:relay',
+    });
+
+    await service.syncDaemonRegistration(registration('AB'.repeat(32)));
+    await expect(service.getDaemonProfile(daemonId)).resolves.toMatchObject({
+      daemonPublicKey: 'ab'.repeat(32),
+      registeredAt: '2026-01-01T00:00:00.000Z',
+    });
+
+    await expect(
+      service.syncDaemonRegistration(registration('cd'.repeat(32))),
+    ).rejects.toMatchObject({
+      code: cacheErrorCodes.conflict,
+      message: expect.stringContaining('already registered with a different public key'),
+    } satisfies Partial<CacheError>);
+    await expect(service.getDaemonProfile(daemonId)).resolves.toMatchObject({
+      daemonPublicKey: 'ab'.repeat(32),
+    });
+  });
+
+  it('accepts re-registration with the same key and keeps the original registeredAt', async () => {
+    const service = new RelayCacheService({
+      client: new InMemoryCacheClient() as never,
+      namespace: 'test:relay',
+    });
+
+    await service.syncDaemonRegistration(registration('ab'.repeat(32)));
+    const again = registration('ab'.repeat(32));
+    again.daemon.registeredAt = '2026-02-02T00:00:00.000Z';
+    await expect(service.syncDaemonRegistration(again)).resolves.toMatchObject({
+      approvalRequestCount: 0,
+    });
+    await expect(service.getDaemonProfile(daemonId)).resolves.toMatchObject({
+      daemonPublicKey: 'ab'.repeat(32),
+      registeredAt: '2026-01-01T00:00:00.000Z',
+    });
+  });
+
+  it('rekeyDaemon explicitly replaces the pinned key and unblocks re-registration', async () => {
+    const service = new RelayCacheService({
+      client: new InMemoryCacheClient() as never,
+      namespace: 'test:relay',
+    });
+
+    await expect(
+      service.rekeyDaemon({ daemonId, daemonPublicKey: 'cd'.repeat(32) }),
+    ).rejects.toMatchObject({ code: cacheErrorCodes.notFound } satisfies Partial<CacheError>);
+
+    await service.syncDaemonRegistration(registration('ab'.repeat(32)));
+    await expect(
+      service.rekeyDaemon({ daemonId, daemonPublicKey: 'CD'.repeat(32) }),
+    ).resolves.toMatchObject({ daemonId, daemonPublicKey: 'cd'.repeat(32) });
+    await expect(
+      service.syncDaemonRegistration(registration('cd'.repeat(32))),
+    ).resolves.toBeTruthy();
+    await expect(
+      service.syncDaemonRegistration(registration('ab'.repeat(32))),
+    ).rejects.toMatchObject({
+      code: cacheErrorCodes.conflict,
+    } satisfies Partial<CacheError>);
+  });
+});
+
+describe('RelayCacheService capability token storage', () => {
+  it('strips plaintext capability tokens from synced approvals and keeps only the hash', async () => {
+    const service = new RelayCacheService({
+      client: new InMemoryCacheClient() as never,
+      namespace: 'test:relay',
+    });
+    const daemonId = '21'.repeat(32);
+    const approvalRequestId = '21212121-2121-4121-8121-212121212121';
+    const hash = createHash('sha256').update('ab'.repeat(32)).digest('hex');
+
+    await service.syncDaemonRegistration({
+      daemon: {
+        daemonId,
+        daemonPublicKey: '22'.repeat(32),
+        ethereumAddress: '0x2121212121212121212121212121212121212121',
+        lastSeenAt: new Date().toISOString(),
+        registeredAt: new Date().toISOString(),
+        status: 'active',
+        updatedAt: new Date().toISOString(),
+      },
+      approvalRequests: [
+        {
+          approvalRequestId,
+          daemonId,
+          destination: '0x3333333333333333333333333333333333333333',
+          metadata: {
+            approvalCapabilityHash: hash,
+            approvalCapabilityToken: 'ab'.repeat(32),
+            source: 'daemon',
+          },
+          requestedAt: new Date().toISOString(),
+          status: 'pending',
+          transactionType: 'transfer_native',
+          updatedAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    await expect(service.getApprovalRequest(approvalRequestId)).resolves.toMatchObject({
+      metadata: { approvalCapabilityHash: hash, source: 'daemon' },
+    });
+    const stored = await service.getApprovalRequest(approvalRequestId);
+    expect(stored?.metadata?.approvalCapabilityToken).toBeUndefined();
+  });
+});
+
+describe('RelayCacheService capability throttling', () => {
+  it('reports block state before any token comparison and throttles by client key', async () => {
+    const service = new RelayCacheService({
+      client: new InMemoryCacheClient() as never,
+      namespace: 'test:relay',
+    });
+
+    await expect(
+      service.getApprovalCapabilityBlockState('approval-a', '203.0.113.7'),
+    ).resolves.toEqual({ blocked: false, blockedUntil: null });
+
+    // Spread five failures across different approvals from one client: the
+    // approvals stay unblocked individually but the client trips the lockout.
+    for (let attempt = 1; attempt <= 4; attempt += 1) {
+      await expect(
+        service.recordApprovalCapabilityFailure(`approval-${attempt}`, '203.0.113.7'),
+      ).resolves.toMatchObject({ attempts: 1, blocked: false });
+    }
+    await expect(
+      service.recordApprovalCapabilityFailure('approval-5', '203.0.113.7'),
+    ).resolves.toMatchObject({ attempts: 1, blocked: true });
+
+    await expect(
+      service.getApprovalCapabilityBlockState('approval-new', '203.0.113.7'),
+    ).resolves.toMatchObject({ blocked: true });
+    await expect(
+      service.getApprovalCapabilityBlockState('approval-new', '198.51.100.9'),
+    ).resolves.toEqual({ blocked: false, blockedUntil: null });
+    await expect(service.getApprovalCapabilityBlockState('approval-5')).resolves.toEqual({
+      blocked: false,
+      blockedUntil: null,
+    });
+  });
+
+  it('blocks an approval after repeated failures regardless of client key', async () => {
+    const service = new RelayCacheService({
+      client: new InMemoryCacheClient() as never,
+      namespace: 'test:relay',
+    });
+
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      await service.recordApprovalCapabilityFailure('approval-b', `10.0.0.${attempt}`);
+    }
+
+    await expect(service.getApprovalCapabilityBlockState('approval-b')).resolves.toMatchObject({
+      blocked: true,
+      blockedUntil: expect.any(String),
+    });
+    await expect(
+      service.getApprovalCapabilityBlockState('approval-b', '10.0.0.99'),
+    ).resolves.toMatchObject({ blocked: true });
+  });
+});
+
+describe('RelayCacheService key hygiene', () => {
+  it('sets expirations on consumed capabilities, failure records, and finished updates', async () => {
+    const client = new InMemoryCacheClient();
+    const service = new RelayCacheService({ client: client as never, namespace: 'test:relay' });
+    const daemonId = '31'.repeat(32);
+    const approvalRequestId = '31313131-3131-4131-8131-313131313131';
+    await seedPendingApproval(service, daemonId, approvalRequestId);
+
+    await service.consumeApprovalCapability(approvalRequestId, 'hash-1');
+    expect(
+      client.ttls.get(`test:relay:approval:${approvalRequestId}:capability:hash-1:consumed`),
+    ).toBe(7 * 24 * 60 * 60);
+
+    await service.recordApprovalCapabilityFailure(approvalRequestId, '203.0.113.1');
+    expect(client.ttls.get(`test:relay:approval:${approvalRequestId}:capability-failures`)).toBe(
+      7 * 24 * 60 * 60,
+    );
+    const clientFailureKey = [...client.ttls.keys()].find((key) =>
+      key.startsWith('test:relay:capability-client:'),
+    );
+    expect(clientFailureKey).toBeDefined();
+    expect(clientFailureKey).not.toContain('203.0.113.1');
+
+    const update = await service.createEncryptedUpdate({
+      daemonId,
+      payload: {
+        algorithm: 'x25519-xchacha20poly1305-v1',
+        ciphertextBase64: 'aa',
+        encapsulatedKeyBase64: 'bb',
+        nonceBase64: 'cc',
+        schemaVersion: 1,
+      },
+      targetApprovalRequestId: approvalRequestId,
+      type: 'manual_approval_decision',
+    });
+    expect(client.ttls.has(`test:relay:update:${update.updateId}`)).toBe(false);
+
+    const claimed = (
+      await service.claimEncryptedUpdates({ daemonId, leaseSeconds: 30, limit: 1 })
+    )[0];
+    if (!claimed) {
+      throw new Error('expected a claimed update');
+    }
+    await service.submitUpdateFeedback({
+      claimToken: claimed.claimToken ?? '',
+      daemonId,
+      status: 'applied',
+      updateId: update.updateId,
+    });
+
+    expect(client.ttls.get(`test:relay:update:${update.updateId}`)).toBe(7 * 24 * 60 * 60);
+    await expect(client.zrange(`test:relay:daemon:${daemonId}:updates`, 0, -1)).resolves.toEqual(
+      [],
+    );
+    await expect(
+      service.claimEncryptedUpdates({ daemonId, leaseSeconds: 30, limit: 5 }),
+    ).resolves.toEqual([]);
+  });
+
+  it('rejects a duplicate updateId instead of overwriting or deleting the existing record', async () => {
+    const service = new RelayCacheService({
+      client: new InMemoryCacheClient() as never,
+      namespace: 'test:relay',
+    });
+    const daemonId = '41'.repeat(32);
+    const approvalRequestId = '41414141-4141-4141-8141-414141414141';
+    const updateId = '42424242-4242-4242-8242-424242424242';
+    await seedPendingApproval(service, daemonId, approvalRequestId);
+
+    const original = await service.createEncryptedUpdate({
+      daemonId,
+      payload: {
+        algorithm: 'x25519-xchacha20poly1305-v1',
+        ciphertextBase64: 'original',
+        encapsulatedKeyBase64: 'bb',
+        nonceBase64: 'cc',
+        schemaVersion: 1,
+      },
+      targetApprovalRequestId: approvalRequestId,
+      type: 'manual_approval_decision',
+      updateId,
+    });
+
+    await expect(
+      service.createEncryptedUpdate({
+        daemonId,
+        payload: {
+          algorithm: 'x25519-xchacha20poly1305-v1',
+          ciphertextBase64: 'replacement',
+          encapsulatedKeyBase64: 'bb',
+          nonceBase64: 'cc',
+          schemaVersion: 1,
+        },
+        type: 'daemon_status',
+        updateId,
+      }),
+    ).rejects.toMatchObject({
+      code: cacheErrorCodes.conflict,
+      message: `Update '${updateId}' already exists`,
+    } satisfies Partial<CacheError>);
+
+    await expect(service.getEncryptedUpdate(updateId)).resolves.toMatchObject({
+      payload: { ciphertextBase64: 'original' },
+      status: 'pending',
+      updateId,
+    });
+    expect(original.updateId).toBe(updateId);
+    await expect(service.hasActiveApprovalUpdate(daemonId, approvalRequestId)).resolves.toBe(true);
+  });
+
+  it('bounds the fallback scan over the daemon update index', async () => {
+    const client = new InMemoryCacheClient();
+    const service = new RelayCacheService({ client: client as never, namespace: 'test:relay' });
+    const daemonId = '51'.repeat(32);
+
+    await expect(
+      service.hasActiveApprovalUpdate(daemonId, '51515151-5151-4151-8151-515151515151'),
+    ).resolves.toBe(false);
+
+    const scan = client.zrangeCalls.find(
+      (call) => call.key === `test:relay:daemon:${daemonId}:updates`,
+    );
+    expect(scan).toBeDefined();
+    expect(scan?.stop).toBeGreaterThanOrEqual(0);
+    expect(scan?.stop).toBeLessThan(1000);
   });
 });

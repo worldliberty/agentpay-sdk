@@ -1,19 +1,16 @@
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 
 const CONFIG_FILENAME: &str = "config.json";
 #[cfg(unix)]
 const PRIVATE_DIR_MODE: u32 = 0o700;
-#[cfg(unix)]
-const PRIVATE_FILE_MODE: u32 = 0o600;
 
 const DEFAULT_ETH_RPC_URL: &str = "https://eth.llamarpc.com";
 const DEFAULT_BSC_RPC_URL: &str = "https://bsc.drpc.org";
@@ -426,21 +423,10 @@ impl WlfiConfig {
         }
 
         let rendered = serde_json::to_string_pretty(self).context("failed to serialize config")?;
-        let mut options = OpenOptions::new();
-        options.create(true).truncate(true).write(true);
-        #[cfg(unix)]
-        options.mode(PRIVATE_FILE_MODE);
-        let mut file = options
-            .open(path)
-            .with_context(|| format!("failed to open config file '{}'", path.display()))?;
-        file.write_all(rendered.as_bytes())
-            .with_context(|| format!("failed to write config file '{}'", path.display()))?;
-        file.write_all(b"\n")
-            .with_context(|| format!("failed to finalize config file '{}'", path.display()))?;
-        #[cfg(unix)]
-        fs::set_permissions(path, fs::Permissions::from_mode(PRIVATE_FILE_MODE))
-            .with_context(|| format!("failed to secure config file '{}'", path.display()))?;
-        Ok(())
+        // Temp file (0600, O_NOFOLLOW, create_new) plus rename: a crash or concurrent reader never
+        // sees a truncated config, and a symlink planted at the config path is replaced, not followed.
+        crate::io_utils::write_output_file_atomic_replace(path, &rendered)
+            .with_context(|| format!("failed to write config file '{}'", path.display()))
     }
 }
 
@@ -725,6 +711,40 @@ mod tests {
         };
         loaded_document.save().expect("save loaded document");
         assert!(path.exists());
+
+        fs::remove_dir_all(&root).expect("cleanup temp root");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_to_path_replaces_symlink_atomically_with_private_file() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let root = temp_root("atomic-write");
+        fs::create_dir_all(&root).expect("create root");
+        let victim = root.join("victim.txt");
+        fs::write(&victim, "do not overwrite").expect("seed victim");
+        let path = root.join("config.json");
+        symlink(&victim, &path).expect("plant symlink");
+
+        WlfiConfig::default()
+            .write_to_path(&path)
+            .expect("write config");
+
+        assert_eq!(
+            fs::read_to_string(&victim).expect("read victim"),
+            "do not overwrite"
+        );
+        let metadata = fs::symlink_metadata(&path).expect("config metadata");
+        assert!(metadata.file_type().is_file());
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        WlfiConfig::read_from_path(&path).expect("config parses");
+        let leftovers = fs::read_dir(&root)
+            .expect("list root")
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0, "no temp files left behind");
 
         fs::remove_dir_all(&root).expect("cleanup temp root");
     }

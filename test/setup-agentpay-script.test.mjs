@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
@@ -121,6 +122,7 @@ async function createFakeBundle(
       "if (args[0] === '__print_agentpay_home') { console.log(process.env.AGENTPAY_HOME || ''); process.exit(0); }",
       "if (args[0] === 'link' && args[1] === 'onboard') { console.log('fake link onboard'); process.exit(0); }",
       "if (args[0] === 'admin' && args[1] === 'setup') { console.log('fake admin setup'); process.exit(0); }",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: JavaScript source text for a generated mock script
       "console.log(`fake agentpay ${args.join(' ')}`.trim());",
     ].join('\n'),
     'utf8',
@@ -137,7 +139,7 @@ async function createFakeBundle(
 
   await fsp.writeFile(
     path.join(bundleDir, 'skills', 'agentpay-sdk', 'SKILL.md'),
-    '# Fixture skill\n',
+    '---\nname: agentpay-sdk\n---\n# Fixture skill\n',
   );
   const agentTemplates = new Map([
     ['AGENTS.md', '# Fixture agents\n'],
@@ -259,11 +261,25 @@ function installFakeCurl(binDir, { expectedUrl, archivePath, failureMessage = ''
 set -euo pipefail
 output=""
 url=""
+saw_proto=0
+saw_tls=0
 while [[ "$#" -gt 0 ]]; do
   case "$1" in
     -o)
       output="$2"
       shift 2
+      ;;
+    --proto)
+      if [[ "$2" != "=https" ]]; then
+        echo "unexpected curl --proto value: $2" >&2
+        exit 1
+      fi
+      saw_proto=1
+      shift 2
+      ;;
+    --tlsv1.2)
+      saw_tls=1
+      shift
       ;;
     -fsSL|-f|-s|-S|-L)
       shift
@@ -276,6 +292,10 @@ while [[ "$#" -gt 0 ]]; do
 done
 if [[ -z "$url" ]]; then
   echo "missing curl url" >&2
+  exit 1
+fi
+if [[ "$saw_proto" != "1" ]] || [[ "$saw_tls" != "1" ]]; then
+  echo "curl must be called with --proto '=https' --tlsv1.2" >&2
   exit 1
 fi
 if [[ "$url" != ${JSON.stringify(expectedUrl)} ]]; then
@@ -295,12 +315,43 @@ cp ${JSON.stringify(archivePath)} "$output"
   );
 }
 
-async function publishInstallerAsset(destinationPath, { releaseRepo, releaseTag }) {
+function sha256File(filePath) {
+  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+const bundleDigestPlaceholders = {
+  'macos-arm64': '__AGENTPAY_PUBLIC_BUNDLE_SHA256_MACOS_ARM64__',
+  'macos-x64': '__AGENTPAY_PUBLIC_BUNDLE_SHA256_MACOS_X64__',
+  'linux-x64': '__AGENTPAY_PUBLIC_BUNDLE_SHA256_LINUX_X64__',
+  'linux-arm64': '__AGENTPAY_PUBLIC_BUNDLE_SHA256_LINUX_ARM64__',
+};
+
+// Mirrors the perl templating step in .github/workflows/installer-smoke-macos.yml.
+async function publishInstallerAsset(destinationPath, { releaseRepo, releaseTag, digests = {} }) {
   const source = await fsp.readFile(scriptPath, 'utf8');
-  const published = source
+  let published = source
     .replaceAll('__AGENTPAY_PUBLIC_RELEASE_REPO__', releaseRepo)
     .replaceAll('__AGENTPAY_PUBLIC_RELEASE_TAG__', releaseTag);
+  for (const [label, placeholder] of Object.entries(bundleDigestPlaceholders)) {
+    published = published.replaceAll(placeholder, digests[label] ?? '');
+  }
+  assert.doesNotMatch(published, /__AGENTPAY_/u);
   await fsp.writeFile(destinationPath, published, { mode: 0o755 });
+}
+
+function currentBundleLabel() {
+  return `${currentBundlePlatform()}-${currentBundleArch()}`;
+}
+
+function installTarSpy(binDir, logPath) {
+  const realTar = spawnSync('bash', ['-c', 'command -v tar'], { encoding: 'utf8' }).stdout.trim();
+  writeExecutable(
+    path.join(binDir, 'tar'),
+    `#!/usr/bin/env bash
+printf '%s\\n' "$*" >> ${JSON.stringify(logPath)}
+exec ${JSON.stringify(realTar)} "$@"
+`,
+  );
 }
 
 function runShellScript({
@@ -379,11 +430,13 @@ test('installer can complete a fresh bundle-based install and rerun without dupl
     input: `${installDir}\n`,
     extraEnv: {
       AGENTPAY_SDK_BUNDLE_URL: `file://${archivePath}`,
+      AGENTPAY_SDK_BUNDLE_SHA256: sha256File(archivePath),
       AGENTPAY_SETUP_INSTALL_SKILLS: 'no',
     },
   });
 
   assert.equal(firstRun.status, 0, firstRun.stderr || firstRun.stdout);
+  assert.match(firstRun.stdout, /Verified bundle SHA-256/u);
   assert.match(firstRun.stdout, /AgentPay SDK install complete/u);
   assert.match(firstRun.stdout, /Run now in this shell:/u);
   assert.match(firstRun.stdout, /agentpay --help/u);
@@ -632,7 +685,11 @@ test('published installer asset accepts injected release metadata and resolves t
   await fsp.mkdir(fakeBinDir, { recursive: true });
   await createFakeBundle(fixtureBundleDir);
   createBundleArchive(fixtureBundleDir, archivePath);
-  await publishInstallerAsset(publishedScriptPath, { releaseRepo, releaseTag });
+  await publishInstallerAsset(publishedScriptPath, {
+    releaseRepo,
+    releaseTag,
+    digests: { [currentBundleLabel()]: sha256File(archivePath) },
+  });
   installFakeCurl(fakeBinDir, { expectedUrl: expectedBundleUrl, archivePath });
   installFakeNode(fakeBinDir);
 
@@ -651,6 +708,7 @@ test('published installer asset accepts injected release metadata and resolves t
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.doesNotMatch(result.stderr, /Installer release metadata was not injected/u);
+  assert.match(result.stdout, /Verified bundle SHA-256/u);
   assert.match(result.stdout, /AgentPay SDK install complete/u);
   assert.ok(fs.existsSync(path.join(installDir, 'bin', 'agentpay')));
 });
@@ -1048,5 +1106,322 @@ test('installer can bootstrap Node via Homebrew when node is missing', async () 
 
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.ok(fs.existsSync(path.join(fakeBrewPrefix, 'node@20', 'bin', 'node')));
+  assert.ok(fs.existsSync(path.join(installDir, 'bin', 'agentpay')));
+});
+
+async function prepareBundleSandbox(prefix) {
+  const sandboxDir = makeTempDir(prefix);
+  const homeDir = path.join(sandboxDir, 'home');
+  const fakeBinDir = path.join(sandboxDir, 'fake-bin');
+  const fixtureBundleDir = path.join(sandboxDir, 'fixture-bundle');
+  const archivePath = path.join(sandboxDir, 'fixture-bundle.tar.gz');
+  const installDir = path.join(sandboxDir, 'install-root');
+  await fsp.mkdir(homeDir, { recursive: true });
+  await fsp.mkdir(fakeBinDir, { recursive: true });
+  await createFakeBundle(fixtureBundleDir);
+  createBundleArchive(fixtureBundleDir, archivePath);
+  installFakeNode(fakeBinDir);
+  return { sandboxDir, homeDir, fakeBinDir, archivePath, installDir };
+}
+
+const nonInteractiveInstallEnv = {
+  AGENTPAY_SETUP_ASSUME_DEFAULTS: '1',
+  AGENTPAY_SETUP_INSTALL_SKILLS: 'no',
+  AGENTPAY_SETUP_RUN_ADMIN_SETUP: 'no',
+};
+
+test('published installer aborts before extraction when one byte of the bundle is tampered', async () => {
+  const { sandboxDir, homeDir, fakeBinDir, archivePath, installDir } = await prepareBundleSandbox(
+    'agentpay-setup-tampered-',
+  );
+  const tamperedArchivePath = path.join(sandboxDir, 'tampered.tar.gz');
+  const publishedScriptPath = path.join(sandboxDir, 'installer-published.sh');
+  const tarLogPath = path.join(sandboxDir, 'tar.log');
+  const releaseRepo = 'acme/agentpay-sdk';
+  const releaseTag = 'v9.9.9';
+  const bundleName = `agentpay-sdk-${currentBundleLabel()}.tar.gz`;
+  const tampered = fs.readFileSync(archivePath);
+  tampered[tampered.length - 1] ^= 0x01;
+  fs.writeFileSync(tamperedArchivePath, tampered);
+  await publishInstallerAsset(publishedScriptPath, {
+    releaseRepo,
+    releaseTag,
+    digests: { [currentBundleLabel()]: sha256File(archivePath) },
+  });
+  installFakeCurl(fakeBinDir, {
+    expectedUrl: `https://github.com/${releaseRepo}/releases/download/${releaseTag}/${bundleName}`,
+    archivePath: tamperedArchivePath,
+  });
+  installTarSpy(fakeBinDir, tarLogPath);
+
+  const result = runShellScript({
+    scriptFile: publishedScriptPath,
+    homeDir,
+    installDir,
+    fakeBinDir,
+    input: '',
+    extraEnv: nonInteractiveInstallEnv,
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /SHA-256 mismatch/u);
+  assert.match(result.stderr, /Refusing to extract it/u);
+  assert.equal(fs.existsSync(tarLogPath), false, 'tar must not run on an unverified archive');
+  assert.equal(fs.existsSync(path.join(installDir, 'app')), false);
+  assert.equal(fs.existsSync(path.join(installDir, 'bin', 'agentpay')), false);
+});
+
+test('published installer refuses a platform whose digest was not published', async () => {
+  const { sandboxDir, homeDir, fakeBinDir, archivePath, installDir } = await prepareBundleSandbox(
+    'agentpay-setup-missing-digest-',
+  );
+  const publishedScriptPath = path.join(sandboxDir, 'installer-published.sh');
+  const releaseRepo = 'acme/agentpay-sdk';
+  const releaseTag = 'v9.9.9';
+  const bundleName = `agentpay-sdk-${currentBundleLabel()}.tar.gz`;
+  await publishInstallerAsset(publishedScriptPath, { releaseRepo, releaseTag, digests: {} });
+  installFakeCurl(fakeBinDir, {
+    expectedUrl: `https://github.com/${releaseRepo}/releases/download/${releaseTag}/${bundleName}`,
+    archivePath,
+  });
+
+  const result = runShellScript({
+    scriptFile: publishedScriptPath,
+    homeDir,
+    installDir,
+    fakeBinDir,
+    input: '',
+    extraEnv: nonInteractiveInstallEnv,
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /has no published SHA-256 digest/u);
+  assert.equal(fs.existsSync(path.join(installDir, 'app')), false);
+});
+
+test('published installer requires an explicit digest when the release tag is overridden', async () => {
+  const { sandboxDir, homeDir, fakeBinDir, archivePath, installDir } = await prepareBundleSandbox(
+    'agentpay-setup-tag-override-',
+  );
+  const publishedScriptPath = path.join(sandboxDir, 'installer-published.sh');
+  const releaseRepo = 'acme/agentpay-sdk';
+  const bundleName = `agentpay-sdk-${currentBundleLabel()}.tar.gz`;
+  await publishInstallerAsset(publishedScriptPath, {
+    releaseRepo,
+    releaseTag: 'v9.9.9',
+    digests: { [currentBundleLabel()]: sha256File(archivePath) },
+  });
+  installFakeCurl(fakeBinDir, {
+    expectedUrl: `https://github.com/${releaseRepo}/releases/download/v1.0.0/${bundleName}`,
+    archivePath,
+  });
+
+  const refused = runShellScript({
+    scriptFile: publishedScriptPath,
+    homeDir,
+    installDir,
+    fakeBinDir,
+    input: '',
+    extraEnv: { ...nonInteractiveInstallEnv, AGENTPAY_PUBLIC_RELEASE_TAG: 'v1.0.0' },
+  });
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /pinned digests do not apply/u);
+
+  const accepted = runShellScript({
+    scriptFile: publishedScriptPath,
+    homeDir,
+    installDir,
+    fakeBinDir,
+    input: '',
+    extraEnv: {
+      ...nonInteractiveInstallEnv,
+      AGENTPAY_PUBLIC_RELEASE_TAG: 'v1.0.0',
+      AGENTPAY_SDK_BUNDLE_SHA256: sha256File(archivePath),
+    },
+  });
+  assert.equal(accepted.status, 0, accepted.stderr || accepted.stdout);
+  assert.match(accepted.stdout, /Verified bundle SHA-256/u);
+});
+
+test('installer rejects a bundle that does not match AGENTPAY_SDK_BUNDLE_SHA256', async () => {
+  const { homeDir, fakeBinDir, archivePath, installDir } = await prepareBundleSandbox(
+    'agentpay-setup-digest-mismatch-',
+  );
+
+  const result = runInstaller({
+    homeDir,
+    installDir,
+    fakeBinDir,
+    input: '',
+    extraEnv: {
+      ...nonInteractiveInstallEnv,
+      AGENTPAY_SDK_BUNDLE_URL: `file://${archivePath}`,
+      AGENTPAY_SDK_BUNDLE_SHA256: '0'.repeat(64),
+    },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /SHA-256 mismatch/u);
+  assert.equal(fs.existsSync(path.join(installDir, 'app')), false);
+});
+
+test('installer refuses a remote bundle URL override without a pinned digest', async () => {
+  const { homeDir, fakeBinDir, archivePath, installDir } = await prepareBundleSandbox(
+    'agentpay-setup-remote-override-',
+  );
+  const bundleUrl = 'https://example.invalid/agentpay-sdk.tar.gz';
+  installFakeCurl(fakeBinDir, { expectedUrl: bundleUrl, archivePath });
+
+  const result = runInstaller({
+    homeDir,
+    installDir,
+    fakeBinDir,
+    input: '',
+    extraEnv: { ...nonInteractiveInstallEnv, AGENTPAY_SDK_BUNDLE_URL: bundleUrl },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Set AGENTPAY_SDK_BUNDLE_SHA256/u);
+  assert.equal(fs.existsSync(path.join(installDir, 'app')), false);
+});
+
+test('installer refuses unsupported bundle URL schemes', async () => {
+  const { homeDir, fakeBinDir, installDir } = await prepareBundleSandbox('agentpay-setup-http-');
+
+  const result = runInstaller({
+    homeDir,
+    installDir,
+    fakeBinDir,
+    input: '',
+    extraEnv: {
+      ...nonInteractiveInstallEnv,
+      AGENTPAY_SDK_BUNDLE_URL: 'http://example.invalid/agentpay-sdk.tar.gz',
+      AGENTPAY_SDK_BUNDLE_SHA256: '0'.repeat(64),
+    },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /unsupported scheme/u);
+});
+
+for (const [name, resolveDir] of [
+  ['the home directory', ({ homeDir }) => homeDir],
+  ['the filesystem root', () => '/'],
+  ['a directory under /usr', () => '/usr/local/agentpay-installer-test'],
+]) {
+  test(`installer refuses ${name} as the install directory`, async () => {
+    const sandbox = await prepareBundleSandbox('agentpay-setup-protected-dir-');
+    const result = runInstaller({
+      homeDir: sandbox.homeDir,
+      installDir: resolveDir(sandbox),
+      fakeBinDir: sandbox.fakeBinDir,
+      input: '',
+      extraEnv: {
+        ...nonInteractiveInstallEnv,
+        AGENTPAY_SDK_BUNDLE_URL: `file://${sandbox.archivePath}`,
+      },
+    });
+
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Refusing to install into/u);
+    assert.equal(fs.existsSync('/usr/local/agentpay-installer-test'), false);
+  });
+}
+
+test('installer refuses a non-empty install directory without an install manifest', async () => {
+  const { homeDir, fakeBinDir, archivePath, installDir } = await prepareBundleSandbox(
+    'agentpay-setup-nonempty-dir-',
+  );
+  await fsp.mkdir(path.join(installDir, 'app'), { recursive: true });
+  await fsp.writeFile(path.join(installDir, 'notes.txt'), 'keep me\n');
+  await fsp.writeFile(path.join(installDir, 'app', 'precious.txt'), 'keep me\n');
+
+  const result = runInstaller({
+    homeDir,
+    installDir,
+    fakeBinDir,
+    input: '',
+    extraEnv: { ...nonInteractiveInstallEnv, AGENTPAY_SDK_BUNDLE_URL: `file://${archivePath}` },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /not empty and does not contain one-click-install-manifest\.json/u);
+  assert.equal(fs.readFileSync(path.join(installDir, 'app', 'precious.txt'), 'utf8'), 'keep me\n');
+});
+
+test('installer refuses to replace a non-empty directory that is not an AgentPay skill pack', async () => {
+  const { homeDir, fakeBinDir, archivePath, installDir } = await prepareBundleSandbox(
+    'agentpay-setup-skill-dest-',
+  );
+  const skillDir = path.join(homeDir, '.codex', 'skills', 'agentpay-sdk');
+  await fsp.mkdir(skillDir, { recursive: true });
+  await fsp.writeFile(path.join(skillDir, 'unrelated.txt'), 'keep me\n');
+
+  const result = runInstaller({
+    homeDir,
+    installDir,
+    fakeBinDir,
+    input: '',
+    extraEnv: {
+      ...nonInteractiveInstallEnv,
+      AGENTPAY_SETUP_INSTALL_SKILLS: 'yes',
+      AGENTPAY_SDK_BUNDLE_URL: `file://${archivePath}`,
+    },
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /is not an AgentPay skill pack/u);
+  assert.equal(fs.readFileSync(path.join(skillDir, 'unrelated.txt'), 'utf8'), 'keep me\n');
+});
+
+test('installer writes shell exports through a symlinked rc file and keeps its mode', async () => {
+  const { sandboxDir, homeDir, fakeBinDir, archivePath, installDir } = await prepareBundleSandbox(
+    'agentpay-setup-rc-symlink-',
+  );
+  const dotfilesDir = path.join(sandboxDir, 'dotfiles');
+  const realRcPath = path.join(dotfilesDir, 'zshrc');
+  const rcLinkPath = path.join(homeDir, '.zshrc');
+  await fsp.mkdir(dotfilesDir, { recursive: true });
+  await fsp.writeFile(realRcPath, 'alias ll="ls -la"\n', { mode: 0o600 });
+  fs.chmodSync(realRcPath, 0o600);
+  fs.symlinkSync(realRcPath, rcLinkPath);
+
+  const result = runInstaller({
+    homeDir,
+    installDir,
+    fakeBinDir,
+    input: '',
+    extraEnv: { ...nonInteractiveInstallEnv, AGENTPAY_SDK_BUNDLE_URL: `file://${archivePath}` },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.ok(fs.lstatSync(rcLinkPath).isSymbolicLink(), 'rc symlink must be preserved');
+  assert.equal(fs.statSync(realRcPath).mode & 0o777, 0o600);
+  const contents = fs.readFileSync(realRcPath, 'utf8');
+  assert.match(contents, /alias ll="ls -la"/u);
+  assert.match(contents, /# >>> agentpay-sdk >>>/u);
+});
+
+test('installer tells fish users to configure their shell manually', async () => {
+  const { homeDir, fakeBinDir, archivePath, installDir } =
+    await prepareBundleSandbox('agentpay-setup-fish-');
+
+  const result = runInstaller({
+    homeDir,
+    installDir,
+    fakeBinDir,
+    input: '',
+    extraEnv: {
+      ...nonInteractiveInstallEnv,
+      SHELL: '/usr/local/bin/fish',
+      AGENTPAY_SDK_BUNDLE_URL: `file://${archivePath}`,
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stderr, /fish is not supported for automatic shell setup/u);
+  assert.match(result.stderr, /config\.fish/u);
+  assert.equal(fs.existsSync(path.join(homeDir, '.zshrc')), false);
+  assert.equal(fs.existsSync(path.join(homeDir, '.bashrc')), false);
   assert.ok(fs.existsSync(path.join(installDir, 'bin', 'agentpay')));
 });

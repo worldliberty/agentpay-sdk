@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::task::JoinHandle;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use uuid::Uuid;
 use vault_daemon::{
     DaemonError, DaemonRpcRequest, DaemonRpcResponse, InMemoryDaemon, KeyManagerDaemonApi,
@@ -31,7 +32,26 @@ use vault_policy::{PolicyEvaluation, PolicyExplanation};
 use vault_signer::{KeyCreateRequest, SignerError, VaultSignerBackend};
 use zeroize::Zeroize;
 
-const MAX_WIRE_BODY_BYTES: usize = 8 * 1024 * 1024;
+/// Maximum wire frame/body size accepted on either side of the socket.
+///
+/// Matches the XPC transport cap so both local transports enforce the same
+/// upper bound on untrusted input.
+const MAX_WIRE_BODY_BYTES: usize = 256 * 1024;
+
+/// Upper bound on concurrently serviced client connections.
+const MAX_CONCURRENT_CONNECTIONS: usize = 64;
+/// Initial delay after an `accept()` failure before retrying.
+const ACCEPT_BACKOFF_MIN: Duration = Duration::from_millis(50);
+/// Longest delay between `accept()` retries.
+const ACCEPT_BACKOFF_MAX: Duration = Duration::from_secs(1);
+
+/// Doubles the accept backoff, saturating at [`ACCEPT_BACKOFF_MAX`].
+fn next_accept_backoff(current: Duration) -> Duration {
+    current
+        .checked_mul(2)
+        .unwrap_or(ACCEPT_BACKOFF_MAX)
+        .min(ACCEPT_BACKOFF_MAX)
+}
 
 /// Validates that a client daemon socket path is an existing trusted unix socket in a secure directory.
 pub fn assert_trusted_daemon_socket_path(path: &Path) -> Result<PathBuf, String> {
@@ -177,12 +197,17 @@ enum WireDaemonError {
     TooManyActiveNonceReservations {
         max_active: usize,
     },
+    NonceSkipTooLarge {
+        requested_skip: u64,
+        max_skip: u64,
+    },
     UnknownNonceReservation(Uuid),
     MissingNonceReservation {
         chain_id: u64,
         nonce: u64,
     },
     InvalidPolicy(String),
+    InvalidAction(String),
     InvalidRelayConfig(String),
     ManualApprovalRequired {
         approval_request_id: Uuid,
@@ -195,6 +220,10 @@ enum WireDaemonError {
     ManualApprovalRequestNotPending {
         approval_request_id: Uuid,
         status: ManualApprovalStatus,
+    },
+    TooManyPendingManualApprovalRequests {
+        agent_key_id: Uuid,
+        max_pending: usize,
     },
     Policy(vault_policy::PolicyError),
     Signer(SignerError),
@@ -230,11 +259,19 @@ impl From<DaemonError> for WireDaemonError {
             DaemonError::TooManyActiveNonceReservations { max_active } => {
                 Self::TooManyActiveNonceReservations { max_active }
             }
+            DaemonError::NonceSkipTooLarge {
+                requested_skip,
+                max_skip,
+            } => Self::NonceSkipTooLarge {
+                requested_skip,
+                max_skip,
+            },
             DaemonError::UnknownNonceReservation(id) => Self::UnknownNonceReservation(id),
             DaemonError::MissingNonceReservation { chain_id, nonce } => {
                 Self::MissingNonceReservation { chain_id, nonce }
             }
             DaemonError::InvalidPolicy(msg) => Self::InvalidPolicy(msg),
+            DaemonError::InvalidAction(msg) => Self::InvalidAction(msg),
             DaemonError::InvalidRelayConfig(msg) => Self::InvalidRelayConfig(msg),
             DaemonError::ManualApprovalRequired {
                 approval_request_id,
@@ -256,6 +293,13 @@ impl From<DaemonError> for WireDaemonError {
             } => Self::ManualApprovalRequestNotPending {
                 approval_request_id,
                 status,
+            },
+            DaemonError::TooManyPendingManualApprovalRequests {
+                agent_key_id,
+                max_pending,
+            } => Self::TooManyPendingManualApprovalRequests {
+                agent_key_id,
+                max_pending,
             },
             DaemonError::Policy(err) => Self::Policy(err),
             DaemonError::Signer(err) => Self::Signer(err),
@@ -301,6 +345,13 @@ impl WireDaemonError {
             WireDaemonError::TooManyActiveNonceReservations { max_active } => {
                 DaemonError::TooManyActiveNonceReservations { max_active }
             }
+            WireDaemonError::NonceSkipTooLarge {
+                requested_skip,
+                max_skip,
+            } => DaemonError::NonceSkipTooLarge {
+                requested_skip,
+                max_skip,
+            },
             WireDaemonError::UnknownNonceReservation(id) => {
                 DaemonError::UnknownNonceReservation(id)
             }
@@ -308,6 +359,7 @@ impl WireDaemonError {
                 DaemonError::MissingNonceReservation { chain_id, nonce }
             }
             WireDaemonError::InvalidPolicy(msg) => DaemonError::InvalidPolicy(msg),
+            WireDaemonError::InvalidAction(msg) => DaemonError::InvalidAction(msg),
             WireDaemonError::InvalidRelayConfig(msg) => DaemonError::InvalidRelayConfig(msg),
             WireDaemonError::ManualApprovalRequired {
                 approval_request_id,
@@ -329,6 +381,13 @@ impl WireDaemonError {
             } => DaemonError::ManualApprovalRequestNotPending {
                 approval_request_id,
                 status,
+            },
+            WireDaemonError::TooManyPendingManualApprovalRequests {
+                agent_key_id,
+                max_pending,
+            } => DaemonError::TooManyPendingManualApprovalRequests {
+                agent_key_id,
+                max_pending,
             },
             WireDaemonError::Policy(err) => DaemonError::Policy(err),
             WireDaemonError::Signer(err) => DaemonError::Signer(err),
@@ -450,6 +509,8 @@ fn rpc_access_level(request: &DaemonRpcRequest) -> RpcAccessLevel {
         | DaemonRpcRequest::RefreshAgentKey { .. }
         | DaemonRpcRequest::ExportVaultPrivateKey { .. }
         | DaemonRpcRequest::SolanaPublicKey { .. }
+        | DaemonRpcRequest::RailgunMasterPublicKey { .. }
+        | DaemonRpcRequest::RailgunViewingPublicKey { .. }
         | DaemonRpcRequest::RotateAgentAuthToken { .. }
         | DaemonRpcRequest::RevokeAgentKey { .. }
         | DaemonRpcRequest::ListManualApprovalRequests { .. }
@@ -551,6 +612,11 @@ impl UnixDaemonServer {
     }
 
     /// Runs accept loop until `shutdown` resolves.
+    ///
+    /// Transient `accept()` failures (for example fd exhaustion) are logged and
+    /// retried with exponential backoff instead of terminating the daemon. At
+    /// most [`MAX_CONCURRENT_CONNECTIONS`] connections are serviced at once;
+    /// additional clients wait in the kernel backlog until a slot frees up.
     pub async fn run_until_shutdown<B, S>(
         self,
         daemon: Arc<InMemoryDaemon<B>>,
@@ -561,19 +627,36 @@ impl UnixDaemonServer {
         S: std::future::Future<Output = ()>,
     {
         tokio::pin!(shutdown);
-        let mut workers: Vec<JoinHandle<()>> = Vec::new();
+        let mut workers: JoinSet<()> = JoinSet::new();
+        let connection_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_CONNECTIONS));
+        let mut accept_backoff = ACCEPT_BACKOFF_MIN;
         loop {
-            tokio::select! {
-                _ = &mut shutdown => {
-                    break;
-                }
-                accept_result = self.listener.accept() => {
-                    let (stream, _) = accept_result
-                        .map_err(|err| UnixTransportError::Io(err.to_string()))?;
+            // Reap finished connection tasks so the set never grows without bound.
+            while workers.try_join_next().is_some() {}
+
+            let permit = tokio::select! {
+                _ = &mut shutdown => break,
+                permit = Arc::clone(&connection_permits).acquire_owned() => match permit {
+                    Ok(permit) => permit,
+                    // The semaphore is never closed; treat it as a shutdown signal if it is.
+                    Err(_) => break,
+                },
+            };
+
+            let accepted = tokio::select! {
+                _ = &mut shutdown => break,
+                accepted = self.listener.accept() => accepted,
+            };
+
+            match accepted {
+                Ok((stream, _)) => {
+                    accept_backoff = ACCEPT_BACKOFF_MIN;
                     let daemon = daemon.clone();
                     let allowed_admin_peer_euids = self.allowed_admin_peer_euids.clone();
                     let allowed_agent_peer_euids = self.allowed_agent_peer_euids.clone();
-                    workers.push(tokio::spawn(async move {
+                    workers.spawn(async move {
+                        // Hold the permit for the lifetime of the connection.
+                        let _permit = permit;
                         let _ = handle_connection(
                             stream,
                             daemon,
@@ -581,14 +664,24 @@ impl UnixDaemonServer {
                             allowed_agent_peer_euids,
                         )
                         .await;
-                    }));
+                    });
+                }
+                Err(err) => {
+                    drop(permit);
+                    eprintln!(
+                        "==> daemon socket accept failed: {err}; retrying in {}ms",
+                        accept_backoff.as_millis()
+                    );
+                    tokio::select! {
+                        _ = &mut shutdown => break,
+                        _ = tokio::time::sleep(accept_backoff) => {}
+                    }
+                    accept_backoff = next_accept_backoff(accept_backoff);
                 }
             }
         }
 
-        for worker in workers {
-            let _ = worker.await;
-        }
+        while workers.join_next().await.is_some() {}
         Ok(())
     }
 
@@ -1111,6 +1204,48 @@ impl KeyManagerDaemonApi for UnixDaemonClient {
         }
     }
 
+    async fn railgun_master_public_key(
+        &self,
+        session: &AdminSession,
+        vault_key_id: Uuid,
+    ) -> Result<String, DaemonError> {
+        match self
+            .call_rpc(DaemonRpcRequest::RailgunMasterPublicKey {
+                session: session.clone(),
+                vault_key_id,
+            })
+            .await
+        {
+            Ok(DaemonRpcResponse::PublicKey(public_key)) => Ok(public_key),
+            Ok(_) => Err(DaemonError::Transport(
+                "unexpected response type".to_string(),
+            )),
+            Err(UnixTransportError::Daemon(err)) => Err(err),
+            Err(err) => Err(DaemonError::Transport(err.to_string())),
+        }
+    }
+
+    async fn railgun_viewing_public_key(
+        &self,
+        session: &AdminSession,
+        vault_key_id: Uuid,
+    ) -> Result<vault_domain::RailgunViewingPublicKeys, DaemonError> {
+        match self
+            .call_rpc(DaemonRpcRequest::RailgunViewingPublicKey {
+                session: session.clone(),
+                vault_key_id,
+            })
+            .await
+        {
+            Ok(DaemonRpcResponse::RailgunViewingPublicKey(keys)) => Ok(keys),
+            Ok(_) => Err(DaemonError::Transport(
+                "unexpected response type".to_string(),
+            )),
+            Err(UnixTransportError::Daemon(err)) => Err(err),
+            Err(err) => Err(DaemonError::Transport(err.to_string())),
+        }
+    }
+
     async fn rotate_agent_auth_token(
         &self,
         session: &AdminSession,
@@ -1320,10 +1455,11 @@ impl KeyManagerDaemonApi for UnixDaemonClient {
 mod tests {
     use super::{
         assert_root_owned_daemon_socket_path, assert_trusted_daemon_socket_path,
-        combined_allowed_peer_euids, ensure_socket_parent, handle_connection, read_frame,
-        remove_existing_socket_file, rpc_access_level, socket_mode_for_allowed_peer_euids,
-        write_frame, RpcAccessLevel, UnixDaemonClient, UnixDaemonServer, UnixTransportError,
-        WireDaemonError, WireRequest, WireResponse, MAX_WIRE_BODY_BYTES,
+        combined_allowed_peer_euids, ensure_socket_parent, handle_connection, next_accept_backoff,
+        read_frame, remove_existing_socket_file, rpc_access_level,
+        socket_mode_for_allowed_peer_euids, write_frame, RpcAccessLevel, UnixDaemonClient,
+        UnixDaemonServer, UnixTransportError, WireDaemonError, WireRequest, WireResponse,
+        ACCEPT_BACKOFF_MAX, ACCEPT_BACKOFF_MIN, MAX_CONCURRENT_CONNECTIONS, MAX_WIRE_BODY_BYTES,
     };
     use serde_json::to_vec;
     use std::collections::BTreeSet;
@@ -1407,7 +1543,7 @@ mod tests {
 
     fn admin_session(lease: vault_domain::Lease) -> AdminSession {
         AdminSession {
-            vault_password: "vault-password".to_string(),
+            vault_password: "vault-password".to_string().into(),
             lease,
         }
     }
@@ -2067,6 +2203,93 @@ mod tests {
         );
     }
 
+    #[test]
+    fn next_accept_backoff_doubles_until_capped() {
+        assert_eq!(
+            next_accept_backoff(ACCEPT_BACKOFF_MIN),
+            Duration::from_millis(100)
+        );
+        assert_eq!(
+            next_accept_backoff(Duration::from_millis(400)),
+            Duration::from_millis(800)
+        );
+        assert_eq!(
+            next_accept_backoff(Duration::from_millis(800)),
+            ACCEPT_BACKOFF_MAX
+        );
+        assert_eq!(next_accept_backoff(ACCEPT_BACKOFF_MAX), ACCEPT_BACKOFF_MAX);
+        assert_eq!(next_accept_backoff(Duration::MAX), ACCEPT_BACKOFF_MAX);
+    }
+
+    #[test]
+    fn wire_body_cap_matches_xpc_transport() {
+        assert_eq!(MAX_WIRE_BODY_BYTES, 256 * 1024);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn run_until_shutdown_serves_more_concurrent_clients_than_connection_permits() {
+        let socket_path = unique_socket_path("concurrency");
+        let daemon = Arc::new(
+            InMemoryDaemon::new(
+                "vault-password",
+                SoftwareSignerBackend::default(),
+                DaemonConfig::default(),
+            )
+            .expect("daemon"),
+        );
+        let server = UnixDaemonServer::bind(
+            socket_path.clone(),
+            singleton_allowed_set(nix::unistd::geteuid().as_raw()),
+        )
+        .await
+        .expect("server");
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+        let server_task = tokio::spawn({
+            let daemon = daemon.clone();
+            async move {
+                server
+                    .run_until_shutdown(daemon, async {
+                        let _ = shutdown_rx.await;
+                    })
+                    .await
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Twice as many clients as permits: the surplus must queue and be served
+        // once earlier connections finish, never dropped or timed out.
+        let client_count = MAX_CONCURRENT_CONNECTIONS * 2;
+        let mut clients = tokio::task::JoinSet::new();
+        for _ in 0..client_count {
+            let client = UnixDaemonClient::new(socket_path.clone(), Duration::from_secs(20));
+            clients.spawn(async move { client.issue_lease("wrong-password").await });
+        }
+        let mut served = 0usize;
+        while let Some(result) = clients.join_next().await {
+            let outcome = result.expect("client task");
+            assert!(
+                matches!(outcome, Err(DaemonError::AuthenticationFailed)),
+                "every client must reach the daemon: {outcome:?}"
+            );
+            served += 1;
+        }
+        assert_eq!(served, client_count);
+
+        // The server keeps accepting after the burst.
+        let client = UnixDaemonClient::new(socket_path.clone(), Duration::from_secs(5));
+        let err = client
+            .issue_lease("wrong-password")
+            .await
+            .expect_err("still reachable");
+        assert!(matches!(err, DaemonError::AuthenticationFailed));
+
+        let _ = shutdown_tx.send(());
+        server_task
+            .await
+            .expect("server task")
+            .expect("server exits cleanly after shutdown");
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn run_until_shutdown_honors_ready_shutdown_and_exposes_socket_path() {
         let socket_path = unique_socket_path("ready-shutdown");
@@ -2175,6 +2398,17 @@ mod tests {
                 DaemonError::TooManyActiveNonceReservations { max_active: 64 }.to_string(),
             ),
             (
+                DaemonError::NonceSkipTooLarge {
+                    requested_skip: 4096,
+                    max_skip: 1024,
+                },
+                DaemonError::NonceSkipTooLarge {
+                    requested_skip: 4096,
+                    max_skip: 1024,
+                }
+                .to_string(),
+            ),
+            (
                 DaemonError::UnknownNonceReservation(unknown_reservation),
                 DaemonError::UnknownNonceReservation(unknown_reservation).to_string(),
             ),
@@ -2192,6 +2426,10 @@ mod tests {
             (
                 DaemonError::InvalidPolicy("policy".to_string()),
                 DaemonError::InvalidPolicy("policy".to_string()).to_string(),
+            ),
+            (
+                DaemonError::InvalidAction("action".to_string()),
+                DaemonError::InvalidAction("action".to_string()).to_string(),
             ),
             (
                 DaemonError::InvalidRelayConfig("relay".to_string()),
@@ -2227,6 +2465,17 @@ mod tests {
                 DaemonError::ManualApprovalRequestNotPending {
                     approval_request_id: manual_approval_id,
                     status: ManualApprovalStatus::Approved,
+                }
+                .to_string(),
+            ),
+            (
+                DaemonError::TooManyPendingManualApprovalRequests {
+                    agent_key_id: unknown_agent_key,
+                    max_pending: 64,
+                },
+                DaemonError::TooManyPendingManualApprovalRequests {
+                    agent_key_id: unknown_agent_key,
+                    max_pending: 64,
                 }
                 .to_string(),
             ),

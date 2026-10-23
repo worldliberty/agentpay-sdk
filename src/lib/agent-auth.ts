@@ -27,6 +27,18 @@ function migrationHint(agentKeyId?: string): string {
   );
 }
 
+/**
+ * The single source of truth for rejecting `AGENTPAY_AGENT_AUTH_TOKEN`, shared by the token
+ * resolver and the Rust-binary stdin relay so both surfaces refuse the env source identically.
+ */
+export function envAgentAuthTokenDisabledError(agentKeyId?: string): Error {
+  return new Error(
+    'AGENTPAY_AGENT_AUTH_TOKEN is disabled by default for security; use local credential storage or --agent-auth-token-stdin, ' +
+      migrationHint(agentKeyId) +
+      ', or pass --allow-legacy-agent-auth-source',
+  );
+}
+
 export async function resolveAgentAuthToken(
   input: ResolveAgentAuthTokenInput,
 ): Promise<ResolvedAgentAuthToken> {
@@ -76,11 +88,7 @@ export async function resolveAgentAuthToken(
   const envToken = resolveOptionalAgentAuthToken(input.envToken, 'agentAuthToken');
   if (envToken) {
     if (!input.allowLegacySource) {
-      throw new Error(
-        'AGENTPAY_AGENT_AUTH_TOKEN is disabled by default for security; use local credential storage or --agent-auth-token-stdin, ' +
-          migrationHint(input.agentKeyId) +
-          ', or pass --allow-legacy-agent-auth-source',
-      );
+      throw envAgentAuthTokenDisabledError(input.agentKeyId);
     }
     return { token: envToken, source: 'env' };
   }

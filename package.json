@@ -1,6 +1,6 @@
 {
   "name": "@worldlibertyfinancial/agentpay-sdk",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Single-entrypoint AgentPay CLI",
   "license": "MIT",
   "type": "module",
@@ -16,9 +16,14 @@
   },
   "files": [
     "dist",
+    "!dist/**/*.map",
     "scripts",
+    "!scripts/live-local-e2e.mjs",
     "src",
+    "!src/**/*.js",
     "packages",
+    "!packages/ui",
+    "!packages/*/node_modules",
     "crates",
     "Cargo.toml",
     "Cargo.lock",
@@ -27,7 +32,11 @@
     "pnpm-workspace.yaml",
     "tsconfig.base.json",
     "tsconfig.json",
-    "tsup.config.ts"
+    "tsup.config.ts",
+    "!**/.turbo",
+    "!**/*.test.*",
+    "!**/__tests__",
+    "!**/*.map"
   ],
   "scripts": {
     "build": "turbo run build && tsup --config tsup.config.ts",
@@ -50,8 +59,7 @@
   },
   "workspaces": [
     "packages/*",
-    "apps/*",
-    "apps/maintenance/*"
+    "apps/*"
   ],
   "packageManager": "pnpm@10.6.3",
   "engines": {
@@ -72,6 +80,7 @@
     "viem": "^2.47.6"
   },
   "dependencies": {
+    "@sentry/node": "^10.75.0",
     "@solana/spl-token": "^0.4.14",
     "@solana/web3.js": "^1.98.4",
     "@stripe/link-cli": "^0.7.1",

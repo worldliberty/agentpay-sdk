@@ -6,7 +6,7 @@ mod engine;
 mod error;
 mod report;
 
-pub use engine::PolicyEngine;
+pub use engine::{PolicyEngine, RAILGUN_POI_STANDBY};
 pub use error::PolicyError;
 pub use report::{PolicyDecision, PolicyEvaluation, PolicyExplanation};
 

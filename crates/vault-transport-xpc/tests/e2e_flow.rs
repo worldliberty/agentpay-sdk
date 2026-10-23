@@ -44,7 +44,7 @@ async fn e2e_policy_enforced_over_xpc() {
 
     let lease = client.issue_lease("vault-password").await.expect("lease");
     let admin = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -272,7 +272,7 @@ async fn e2e_broadcast_gas_policy_enforced_over_xpc() {
 
     let lease = client.issue_lease("vault-password").await.expect("lease");
     let admin = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -324,7 +324,7 @@ async fn e2e_broadcast_gas_policy_enforced_over_xpc() {
                 .parse()
                 .expect("to"),
             value_wei: 0,
-            data_hex: "0xdeadbeef".to_string(),
+            data_hex: "0x".to_string(),
             gas_limit: 200_000,
             max_fee_per_gas_wei: 1_000_000_000,
             max_priority_fee_per_gas_wei: 1_000_000_000,
@@ -371,7 +371,7 @@ async fn e2e_broadcast_gas_policy_enforced_over_xpc() {
                 .parse()
                 .expect("to"),
             value_wei: 0,
-            data_hex: "0xdeadbeef".to_string(),
+            data_hex: "0x".to_string(),
             gas_limit: 2_000_000,
             max_fee_per_gas_wei: 1_000_000_000,
             max_priority_fee_per_gas_wei: 1_000_000_000,
@@ -454,7 +454,7 @@ async fn e2e_tx_metadata_policies_skip_non_broadcast_actions_over_xpc() {
 
     let lease = client.issue_lease("vault-password").await.expect("lease");
     let admin = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -555,7 +555,7 @@ async fn e2e_lifecycle_controls_and_policy_evaluation_over_xpc() {
 
     let lease = client.issue_lease("vault-password").await.expect("lease");
     let admin = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -696,7 +696,7 @@ async fn e2e_disable_policy_over_xpc() {
 
     let lease = client.issue_lease("vault-password").await.expect("lease");
     let admin = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -806,7 +806,7 @@ async fn e2e_policy_set_agents_do_not_pick_up_policies_added_later_over_xpc() {
 
     let lease = client.issue_lease("vault-password").await.expect("lease");
     let admin = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 

@@ -3,7 +3,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use uuid::Uuid;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Admin lease issued by the daemon.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,7 +28,11 @@ impl Lease {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdminSession {
     /// Vault password.
-    pub vault_password: String,
+    ///
+    /// Wrapped in [`Zeroizing`] so the secret is wiped on drop even when a
+    /// caller returns early with `?` before an explicit zeroize call.
+    #[serde(with = "crate::serde_helpers::zeroizing_string")]
+    pub vault_password: Zeroizing<String>,
     /// Active lease.
     pub lease: Lease,
 }

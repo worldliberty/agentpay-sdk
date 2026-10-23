@@ -460,6 +460,12 @@ function buildWarnings(result: Omit<WalletStatusResult, 'security'>): string[] {
     }
   }
   for (const bootstrapFile of result.bootstrapFiles) {
+    if (bootstrapFile.kind === 'wallet-import-key') {
+      warnings.push(
+        `temporary wallet import key file '${bootstrapFile.path}' still contains a plaintext private key; run \`agentpay repair\` to delete it securely`,
+      );
+      continue;
+    }
     if (bootstrapFile.status === 'plaintext') {
       warnings.push(
         `bootstrap file '${bootstrapFile.path}' still contains plaintext bootstrap secrets; delete or redact it securely`,

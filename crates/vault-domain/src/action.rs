@@ -1,13 +1,20 @@
 use alloy_dyn_abi::eip712::TypedData;
-use alloy_primitives::{aliases::U48, Address, U160, U256};
-use alloy_sol_types::{eip712_domain, sol, Eip712Domain, SolCall, SolStruct};
+use alloy_primitives::{aliases::U48, keccak256, Address, FixedBytes, U160, U256};
+use alloy_sol_types::{eip712_domain, sol, Eip712Domain, SolCall, SolStruct, SolValue};
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 use time::OffsetDateTime;
 
-use crate::constants::{canonical_policy_chain_id, is_solana_chain_id};
+use crate::constants::{
+    canonical_policy_chain_id, is_solana_chain_id, SOLANA_NONCE_ACCOUNT_MAX_RENT_LAMPORTS,
+    TEMPO_MAINNET_CHAIN_ID, TEMPO_MAINNET_ESCROW_CONTRACT, TEMPO_TESTNET_CHAIN_ID,
+    TEMPO_TESTNET_ESCROW_CONTRACT, TEMPO_TX_TYPE, TEMPO_VOUCHER_DOMAIN_NAME,
+    TEMPO_VOUCHER_DOMAIN_VERSION,
+};
 use crate::u128_as_decimal_string;
-use crate::{AssetId, DomainError, EvmAddress, RecipientId, SolanaAddress};
+use crate::{
+    ActionKind, AssetId, DomainError, EvmAddress, RailgunAddress, RecipientId, SolanaAddress,
+};
 
 sol! {
     function approve(address spender, uint256 value);
@@ -45,6 +52,14 @@ sol! {
         uint256 validAfter;
         uint256 validBefore;
         bytes32 nonce;
+    }
+
+    function open(address payee, address token, uint128 deposit, bytes32 salt, address authorizedSigner);
+    function topUp(bytes32 channelId, uint256 additionalDeposit);
+
+    struct Voucher {
+        bytes32 channelId;
+        uint128 cumulativeAmount;
     }
 }
 
@@ -263,81 +278,376 @@ impl Eip3009Transfer {
     }
 }
 
-/// Tempo session open-transaction digest signed for a payment-channel request.
+/// Tempo transaction envelope parameters committed to by the sender signature.
+///
+/// The daemon never accepts a precomputed Tempo digest. Instead it rebuilds the
+/// type-`0x76` envelope from these fields plus calls it encodes itself from the
+/// semantic channel fields, so every policy input is bound into the digest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TempoSessionOpenTransaction {
-    /// EVM network chain ID.
-    pub chain_id: u64,
-    /// ERC-20 token contract address funding the channel.
-    pub token: EvmAddress,
-    /// Channel payee / merchant recipient.
-    pub recipient: EvmAddress,
-    /// Total channel deposit in token base units.
+pub struct TempoTxParams {
+    /// Sequence nonce within `nonce_key`.
+    pub nonce: u64,
+    /// 2D nonce key as a decimal (or `0x` hex) `uint256`; omitted means the protocol nonce key 0.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nonce_key: Option<String>,
+    /// Gas limit.
+    pub gas_limit: u64,
+    /// EIP-1559 max fee per gas in wei.
     #[serde(with = "u128_as_decimal_string")]
-    pub deposit_wei: u128,
-    /// Initial authorized spend included in the opening voucher.
+    pub max_fee_per_gas_wei: u128,
+    /// EIP-1559 max priority fee per gas in wei.
     #[serde(with = "u128_as_decimal_string")]
-    pub initial_amount_wei: u128,
-    /// Precomputed Tempo transaction signing hash as `0x`-prefixed 32-byte hex.
-    pub signing_hash_hex: String,
+    pub max_priority_fee_per_gas_wei: u128,
+    /// Optional `validBefore` unix timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_before: Option<u64>,
+    /// Optional `validAfter` unix timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_after: Option<u64>,
+    /// Fee token the sender pays gas in. Must be absent for sponsored transactions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fee_token: Option<EvmAddress>,
+    /// Whether a fee payer sponsors gas. Sponsored senders sign the spec layout
+    /// with an empty fee token and a `0x00` fee-payer marker.
+    #[serde(default)]
+    pub fee_payer: bool,
 }
 
-impl TempoSessionOpenTransaction {
-    /// Validates structural constraints and address encoding.
+impl TempoTxParams {
+    /// Validates transaction parameter invariants.
     pub fn validate(&self) -> Result<(), DomainError> {
-        if self.chain_id == 0 {
-            return Err(DomainError::InvalidChainId);
+        if self.gas_limit == 0 {
+            return Err(DomainError::InvalidTempoTransactionParams(
+                "gas_limit must be greater than zero".to_string(),
+            ));
         }
-        if self.deposit_wei == 0 || self.initial_amount_wei == 0 {
-            return Err(DomainError::InvalidAmount);
+        if self.max_fee_per_gas_wei == 0 {
+            return Err(DomainError::InvalidTempoTransactionParams(
+                "max_fee_per_gas_wei must be greater than zero".to_string(),
+            ));
         }
-        if self.initial_amount_wei > self.deposit_wei {
-            return Err(DomainError::InvalidAmount);
+        if self.max_priority_fee_per_gas_wei > self.max_fee_per_gas_wei {
+            return Err(DomainError::InvalidTempoTransactionParams(
+                "max_priority_fee_per_gas_wei must not exceed max_fee_per_gas_wei".to_string(),
+            ));
         }
-        let _ = evm_to_alloy_address(&self.token)?;
-        let _ = evm_to_alloy_address(&self.recipient)?;
-        let _ = self.signing_hash()?;
+        // A zero timestamp would serialize differently in the reference encoder
+        // (`0x0` instead of the empty string), so it is rejected outright.
+        if matches!(self.valid_before, Some(0)) || matches!(self.valid_after, Some(0)) {
+            return Err(DomainError::InvalidTempoTransactionParams(
+                "valid_before and valid_after must be greater than zero when set".to_string(),
+            ));
+        }
+        if let (Some(before), Some(after)) = (self.valid_before, self.valid_after) {
+            if before <= after {
+                return Err(DomainError::InvalidTempoTransactionParams(
+                    "valid_before must be greater than valid_after".to_string(),
+                ));
+            }
+        }
+        if self.fee_payer && self.fee_token.is_some() {
+            return Err(DomainError::InvalidTempoTransactionParams(
+                "fee_token must be omitted for fee-payer sponsored transactions".to_string(),
+            ));
+        }
+        if let Some(fee_token) = &self.fee_token {
+            let _ = evm_to_alloy_address(fee_token)?;
+        }
+        let _ = self.nonce_key_u256()?;
         Ok(())
     }
 
-    /// Returns the precomputed signing digest bytes.
-    pub fn signing_hash(&self) -> Result<[u8; 32], DomainError> {
-        decode_hex_32(&self.signing_hash_hex, "tempo session open signing hash")
+    /// Parses the optional nonce key as a `uint256`.
+    pub fn nonce_key_u256(&self) -> Result<U256, DomainError> {
+        match self.nonce_key.as_deref().map(str::trim) {
+            None | Some("") => Ok(U256::ZERO),
+            Some(value) => U256::from_str(value).map_err(|_| {
+                DomainError::InvalidTempoTransactionParams(
+                    "nonce_key must be a uint256 integer".to_string(),
+                )
+            }),
+        }
     }
 }
 
-/// Tempo session top-up transaction digest signed for an existing payment channel.
+/// One call inside a Tempo batched transaction.
+struct TempoCall {
+    to: Address,
+    data: Vec<u8>,
+}
+
+/// Returns the pinned Tempo stream-channel escrow contract for a supported chain.
+pub fn tempo_escrow_contract(chain_id: u64) -> Result<EvmAddress, DomainError> {
+    let address = match chain_id {
+        TEMPO_MAINNET_CHAIN_ID => TEMPO_MAINNET_ESCROW_CONTRACT,
+        TEMPO_TESTNET_CHAIN_ID => TEMPO_TESTNET_ESCROW_CONTRACT,
+        other => return Err(DomainError::UnsupportedTempoChain(other)),
+    };
+    address.parse()
+}
+
+/// Borrowed view of the fields that identify a Tempo stream channel.
+struct TempoChannelIdentity<'a> {
+    chain_id: u64,
+    escrow_contract: &'a EvmAddress,
+    token: &'a EvmAddress,
+    recipient: &'a EvmAddress,
+    payer: &'a EvmAddress,
+    authorized_signer: &'a EvmAddress,
+    salt_hex: &'a str,
+}
+
+impl TempoChannelIdentity<'_> {
+    fn validate(&self) -> Result<(), DomainError> {
+        let pinned = tempo_escrow_contract(self.chain_id)?;
+        let escrow = evm_to_alloy_address(self.escrow_contract)?;
+        if escrow != evm_to_alloy_address(&pinned)? {
+            return Err(DomainError::InvalidTempoEscrowContract);
+        }
+        let _ = evm_to_alloy_address(self.token)?;
+        let _ = evm_to_alloy_address(self.recipient)?;
+        let payer = evm_to_alloy_address(self.payer)?;
+        if evm_to_alloy_address(self.authorized_signer)? != payer {
+            return Err(DomainError::InvalidTempoTransactionParams(
+                "authorized_signer must equal payer".to_string(),
+            ));
+        }
+        let _ = self.salt()?;
+        Ok(())
+    }
+
+    fn salt(&self) -> Result<[u8; 32], DomainError> {
+        decode_hex_32(self.salt_hex, "tempo session salt")
+    }
+
+    /// `keccak256(abi.encode(payer, payee, token, salt, authorizedSigner, escrow, chainId))`.
+    fn channel_id(&self) -> Result<[u8; 32], DomainError> {
+        let encoded = (
+            evm_to_alloy_address(self.payer)?,
+            evm_to_alloy_address(self.recipient)?,
+            evm_to_alloy_address(self.token)?,
+            FixedBytes::<32>::from(self.salt()?),
+            evm_to_alloy_address(self.authorized_signer)?,
+            evm_to_alloy_address(self.escrow_contract)?,
+            U256::from(self.chain_id),
+        )
+            .abi_encode_params();
+        Ok(keccak256(encoded).0)
+    }
+
+    fn ensure_channel_id(&self, channel_id_hex: &str) -> Result<[u8; 32], DomainError> {
+        let claimed = decode_hex_32(channel_id_hex, "tempo session channel id")?;
+        if claimed != self.channel_id()? {
+            return Err(DomainError::TempoChannelIdMismatch);
+        }
+        Ok(claimed)
+    }
+
+    fn approve_call(&self, amount_wei: u128) -> Result<TempoCall, DomainError> {
+        Ok(TempoCall {
+            to: evm_to_alloy_address(self.token)?,
+            data: approveCall {
+                spender: evm_to_alloy_address(self.escrow_contract)?,
+                value: U256::from(amount_wei),
+            }
+            .abi_encode(),
+        })
+    }
+}
+
+fn validate_tempo_amount(amount_wei: u128) -> Result<(), DomainError> {
+    if amount_wei == 0 {
+        return Err(DomainError::InvalidAmount);
+    }
+    Ok(())
+}
+
+/// Returns `keccak256(0x76 || rlp(envelope))` for an unsigned Tempo transaction,
+/// mirroring ox `TxEnvelopeTempo.serialize()` as driven by viem `Transaction.serialize()`.
+fn tempo_sender_signing_hash(
+    chain_id: u64,
+    tx: &TempoTxParams,
+    calls: &[TempoCall],
+) -> Result<[u8; 32], DomainError> {
+    let encoded_calls = calls
+        .iter()
+        .map(|call| {
+            rlp_encode_list(&[
+                rlp_encode_bytes(call.to.as_slice()),
+                // Calls carry no native value.
+                rlp_encode_bytes(&[]),
+                rlp_encode_bytes(&call.data),
+            ])
+        })
+        .collect::<Vec<_>>();
+    let nonce_key = tx.nonce_key_u256()?.to_be_bytes::<32>();
+    let optional_u64 = |value: Option<u64>| match value {
+        Some(value) => rlp_encode_u64(value),
+        None => rlp_encode_bytes(&[]),
+    };
+    let (fee_token, fee_payer_marker) = if tx.fee_payer {
+        // Sponsored: the sender does not commit to the fee token, and the fee
+        // payer slot carries the single-byte `0x00` placeholder.
+        (rlp_encode_bytes(&[]), rlp_encode_bytes(&[0x00]))
+    } else {
+        let fee_token = match &tx.fee_token {
+            Some(token) => rlp_encode_bytes(evm_to_alloy_address(token)?.as_slice()),
+            None => rlp_encode_bytes(&[]),
+        };
+        (fee_token, rlp_encode_bytes(&[]))
+    };
+    let envelope = rlp_encode_list(&[
+        rlp_encode_u64(chain_id),
+        rlp_encode_u128(tx.max_priority_fee_per_gas_wei),
+        rlp_encode_u128(tx.max_fee_per_gas_wei),
+        rlp_encode_u64(tx.gas_limit),
+        rlp_encode_list(&encoded_calls),
+        // accessList
+        rlp_encode_list(&[]),
+        rlp_encode_u256_bytes(&nonce_key),
+        rlp_encode_u64(tx.nonce),
+        optional_u64(tx.valid_before),
+        optional_u64(tx.valid_after),
+        fee_token,
+        fee_payer_marker,
+        // authorizationList
+        rlp_encode_list(&[]),
+    ]);
+    let mut payload = Vec::with_capacity(1 + envelope.len());
+    payload.push(TEMPO_TX_TYPE);
+    payload.extend_from_slice(&envelope);
+    Ok(keccak256(payload).0)
+}
+
+/// Tempo session channel-open transaction (`approve` + `escrow.open`) signed by the payer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TempoSessionTopUpTransaction {
-    /// EVM network chain ID.
+pub struct TempoSessionOpenTransaction {
+    /// Tempo chain ID (4217 mainnet or 42431 testnet).
     pub chain_id: u64,
-    /// ERC-20 token contract address funding the channel.
+    /// Pinned stream-channel escrow contract for `chain_id`.
+    pub escrow_contract: EvmAddress,
+    /// TIP-20 token contract funding the channel.
     pub token: EvmAddress,
     /// Channel payee / merchant recipient.
     pub recipient: EvmAddress,
-    /// Channel id as `0x`-prefixed 32-byte hex.
+    /// Channel payer; must be the signing wallet.
+    pub payer: EvmAddress,
+    /// Voucher signer authorized by the channel; must equal `payer`.
+    pub authorized_signer: EvmAddress,
+    /// Channel salt as `0x`-prefixed 32-byte hex.
+    pub salt_hex: String,
+    /// Channel deposit in token base units.
+    #[serde(with = "u128_as_decimal_string")]
+    pub deposit_wei: u128,
+    /// Transaction envelope parameters.
+    pub tx: TempoTxParams,
+}
+
+impl TempoSessionOpenTransaction {
+    fn identity(&self) -> TempoChannelIdentity<'_> {
+        TempoChannelIdentity {
+            chain_id: self.chain_id,
+            escrow_contract: &self.escrow_contract,
+            token: &self.token,
+            recipient: &self.recipient,
+            payer: &self.payer,
+            authorized_signer: &self.authorized_signer,
+            salt_hex: &self.salt_hex,
+        }
+    }
+
+    /// Validates chain, pinned escrow, signer, amount, and transaction parameters.
+    pub fn validate(&self) -> Result<(), DomainError> {
+        self.identity().validate()?;
+        validate_tempo_amount(self.deposit_wei)?;
+        self.tx.validate()
+    }
+
+    /// Returns the channel id this transaction opens.
+    pub fn channel_id(&self) -> Result<[u8; 32], DomainError> {
+        self.identity().channel_id()
+    }
+
+    fn calls(&self) -> Result<Vec<TempoCall>, DomainError> {
+        let identity = self.identity();
+        Ok(vec![
+            identity.approve_call(self.deposit_wei)?,
+            TempoCall {
+                to: evm_to_alloy_address(&self.escrow_contract)?,
+                data: openCall {
+                    payee: evm_to_alloy_address(&self.recipient)?,
+                    token: evm_to_alloy_address(&self.token)?,
+                    deposit: self.deposit_wei,
+                    salt: FixedBytes::<32>::from(identity.salt()?),
+                    authorizedSigner: evm_to_alloy_address(&self.authorized_signer)?,
+                }
+                .abi_encode(),
+            },
+        ])
+    }
+
+    /// Returns the ABI-encoded calls in envelope order.
+    pub fn encoded_calls(&self) -> Result<Vec<(EvmAddress, Vec<u8>)>, DomainError> {
+        self.validate()?;
+        self.calls()?
+            .into_iter()
+            .map(|call| Ok((alloy_address_to_evm(call.to)?, call.data)))
+            .collect()
+    }
+
+    /// Returns the sender signing digest rebuilt from the structured fields.
+    pub fn signing_hash(&self) -> Result<[u8; 32], DomainError> {
+        self.validate()?;
+        tempo_sender_signing_hash(self.chain_id, &self.tx, &self.calls()?)
+    }
+}
+
+/// Tempo session top-up transaction (`approve` + `escrow.topUp`) signed by the payer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TempoSessionTopUpTransaction {
+    /// Tempo chain ID (4217 mainnet or 42431 testnet).
+    pub chain_id: u64,
+    /// Pinned stream-channel escrow contract for `chain_id`.
+    pub escrow_contract: EvmAddress,
+    /// TIP-20 token contract funding the channel.
+    pub token: EvmAddress,
+    /// Channel payee / merchant recipient.
+    pub recipient: EvmAddress,
+    /// Channel payer; must be the signing wallet.
+    pub payer: EvmAddress,
+    /// Voucher signer authorized by the channel; must equal `payer`.
+    pub authorized_signer: EvmAddress,
+    /// Channel salt as `0x`-prefixed 32-byte hex.
+    pub salt_hex: String,
+    /// Channel id as `0x`-prefixed 32-byte hex; must match the recomputed id.
     pub channel_id_hex: String,
     /// Incremental additional deposit in token base units.
     #[serde(with = "u128_as_decimal_string")]
     pub additional_deposit_wei: u128,
-    /// Precomputed Tempo transaction signing hash as `0x`-prefixed 32-byte hex.
-    pub signing_hash_hex: String,
+    /// Transaction envelope parameters.
+    pub tx: TempoTxParams,
 }
 
 impl TempoSessionTopUpTransaction {
-    /// Validates structural constraints and address encoding.
+    fn identity(&self) -> TempoChannelIdentity<'_> {
+        TempoChannelIdentity {
+            chain_id: self.chain_id,
+            escrow_contract: &self.escrow_contract,
+            token: &self.token,
+            recipient: &self.recipient,
+            payer: &self.payer,
+            authorized_signer: &self.authorized_signer,
+            salt_hex: &self.salt_hex,
+        }
+    }
+
+    /// Validates chain, pinned escrow, signer, channel id, amount, and transaction parameters.
     pub fn validate(&self) -> Result<(), DomainError> {
-        if self.chain_id == 0 {
-            return Err(DomainError::InvalidChainId);
-        }
-        if self.additional_deposit_wei == 0 {
-            return Err(DomainError::InvalidAmount);
-        }
-        let _ = evm_to_alloy_address(&self.token)?;
-        let _ = evm_to_alloy_address(&self.recipient)?;
-        let _ = self.channel_id_bytes32()?;
-        let _ = self.signing_hash()?;
-        Ok(())
+        let identity = self.identity();
+        identity.validate()?;
+        let _ = identity.ensure_channel_id(&self.channel_id_hex)?;
+        validate_tempo_amount(self.additional_deposit_wei)?;
+        self.tx.validate()
     }
 
     /// Parses the channel id as a strict 32-byte value.
@@ -345,53 +655,83 @@ impl TempoSessionTopUpTransaction {
         decode_hex_32(&self.channel_id_hex, "tempo session channel id")
     }
 
-    /// Returns the precomputed signing digest bytes.
+    fn calls(&self) -> Result<Vec<TempoCall>, DomainError> {
+        let identity = self.identity();
+        Ok(vec![
+            identity.approve_call(self.additional_deposit_wei)?,
+            TempoCall {
+                to: evm_to_alloy_address(&self.escrow_contract)?,
+                data: topUpCall {
+                    channelId: FixedBytes::<32>::from(self.channel_id_bytes32()?),
+                    additionalDeposit: U256::from(self.additional_deposit_wei),
+                }
+                .abi_encode(),
+            },
+        ])
+    }
+
+    /// Returns the ABI-encoded calls in envelope order.
+    pub fn encoded_calls(&self) -> Result<Vec<(EvmAddress, Vec<u8>)>, DomainError> {
+        self.validate()?;
+        self.calls()?
+            .into_iter()
+            .map(|call| Ok((alloy_address_to_evm(call.to)?, call.data)))
+            .collect()
+    }
+
+    /// Returns the sender signing digest rebuilt from the structured fields.
     pub fn signing_hash(&self) -> Result<[u8; 32], DomainError> {
-        decode_hex_32(&self.signing_hash_hex, "tempo session topUp signing hash")
+        self.validate()?;
+        tempo_sender_signing_hash(self.chain_id, &self.tx, &self.calls()?)
     }
 }
 
-/// Tempo session voucher digest signed for an MPP channel credential.
+/// Tempo session voucher (EIP-712 `Voucher(bytes32 channelId, uint128 cumulativeAmount)`).
+///
+/// A voucher moves funds that already left the wallet through a policy-checked
+/// open or top-up, so it is an escrow redistribution rather than a new spend.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TempoSessionVoucher {
-    /// EVM network chain ID.
+    /// Tempo chain ID (4217 mainnet or 42431 testnet).
     pub chain_id: u64,
-    /// Escrow contract address used as the EIP-712 verifying contract.
+    /// Pinned stream-channel escrow contract, used as the EIP-712 verifying contract.
     pub escrow_contract: EvmAddress,
-    /// ERC-20 token contract address used by the channel.
+    /// TIP-20 token contract used by the channel.
     pub token: EvmAddress,
     /// Channel payee / merchant recipient.
     pub recipient: EvmAddress,
-    /// Channel id as `0x`-prefixed 32-byte hex.
+    /// Channel payer; must be the signing wallet.
+    pub payer: EvmAddress,
+    /// Voucher signer authorized by the channel; must equal `payer`.
+    pub authorized_signer: EvmAddress,
+    /// Channel salt as `0x`-prefixed 32-byte hex.
+    pub salt_hex: String,
+    /// Channel id as `0x`-prefixed 32-byte hex; must match the recomputed id.
     pub channel_id_hex: String,
-    /// Incremental amount being newly authorized for policy evaluation.
-    #[serde(with = "u128_as_decimal_string")]
-    pub amount_wei: u128,
     /// Full cumulative voucher amount being signed.
     #[serde(with = "u128_as_decimal_string")]
     pub cumulative_amount_wei: u128,
-    /// Precomputed voucher signing hash as `0x`-prefixed 32-byte hex.
-    pub signing_hash_hex: String,
 }
 
 impl TempoSessionVoucher {
-    /// Validates structural constraints and address encoding.
+    fn identity(&self) -> TempoChannelIdentity<'_> {
+        TempoChannelIdentity {
+            chain_id: self.chain_id,
+            escrow_contract: &self.escrow_contract,
+            token: &self.token,
+            recipient: &self.recipient,
+            payer: &self.payer,
+            authorized_signer: &self.authorized_signer,
+            salt_hex: &self.salt_hex,
+        }
+    }
+
+    /// Validates chain, pinned escrow, signer, channel id, and amount.
     pub fn validate(&self) -> Result<(), DomainError> {
-        if self.chain_id == 0 {
-            return Err(DomainError::InvalidChainId);
-        }
-        if self.amount_wei == 0 || self.cumulative_amount_wei == 0 {
-            return Err(DomainError::InvalidAmount);
-        }
-        if self.amount_wei > self.cumulative_amount_wei {
-            return Err(DomainError::InvalidAmount);
-        }
-        let _ = evm_to_alloy_address(&self.escrow_contract)?;
-        let _ = evm_to_alloy_address(&self.token)?;
-        let _ = evm_to_alloy_address(&self.recipient)?;
-        let _ = self.channel_id_bytes32()?;
-        let _ = self.signing_hash()?;
-        Ok(())
+        let identity = self.identity();
+        identity.validate()?;
+        let _ = identity.ensure_channel_id(&self.channel_id_hex)?;
+        validate_tempo_amount(self.cumulative_amount_wei)
     }
 
     /// Parses the channel id as a strict 32-byte value.
@@ -399,9 +739,24 @@ impl TempoSessionVoucher {
         decode_hex_32(&self.channel_id_hex, "tempo session channel id")
     }
 
-    /// Returns the precomputed signing digest bytes.
+    /// Returns the voucher EIP-712 domain.
+    pub fn eip712_domain(&self) -> Result<Eip712Domain, DomainError> {
+        Ok(eip712_domain! {
+            name: TEMPO_VOUCHER_DOMAIN_NAME,
+            version: TEMPO_VOUCHER_DOMAIN_VERSION,
+            chain_id: self.chain_id,
+            verifying_contract: evm_to_alloy_address(&self.escrow_contract)?,
+        })
+    }
+
+    /// Returns the EIP-712 voucher digest rebuilt from the structured fields.
     pub fn signing_hash(&self) -> Result<[u8; 32], DomainError> {
-        decode_hex_32(&self.signing_hash_hex, "tempo session voucher signing hash")
+        self.validate()?;
+        let voucher = Voucher {
+            channelId: FixedBytes::<32>::from(self.channel_id_bytes32()?),
+            cumulativeAmount: self.cumulative_amount_wei,
+        };
+        Ok(voucher.eip712_signing_hash(&self.eip712_domain()?).0)
     }
 }
 
@@ -521,6 +876,12 @@ impl BroadcastTx {
     }
 
     /// Validates structural tx constraints.
+    ///
+    /// Non-empty calldata must be one of the recognized token calls (ERC-20
+    /// `approve`/`transfer`, Permit2 `permit`, EIP-3009
+    /// `transferWithAuthorization`/`receiveWithAuthorization`); anything else
+    /// is rejected with [`DomainError::UnrecognizedCalldata`]. Empty calldata
+    /// (a plain native transfer) is always structurally valid.
     pub fn validate(&self) -> Result<(), DomainError> {
         if self.chain_id == 0 {
             return Err(DomainError::InvalidChainId);
@@ -535,8 +896,16 @@ impl BroadcastTx {
             return Err(DomainError::DelegationNotAllowed);
         }
         let data = self.data_bytes()?;
-        if validate_token_broadcast_calldata(&data)? && self.value_wei > 0 {
+        let recognized_token_call = validate_token_broadcast_calldata(&data)?;
+        if recognized_token_call && self.value_wei > 0 {
             return Err(DomainError::Erc20CallWithNativeValue);
+        }
+        // Calldata the policy engine cannot project onto (asset, recipient,
+        // amount) would otherwise be evaluated as a plain native transfer of
+        // `value_wei`, letting arbitrary contract calls (`increaseAllowance`,
+        // `setApprovalForAll`, swaps, ...) bypass spending scopes entirely.
+        if !recognized_token_call && !data.is_empty() {
+            return Err(DomainError::UnrecognizedCalldata);
         }
         let _ = self.max_gas_spend_wei()?;
         Ok(())
@@ -788,6 +1157,10 @@ pub struct SolanaNonceAccountCreate {
     /// Seed used with `fee_payer` and the system program to derive `nonce_account`.
     pub seed: String,
     /// Rent-exempt lamports to fund the nonce account.
+    ///
+    /// Nonce creation is wallet maintenance and bypasses spending policies, so
+    /// this is capped at [`SOLANA_NONCE_ACCOUNT_MAX_RENT_LAMPORTS`] (twice the
+    /// rent-exempt minimum for an 80-byte nonce account).
     #[serde(with = "u128_as_decimal_string")]
     pub rent_lamports: u128,
 }
@@ -800,8 +1173,10 @@ impl SolanaNonceAccountCreate {
         if self.rent_lamports == 0 {
             return Err(DomainError::InvalidAmount);
         }
-        if self.rent_lamports > u128::from(u64::MAX) {
-            return Err(DomainError::AmountOutOfRange);
+        if self.rent_lamports > SOLANA_NONCE_ACCOUNT_MAX_RENT_LAMPORTS {
+            return Err(DomainError::SolanaNonceRentTooHigh {
+                max_lamports: SOLANA_NONCE_ACCOUNT_MAX_RENT_LAMPORTS,
+            });
         }
         let seed = self.seed.as_bytes();
         if seed.is_empty() || seed.len() > 32 || !seed.is_ascii() {
@@ -898,6 +1273,58 @@ pub enum AgentAction {
     SolanaSplTransfer { transfer: SolanaSplTransfer },
     /// Internal durable nonce account creation request.
     SolanaNonceAccountCreate { create: SolanaNonceAccountCreate },
+    /// Railgun shield: move public ERC-20 funds into the shielded pool.
+    ///
+    /// Recipient is a Railgun shielded address; defaults to the caller's own
+    /// address when shielding to self. Outer EVM signing of the resulting
+    /// `shield()` contract call still flows through [`AgentAction::BroadcastTx`];
+    /// this variant exists for policy authorization only.
+    Shield {
+        /// EVM network chain ID.
+        chain_id: u64,
+        /// ERC-20 token contract address being shielded.
+        token: EvmAddress,
+        /// Destination Railgun shielded address.
+        to_railgun_address: RailgunAddress,
+        /// Shielded amount in wei.
+        #[serde(with = "u128_as_decimal_string")]
+        amount_wei: u128,
+    },
+    /// Railgun unshield: move shielded ERC-20 funds back to a public address.
+    ///
+    /// Set `via_broadcaster` to route the outer EVM tx through a Waku
+    /// broadcaster (hides the gas-payer identity). Self-broadcast paths still
+    /// require [`AgentAction::BroadcastTx`] for the outer signature.
+    Unshield {
+        /// EVM network chain ID.
+        chain_id: u64,
+        /// ERC-20 token contract address being unshielded.
+        token: EvmAddress,
+        /// Public recipient address receiving the unshielded funds.
+        to: EvmAddress,
+        /// Unshielded amount in wei.
+        #[serde(with = "u128_as_decimal_string")]
+        amount_wei: u128,
+        /// Whether the outer tx is relayed through a Waku broadcaster.
+        via_broadcaster: bool,
+    },
+    /// Railgun private transfer: shielded-to-shielded movement.
+    ///
+    /// Defaults to broadcaster relay since self-broadcast leaks the gas
+    /// payer's link to the sender. Recipient is a Railgun shielded address.
+    PrivateTransfer {
+        /// EVM network chain ID.
+        chain_id: u64,
+        /// ERC-20 token contract address being transferred.
+        token: EvmAddress,
+        /// Destination Railgun shielded address.
+        to_railgun_address: RailgunAddress,
+        /// Transfer amount in wei.
+        #[serde(with = "u128_as_decimal_string")]
+        amount_wei: u128,
+        /// Whether the outer tx is relayed through a Waku broadcaster.
+        via_broadcaster: bool,
+    },
 }
 
 impl AgentAction {
@@ -915,12 +1342,17 @@ impl AgentAction {
             Self::TempoSessionTopUpTransaction { authorization } => {
                 authorization.additional_deposit_wei
             }
-            Self::TempoSessionVoucher { authorization } => authorization.amount_wei,
+            // Vouchers are evaluated statelessly on the full cumulative amount; see
+            // `is_escrow_redistribution` for how window limits treat them.
+            Self::TempoSessionVoucher { authorization } => authorization.cumulative_amount_wei,
             Self::Eip712TypedData { .. } => 0,
             Self::BroadcastTx { tx } => self.broadcast_effective_amount_wei(tx),
             Self::SolanaSolTransfer { transfer } => transfer.amount_wei,
             Self::SolanaSplTransfer { transfer } => transfer.amount_wei,
             Self::SolanaNonceAccountCreate { create } => create.rent_lamports,
+            Self::Shield { amount_wei, .. }
+            | Self::Unshield { amount_wei, .. }
+            | Self::PrivateTransfer { amount_wei, .. } => *amount_wei,
         }
     }
 
@@ -942,6 +1374,9 @@ impl AgentAction {
             Self::SolanaSolTransfer { transfer } => canonical_policy_chain_id(transfer.chain_id),
             Self::SolanaSplTransfer { transfer } => canonical_policy_chain_id(transfer.chain_id),
             Self::SolanaNonceAccountCreate { create } => canonical_policy_chain_id(create.chain_id),
+            Self::Shield { chain_id, .. }
+            | Self::Unshield { chain_id, .. }
+            | Self::PrivateTransfer { chain_id, .. } => *chain_id,
         }
     }
 
@@ -972,6 +1407,9 @@ impl AgentAction {
             Self::SolanaSolTransfer { .. } => AssetId::NativeSol,
             Self::SolanaSplTransfer { transfer } => AssetId::SplToken(transfer.mint.clone()),
             Self::SolanaNonceAccountCreate { .. } => AssetId::NativeSol,
+            Self::Shield { token, .. }
+            | Self::Unshield { token, .. }
+            | Self::PrivateTransfer { token, .. } => AssetId::Erc20(token.clone()),
         }
     }
 
@@ -1012,6 +1450,13 @@ impl AgentAction {
             Self::SolanaNonceAccountCreate { create } => {
                 RecipientId::Solana(create.nonce_account.clone())
             }
+            Self::Shield {
+                to_railgun_address, ..
+            } => RecipientId::Railgun(to_railgun_address.clone()),
+            Self::Unshield { to, .. } => RecipientId::Evm(to.clone()),
+            Self::PrivateTransfer {
+                to_railgun_address, ..
+            } => RecipientId::Railgun(to_railgun_address.clone()),
         }
     }
 
@@ -1073,12 +1518,56 @@ impl AgentAction {
         }
     }
 
+    /// Returns the [`ActionKind`] discriminator recorded on the resulting
+    /// [`SpendEvent`]. Only Railgun variants surface as anything other than
+    /// [`ActionKind::Other`]; the existing transfer policies are unaffected.
+    #[must_use]
+    pub fn action_kind(&self) -> ActionKind {
+        match self {
+            Self::Shield { .. } => ActionKind::Shield,
+            Self::Unshield { .. } => ActionKind::Unshield,
+            Self::PrivateTransfer { .. } => ActionKind::PrivateTransfer,
+            _ => ActionKind::Other,
+        }
+    }
+
     #[must_use]
     pub fn records_spend_event(&self) -> bool {
         !matches!(
             self,
             Self::Eip712TypedData { .. } | Self::SolanaNonceAccountCreate { .. }
-        )
+        ) && !self.is_escrow_redistribution()
+    }
+
+    /// Returns the channel payer for Tempo session actions. The daemon requires
+    /// it to equal the signing wallet so a channel cannot be opened, topped up,
+    /// or vouched for on behalf of another account.
+    #[must_use]
+    pub fn tempo_payer(&self) -> Option<&EvmAddress> {
+        match self {
+            Self::TempoSessionOpenTransaction { authorization } => Some(&authorization.payer),
+            Self::TempoSessionTopUpTransaction { authorization } => Some(&authorization.payer),
+            Self::TempoSessionVoucher { authorization } => Some(&authorization.payer),
+            _ => None,
+        }
+    }
+
+    /// Returns whether the action only redistributes funds already locked in an
+    /// escrow by an earlier policy-checked action.
+    ///
+    /// Tempo session vouchers authorize the payee to claim from a channel whose
+    /// deposit was already charged against spending windows when the open or
+    /// top-up transaction was signed. Vouchers therefore skip daily/weekly
+    /// spending and tx-count windows and record no spend event, while per-tx
+    /// caps and manual approval still evaluate the full cumulative amount.
+    ///
+    /// Policy evaluation itself is stateless. The daemon keeps a per-channel
+    /// registry and only accepts vouchers (and top-ups) for channels it opened
+    /// for the same agent key, with the cumulative voucher amount capped at the
+    /// total that agent deposited into the channel.
+    #[must_use]
+    pub fn is_escrow_redistribution(&self) -> bool {
+        matches!(self, Self::TempoSessionVoucher { .. })
     }
 
     #[must_use]

@@ -1,0 +1,401 @@
+{
+  "schemaVersion": 1,
+  "generatedBy": "@worldlibertyfinancial/railgun-vector-generator",
+  "engineVersion": "9.5.4",
+  "mnemonic": {
+    "mnemonic": "test test test test test test test test test test test junk",
+    "password": "",
+    "seedHex": "9dfc3c64c2f8bede1533b6a79f8570e5943e0b8fd1cf77107adf7b72cef42185d564a3aee24cab43f80e3c4538087d70fc824eabbad596a23c97b6ee8322ccc0"
+  },
+  "wallets": [
+    {
+      "index": 0,
+      "spending": {
+        "derivationPath": "m/44'/1984'/0'/0'/0'",
+        "chainKeyHex": "b0958f8bc286ae0832fa83b01b719a225a07ce7b861ff311323f221667b3bd50",
+        "chainCodeHex": "10febc03dfd5e176665edf0c0ced5c4e581dc513885debeb0a9da02dae12f00f",
+        "privateKeyHex": "b0958f8bc286ae0832fa83b01b719a225a07ce7b861ff311323f221667b3bd50",
+        "publicKey": {
+          "xHex": "22ad4dc014b6e9373771c977a44060b329fd4a585cd1047d67fe5309d3e89e10",
+          "yHex": "1a430ec8dc1450fd29a1aedf4760f7c6aa348a2199360a70eadde078593cad04"
+        }
+      },
+      "viewing": {
+        "derivationPath": "m/420'/1984'/0'/0'/0'",
+        "chainKeyHex": "9da4b4f0b5493a6ba3f7df0611c3e0842f7e2bb3d640f313b235f1b75c1d80b9",
+        "chainCodeHex": "33adaca13178a929cb3cb59d9e7dc0f92f6d1853566db886ff4a50c1557f1fcc",
+        "privateKeyHex": "9da4b4f0b5493a6ba3f7df0611c3e0842f7e2bb3d640f313b235f1b75c1d80b9",
+        "publicKeyHex": "77d7aa7c5b978060be2ba78cbc0ef92a4f3aa3fc29803eaf47847cf510b986ea"
+      },
+      "nullifyingKeyHex": "12804a19eb4b9bf67d2bafbd0ec05f0bfa071a2344c1688553ef5c4be6f44178",
+      "masterPublicKeyHex": "2c59cd4733f911ba740da68fb7ba3b873f21daece4e3a105aef12d6414e54ebf",
+      "address": "0zk1qyk9nn28x0u3rwn5pknglda68wrn7gw6anjw8gg94mcj6eq5u48tlrv7j6fe3z53lama02nutwtcqc979wnce0qwly4y7w4rls5cq040g7z8eagshxrw5ajy990",
+      "nullifiers": [
+        {
+          "leafIndex": "0",
+          "nullifierHex": "05802951a46d9e999151eb0eb9e4c7c1260b7ee88539011c207dc169c4dd17ee"
+        },
+        {
+          "leafIndex": "1",
+          "nullifierHex": "198076084b723707b10920e9135483daa4379ac3e72390fcf47bab35d138f54e"
+        },
+        {
+          "leafIndex": "7",
+          "nullifierHex": "2cb98bebfaa3e87190f9d9c97fcc6f4023599b1efee8dece67f28d537bd9d755"
+        },
+        {
+          "leafIndex": "42",
+          "nullifierHex": "0b325a13591a18b9963d00b8278692cb6600115f44510dc16a3052e36dcd389e"
+        },
+        {
+          "leafIndex": "1000000",
+          "nullifierHex": "18b7d9806dc082d6f0b5f385e1ab2d7143c3bbe348b405c83901ca1ab643074d"
+        }
+      ],
+      "eddsaSignatures": [
+        {
+          "messageScalarHex": "0000000000000000000000000000000000000000000000000000000000000000",
+          "messageHashHex": "2a09a9fd93c590c26b91effbb2499f07e8f7aa12e2b4940a3aed2411cb65e11c",
+          "signature": {
+            "r8XHex": "163ffd4a8ee6c3239fb6b46c9e86d6f74b06bf94a28adb0d9bb2201efda888a9",
+            "r8YHex": "25d57e33a8b77e854dda96267faddaaca2f6819baf72820466d04edaae8a497c",
+            "sHex": "03a175ea51431b4df12e6db9aed1180abb8801164cffa47150f0ab59dcc79bea"
+          },
+          "verified": true
+        },
+        {
+          "messageScalarHex": "0000000000000000000000000000000000000000000000000000000000000001",
+          "messageHashHex": "29176100eaa962bdc1fe6c654d6a3c130e96a4d1168b33848b897dc502820133",
+          "signature": {
+            "r8XHex": "08a5fa0b2f94e955b6ab9aa58e1ba32f56f175dd4efdb1c7c420efcfe047ddff",
+            "r8YHex": "1feec68e3151410def942c43e5129c3f8fea3d26c3b4ea0dc2f6aa99edb5a2f6",
+            "sHex": "0420bf56d73c82df42793fa2146086a6e45ae8024ec38935ebf0c90087f6e6eb"
+          },
+          "verified": true
+        },
+        {
+          "messageScalarHex": "000000000000000000000000000000001234567890abcdef1234567890abcdef",
+          "messageHashHex": "1d3e0eff5c650d7fd3e04ea956bbb3765e134e491a33a53089b88a9387a2d5e7",
+          "signature": {
+            "r8XHex": "229c0d635d4233e7ca5200ff702d3e8ed41ecdce18b189f7d78328c91e911077",
+            "r8YHex": "1bdc74611e4b8c8efd7956fc7646e180a46d3ad23f85b7449b2a436aa1da8755",
+            "sHex": "01aa755ae8dd4cd62237a15022def74afb5e96a538f345ea2a944bcf2ee95f31"
+          },
+          "verified": true
+        }
+      ]
+    },
+    {
+      "index": 1,
+      "spending": {
+        "derivationPath": "m/44'/1984'/0'/0'/1'",
+        "chainKeyHex": "b54486f7304ca8618bce1ba764b24473592c967fef9ee425b1dafcb1504fe210",
+        "chainCodeHex": "758b276a6a55c3997cd247239a6dbc5972c076d2e884c1013d27996ea84af423",
+        "privateKeyHex": "b54486f7304ca8618bce1ba764b24473592c967fef9ee425b1dafcb1504fe210",
+        "publicKey": {
+          "xHex": "0f95a3ff1c8c1549ff867be5778c4cff26c4b18f42285f00b9a859602899158a",
+          "yHex": "27224cd60fed924e9ba1eed6b605d210d14353be1ef2c448b5302c72f9d4627f"
+        }
+      },
+      "viewing": {
+        "derivationPath": "m/420'/1984'/0'/0'/1'",
+        "chainKeyHex": "9960238a86a7ecff390b7f37f680e7468fa0c41ee3704fcc68f0be82d19be4b2",
+        "chainCodeHex": "e888c35a47f63d8f70cc7208bb0af6fcd77f86392b96942b4cb53d0fb4c700ea",
+        "privateKeyHex": "9960238a86a7ecff390b7f37f680e7468fa0c41ee3704fcc68f0be82d19be4b2",
+        "publicKeyHex": "45f25fda60af06969b609b94203e90bbeb54ccb7cca7c1060862dc2f5f7395ea"
+      },
+      "nullifyingKeyHex": "09748607b56623bb09d7bd240e2dab896e362701f2926815db35a3f94652fb4b",
+      "masterPublicKeyHex": "22c3d1870a9f3bddf34492262f9a1ce280133fb2751f346aab32df97149bcd91",
+      "address": "0zk1qy3v85v8p20nhh0ngjfzvtu6rn3gqyelkf637dr24vedl9c5n0xerrv7j6fe3z53lazlyh76vzhsd95mvzdeggp7jza7k4xvklx20sgxpp3dct6lww27572l9cd",
+      "nullifiers": [
+        {
+          "leafIndex": "0",
+          "nullifierHex": "128c0c68ed5fe599cb4e2e070dda229f8eaea1942201bcf1945256ba33dae2f5"
+        },
+        {
+          "leafIndex": "1",
+          "nullifierHex": "1d0b6b924d7664e6b8055dbd62e061f285aa3f1170826fda03bad9f7214c294c"
+        },
+        {
+          "leafIndex": "7",
+          "nullifierHex": "0c124473833923b72535f7ba172668ffdba606e653263f6dd8ca11f31d3dc5eb"
+        },
+        {
+          "leafIndex": "42",
+          "nullifierHex": "190195f3b2dc18c328ec18b9f99be53f02570d6595b941b34a4f6b30c89570a6"
+        },
+        {
+          "leafIndex": "1000000",
+          "nullifierHex": "25f3e5b4660495c02d6e28aed4be6e3e42709edd6cac659b1cee3f5ee0c00375"
+        }
+      ],
+      "eddsaSignatures": [
+        {
+          "messageScalarHex": "0000000000000000000000000000000000000000000000000000000000000000",
+          "messageHashHex": "2a09a9fd93c590c26b91effbb2499f07e8f7aa12e2b4940a3aed2411cb65e11c",
+          "signature": {
+            "r8XHex": "2eff6a725089ac1d252bc1f6df2188905855a23f85015d67e9d5b055dc9a140c",
+            "r8YHex": "0c95109fbbf55f4fc36dcb69111d500620c3346e0478a0192ce9680661868705",
+            "sHex": "0471719acad1f5891044b7616658b42d2d32b0b3cc7f59583783f3f40cb600ca"
+          },
+          "verified": true
+        },
+        {
+          "messageScalarHex": "0000000000000000000000000000000000000000000000000000000000000001",
+          "messageHashHex": "29176100eaa962bdc1fe6c654d6a3c130e96a4d1168b33848b897dc502820133",
+          "signature": {
+            "r8XHex": "1eff0df6161e6e7ab4e52da5b4bfb40203f173c714d4f2ad67cd50d02e36b757",
+            "r8YHex": "18d40f353de717edc758c9494b39a4c1c109a5dc34b9b0dcd08ac8bc815c78f9",
+            "sHex": "03b1af328ee3baf9c8e50f11ee112ab78380fa22db947663a8c30303521bbf4a"
+          },
+          "verified": true
+        },
+        {
+          "messageScalarHex": "000000000000000000000000000000001234567890abcdef1234567890abcdef",
+          "messageHashHex": "1d3e0eff5c650d7fd3e04ea956bbb3765e134e491a33a53089b88a9387a2d5e7",
+          "signature": {
+            "r8XHex": "2df4152bceb55f51da6ebf415e66236c93595b9ae49fc364d87d52665784c439",
+            "r8YHex": "1f0c1ddecf54cf0406a9ebe297b79c2f425215704b08dab88f3a3b68f1c7c9a4",
+            "sHex": "033fd1619ec852233d08aab3d50bc5023cbf436fe05da4d418d4fe4739c04a76"
+          },
+          "verified": true
+        }
+      ]
+    },
+    {
+      "index": 7,
+      "spending": {
+        "derivationPath": "m/44'/1984'/0'/0'/7'",
+        "chainKeyHex": "cb6c9aadeabd9bd0349a879b42f8d497ffae6799ac60c7b6672fe0f1ecc79c1f",
+        "chainCodeHex": "9c29ba1724de58732f9d5de5e9e1df42b47ae5145d6d5d089762556cc1ea7c0b",
+        "privateKeyHex": "cb6c9aadeabd9bd0349a879b42f8d497ffae6799ac60c7b6672fe0f1ecc79c1f",
+        "publicKey": {
+          "xHex": "301cf12937a6fe3b60c77bcf308f9e21b6d46b61744ec48a4c090483342ac6cd",
+          "yHex": "13c564760c178b724acb0bc812096af52cc44983880f790ca51235d150aa9155"
+        }
+      },
+      "viewing": {
+        "derivationPath": "m/420'/1984'/0'/0'/7'",
+        "chainKeyHex": "8affcee3e5ca1cba223ba8198bd1c7656e2d0c80f2f33a2061105d6a7cf1f253",
+        "chainCodeHex": "a3d521fbfa5e96c7451156af40c904a7a1a1761d219fa4bde32cbc3078229d3a",
+        "privateKeyHex": "8affcee3e5ca1cba223ba8198bd1c7656e2d0c80f2f33a2061105d6a7cf1f253",
+        "publicKeyHex": "f1bf2028f8ae0465e9fedf07385207bd7b5540f32a9c8179001e5ae49153df2b"
+      },
+      "nullifyingKeyHex": "1d6e7d818cd22e29d767620f21a9db0a34a97c9010575271cba0b1e5230ed9dc",
+      "masterPublicKeyHex": "25f32e6142f3c7109fd19e2264ab43933705342442871fc23b2e28c7de44f15d",
+      "address": "0zk1qyjlxtnpgteuwyyl6x0zye9tgwfnwpf5y3pgw87z8vhz3377gnc4mrv7j6fe3z53llcm7gpglzhqge0flm0swwzjq77hk42q7v4feqteqq094ey3200jk5zxt8k",
+      "nullifiers": [
+        {
+          "leafIndex": "0",
+          "nullifierHex": "2ac2681b74db3698c094bd3c2cfc8d8d3d95fccda7f977d6c60578586c72a798"
+        },
+        {
+          "leafIndex": "1",
+          "nullifierHex": "1fe2cd8fe8cf253d209d4111ed50d56f076675fb6576a5c63433c707f73075c6"
+        },
+        {
+          "leafIndex": "7",
+          "nullifierHex": "194e962c8ef613730040dd5878f73f6be26e2eecf2cd1981576f75214c3c123d"
+        },
+        {
+          "leafIndex": "42",
+          "nullifierHex": "0a6befc60a3393598125022e463ff3fa3561b22f8b62fe38d963ad2924643cba"
+        },
+        {
+          "leafIndex": "1000000",
+          "nullifierHex": "0761976b49414e1e3efbff7c99ef28bdf4e5b4f32bce58732650ea314bc0fc0d"
+        }
+      ],
+      "eddsaSignatures": [
+        {
+          "messageScalarHex": "0000000000000000000000000000000000000000000000000000000000000000",
+          "messageHashHex": "2a09a9fd93c590c26b91effbb2499f07e8f7aa12e2b4940a3aed2411cb65e11c",
+          "signature": {
+            "r8XHex": "1b141025efa227b4f6368a47517554521939995ff387be101343009804c33c44",
+            "r8YHex": "139d7fad8413818d12134f5db7b6ca630d6403dfa3a3bf3bebebbe7fc91fe7ad",
+            "sHex": "053ac45469b61f2ebabb2573da14dd17f8e385b3282927f5530ab2e6776a387a"
+          },
+          "verified": true
+        },
+        {
+          "messageScalarHex": "0000000000000000000000000000000000000000000000000000000000000001",
+          "messageHashHex": "29176100eaa962bdc1fe6c654d6a3c130e96a4d1168b33848b897dc502820133",
+          "signature": {
+            "r8XHex": "28b942c7a27726d8ac7f3ef81a2bbe69293e9603f7dc635abc9e0fbfa68053fc",
+            "r8YHex": "04ce0205394040cfd676b4ab72597729d6092d3ac90ed163ed30c0e0b8fcda95",
+            "sHex": "05a7cc40d95f0af366bf7a9e4fdbe58351cee0873df44fb92c8771d78a8e654b"
+          },
+          "verified": true
+        },
+        {
+          "messageScalarHex": "000000000000000000000000000000001234567890abcdef1234567890abcdef",
+          "messageHashHex": "1d3e0eff5c650d7fd3e04ea956bbb3765e134e491a33a53089b88a9387a2d5e7",
+          "signature": {
+            "r8XHex": "1f0355bda738bcd2b988ac6e0f051157db607967517b7815f2113fd60be861f3",
+            "r8YHex": "231e60e5ac378404f1ec10c44514bee5ac98e80ad5fd8cb68be7dde4f13692ed",
+            "sHex": "037e8b19d6729538dda4a27fdbac53edd8b95ba7a2346a6ba1221fdb7935dfed"
+          },
+          "verified": true
+        }
+      ]
+    },
+    {
+      "index": 1024,
+      "spending": {
+        "derivationPath": "m/44'/1984'/0'/0'/1024'",
+        "chainKeyHex": "2c293b61d55ecc68fef6b00c0ccc5c33190a2d4c0a3852b28bddad6e5962b7fb",
+        "chainCodeHex": "952359d633dfe912537f10afac9f1dacdf21cf63e93af06ce08eb660ab64b30b",
+        "privateKeyHex": "2c293b61d55ecc68fef6b00c0ccc5c33190a2d4c0a3852b28bddad6e5962b7fb",
+        "publicKey": {
+          "xHex": "235ee68e92f9b2a6e8a522d26f0460f1f1232630f30393ae735bf5f4e8d8c80c",
+          "yHex": "01debb72513f54be2bdde808938f860d1552711b6002a7c219a64c36fb2b2e72"
+        }
+      },
+      "viewing": {
+        "derivationPath": "m/420'/1984'/0'/0'/1024'",
+        "chainKeyHex": "6f4dd7b49058b19ce31f44c8d9107cd8bc5505b5068e6e3617094f9a2e3bd595",
+        "chainCodeHex": "330c5faef06bbb9e4b1538dcfa989da0c12a9874a5c60bac9ba81f8ebd522b68",
+        "privateKeyHex": "6f4dd7b49058b19ce31f44c8d9107cd8bc5505b5068e6e3617094f9a2e3bd595",
+        "publicKeyHex": "c55268509de86947f9135241ff43d188f4f0ff9c09b9694f2727474ceccca96a"
+      },
+      "nullifyingKeyHex": "0114eb5bfc9bc54f64fce52f0c086154535774ef81de5c1c9468d76c9ca30bf3",
+      "masterPublicKeyHex": "0009db080f14b5a21891cbaf5be5186c04263c48fcf61167cf3894fe4cc9346e",
+      "address": "0zk1qyqqnkcgpu2ttgscj8967kl9rpkqgf3ufr70vyt8euuffljvey6xarv7j6fe3z53llz4y6zsnh5xj3lezdfyrl6r6xy0fu8lnsymj620yun5wn8vej5k5e476xt",
+      "nullifiers": [
+        {
+          "leafIndex": "0",
+          "nullifierHex": "298b6f174faca02886a649b37867d10e6d3f8b81edef2a4d9e9a7c96c07783db"
+        },
+        {
+          "leafIndex": "1",
+          "nullifierHex": "0207f06d53216a04d43d383a5d5ddef56e729fbb04489978b747b951ad8b0bc5"
+        },
+        {
+          "leafIndex": "7",
+          "nullifierHex": "1ffc1f7781c4aa5a4d2d8634507011a7d157015a6f7d87049d64aa4a8822fcc2"
+        },
+        {
+          "leafIndex": "42",
+          "nullifierHex": "1f38482399e4767118b05f3f81805f46652360bc63feff347bcd2421f99ae631"
+        },
+        {
+          "leafIndex": "1000000",
+          "nullifierHex": "25db098ff0ebc70a23dbfeb4f6a3292a869174b086c53e96e4b5cdc40ecf492f"
+        }
+      ],
+      "eddsaSignatures": [
+        {
+          "messageScalarHex": "0000000000000000000000000000000000000000000000000000000000000000",
+          "messageHashHex": "2a09a9fd93c590c26b91effbb2499f07e8f7aa12e2b4940a3aed2411cb65e11c",
+          "signature": {
+            "r8XHex": "03b6fa5ea1c8fe09d3df4b9043ed6e5c00ef9f5db72de076024352b7f334e1ab",
+            "r8YHex": "027588f1ed9379c6940801c8a000c1a3d32259fed8f5a62182db486e62d05a6f",
+            "sHex": "0195eebc57211a7f87c242dfb51db0174e6cade2a8939e11974400e34cc13fb7"
+          },
+          "verified": true
+        },
+        {
+          "messageScalarHex": "0000000000000000000000000000000000000000000000000000000000000001",
+          "messageHashHex": "29176100eaa962bdc1fe6c654d6a3c130e96a4d1168b33848b897dc502820133",
+          "signature": {
+            "r8XHex": "207c2a18bcc21e122a7f038e775993c89bf4a082763e90a40a4e4bbeb85e4b20",
+            "r8YHex": "259b0fcb9b01be7af0a3d3eb9685bfedea6712037d12804d92b8badea9162afa",
+            "sHex": "01b15a8f9e73b17ecd2459d6cf60fe5baf8f7c00c99f57b3d1aabb5318b6a4e7"
+          },
+          "verified": true
+        },
+        {
+          "messageScalarHex": "000000000000000000000000000000001234567890abcdef1234567890abcdef",
+          "messageHashHex": "1d3e0eff5c650d7fd3e04ea956bbb3765e134e491a33a53089b88a9387a2d5e7",
+          "signature": {
+            "r8XHex": "1676e5bab55fef15c9cc74a429debd9e02e853c9fceb606c0ec746f37b39aa19",
+            "r8YHex": "049bc5a1f84ebd1cb96067afe5799d6f08fe9f912bf4b96696b53bcbec1c38a9",
+            "sHex": "03398d056f0f372ba7c34bdadf50b83734706eb830063ce2c7bd87d55d8ee138"
+          },
+          "verified": true
+        }
+      ]
+    }
+  ],
+  "poseidonSamples": [
+    {
+      "description": "poseidon([1])",
+      "inputsHex": ["0000000000000000000000000000000000000000000000000000000000000001"],
+      "outputHex": "29176100eaa962bdc1fe6c654d6a3c130e96a4d1168b33848b897dc502820133"
+    },
+    {
+      "description": "poseidon([1, 2])",
+      "inputsHex": [
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        "0000000000000000000000000000000000000000000000000000000000000002"
+      ],
+      "outputHex": "115cc0f5e7d690413df64c6b9662e9cf2a3617f2743245519e19607a4417189a"
+    },
+    {
+      "description": "poseidon([1, 2, 3])",
+      "inputsHex": [
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        "0000000000000000000000000000000000000000000000000000000000000002",
+        "0000000000000000000000000000000000000000000000000000000000000003"
+      ],
+      "outputHex": "0e7732d89e6939c0ff03d5e58dab6302f3230e269dc5b968f725df34ab36d732"
+    },
+    {
+      "description": "poseidon([0xdeadbeef, 0xcafebabe])",
+      "inputsHex": [
+        "00000000000000000000000000000000000000000000000000000000deadbeef",
+        "00000000000000000000000000000000000000000000000000000000cafebabe"
+      ],
+      "outputHex": "26285926d12f45ce050a71a326b6320c949dc6906e2bbb37068a7dad56c2a6b7"
+    }
+  ],
+  "sharedKeySamples": [
+    {
+      "description": "getSharedSymmetricKey(senderPriv=0x01..01, receiverPub=getPublicViewingKey(0x02..02))",
+      "senderViewingPrivHex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "receiverViewingPrivHex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "receiverViewingPubHex": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+      "sharedKeyHex": "20c1d6c847ddb29f9a5517913df00337b3e3ae70bdd232166ba6ad5835cd9a57"
+    }
+  ],
+  "aesGcmSamples": [
+    {
+      "description": "AES-256-GCM, 16-byte IV, sharedKey=20c1d6c847ddb29f…",
+      "sharedKeyHex": "20c1d6c847ddb29f9a5517913df00337b3e3ae70bdd232166ba6ad5835cd9a57",
+      "ivHex": "abababababababababababababababab",
+      "plaintextChunksHex": [
+        "1111111111111111111111111111111111111111111111111111111111111111",
+        "2222222222222222222222222222222222222222222222222222222222222222",
+        "3333333333333333333333333333333333333333333333333333333333333333"
+      ],
+      "ciphertextChunksHex": [
+        "4dea1ec2b56e69feac89aef229de0924a41bf07015b40ba18576eff8d2971493",
+        "3764161cddd6bc4d916425c4f9d3f5a961d8b4a1dbb666d851a113d7632a3e7f",
+        "00d66d628f2770d83902e741694a06616db27d895b597cd60d0d43c535f3ccfc"
+      ],
+      "tagHex": "ac2f9cd27a95cbda19c805b80071c9e8"
+    }
+  ],
+  "noteEncryptionSamples": [
+    {
+      "description": "note round-trip: ECDH(senderPriv, receiverPub) → SHA-256 → AES-256-GCM",
+      "senderViewingPrivHex": "0101010101010101010101010101010101010101010101010101010101010101",
+      "senderEphemeralPubHex": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c",
+      "receiverViewingPrivHex": "0202020202020202020202020202020202020202020202020202020202020202",
+      "receiverViewingPubHex": "8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394",
+      "sharedKeyHex": "20c1d6c847ddb29f9a5517913df00337b3e3ae70bdd232166ba6ad5835cd9a57",
+      "ivHex": "abababababababababababababababab",
+      "tagHex": "ac2f9cd27a95cbda19c805b80071c9e8",
+      "plaintextChunksHex": [
+        "1111111111111111111111111111111111111111111111111111111111111111",
+        "2222222222222222222222222222222222222222222222222222222222222222",
+        "3333333333333333333333333333333333333333333333333333333333333333"
+      ],
+      "ciphertextChunksHex": [
+        "4dea1ec2b56e69feac89aef229de0924a41bf07015b40ba18576eff8d2971493",
+        "3764161cddd6bc4d916425c4f9d3f5a961d8b4a1dbb666d851a113d7632a3e7f",
+        "00d66d628f2770d83902e741694a06616db27d895b597cd60d0d43c535f3ccfc"
+      ]
+    }
+  ]
+}
