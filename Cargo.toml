@@ -51,7 +51,7 @@ core-foundation = "0.10"
 crossterm = "0.28"
 curve25519-dalek = { version = "4", features = ["digest"] }
 ed25519-dalek = { version = "3.0.0-pre.6", features = ["rand_core"] }
-generic-array = "0.14"
+generic-array = "1.4"
 ghash = "0.5"
 hex = "0.4"
 hkdf = "0.12"
