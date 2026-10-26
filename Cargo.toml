@@ -48,7 +48,7 @@ bs58 = "0.5"
 chacha20poly1305 = "0.10"
 clap = { version = "4.5", features = ["derive", "env"] }
 core-foundation = "0.10"
-crossterm = "0.28"
+crossterm = "0.29"
 curve25519-dalek = { version = "4", features = ["digest"] }
 ed25519-dalek = { version = "3.0.0-pre.6", features = ["rand_core"] }
 generic-array = "0.14"
