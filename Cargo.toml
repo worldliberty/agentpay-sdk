@@ -54,7 +54,7 @@ ed25519-dalek = { version = "3.0.0-pre.6", features = ["rand_core"] }
 generic-array = "0.14"
 ghash = "0.5"
 hex = "0.4"
-hkdf = "0.12"
+hkdf = "0.13"
 hmac = "0.12"
 k256 = { version = "0.13", features = ["ecdsa"] }
 libc = "0.2"
