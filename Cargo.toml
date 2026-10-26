@@ -41,7 +41,7 @@ async-trait = "0.1"
 base64 = "0.22"
 bech32 = "0.11"
 bincode = "1.3"
-bip39 = { version = "2", default-features = false, features = ["std"] }
+bip39 = { version = "3", default-features = false, features = ["std"] }
 blake512-hash = "0.1"
 block = "0.1"
 bs58 = "0.5"
