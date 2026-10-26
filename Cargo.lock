@@ -229,6 +229,7 @@ dependencies = [
  "const-hex",
  "derive_more",
  "foldhash 0.2.0",
+ "hashbrown 0.16.1",
  "indexmap",
  "itoa",
  "k256",
@@ -360,7 +361,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -371,7 +372,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1605,7 +1606,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1861,6 +1862,9 @@ name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
+dependencies = [
+ "foldhash 0.2.0",
+]
 
 [[package]]
 name = "heck"
@@ -3173,7 +3177,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4950,7 +4954,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5347,7 +5351,7 @@ checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
 name = "vault-daemon"
 version = "0.5.1"
 dependencies = [
- "alloy-primitives 0.8.26",
+ "alloy-primitives 1.5.7",
  "argon2",
  "async-trait",
  "base64",
@@ -5383,7 +5387,7 @@ name = "vault-domain"
 version = "0.5.1"
 dependencies = [
  "alloy-dyn-abi",
- "alloy-primitives 0.8.26",
+ "alloy-primitives 1.5.7",
  "alloy-sol-types",
  "bs58",
  "hex",
@@ -5400,7 +5404,7 @@ dependencies = [
 name = "vault-policy"
 version = "0.5.1"
 dependencies = [
- "alloy-primitives 0.8.26",
+ "alloy-primitives 1.5.7",
  "alloy-sol-types",
  "serde",
  "thiserror 2.0.18",
