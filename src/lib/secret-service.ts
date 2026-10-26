@@ -67,10 +67,15 @@ function defaultSecretToolRunner(command: SecretToolCommandInvocation): string {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
-  if (result.error) {
+  const exitCode = result.status ?? signalExitCode(result.signal);
+  // `secret-tool store` reads the secret from stdin, so a `secret-tool` that fails before reading
+  // all of it breaks the pipe. Report its exit status and output instead of the EPIPE; an EPIPE
+  // after a zero exit still throws, because the secret may never have been read.
+  const failedBeforeReadingInput =
+    (result.error as NodeJS.ErrnoException | undefined)?.code === 'EPIPE' && exitCode !== 0;
+  if (result.error && !failedBeforeReadingInput) {
     throw result.error;
   }
-  const exitCode = result.status ?? signalExitCode(result.signal);
   if (exitCode !== 0) {
     const error = new Error(
       result.stderr.trim() ||

@@ -46,10 +46,15 @@ function defaultSecurityRunner(command: SecurityCommandInvocation): string {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
-  if (result.error) {
+  const exitCode = result.status ?? signalExitCode(result.signal);
+  // `security -i` reads its command from stdin, so a `security` that fails before reading all of
+  // it breaks the pipe. Report its exit status and output instead of the EPIPE; an EPIPE after a
+  // zero exit still throws, because the command may never have been read.
+  const failedBeforeReadingInput =
+    (result.error as NodeJS.ErrnoException | undefined)?.code === 'EPIPE' && exitCode !== 0;
+  if (result.error && !failedBeforeReadingInput) {
     throw result.error;
   }
-  const exitCode = result.status ?? signalExitCode(result.signal);
   if (exitCode !== 0) {
     // `security -i` reads its command from stdin; name that subcommand (never its arguments,
     // which can carry the hex-encoded secret) instead of the generic `-i` flag.
