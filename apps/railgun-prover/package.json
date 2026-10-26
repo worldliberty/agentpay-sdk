@@ -1,0 +1,23 @@
+{
+  "name": "@worldlibertyfinancial/agent-railgun-prover",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf .turbo node_modules dist coverage junit",
+    "lint": "biome check .",
+    "lint:fix": "biome check --write .",
+    "test:unit": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm run typecheck"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsup": "^8.5.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.4"
+  }
+}

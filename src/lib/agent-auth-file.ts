@@ -10,6 +10,7 @@ import {
 import { assertValidAgentKeyId } from './keychain.js';
 
 const AGENT_AUTH_DIRECTORY_NAME = 'agent-auth';
+const AGENT_AUTH_RECOVERY_FILE_SUFFIX = '.recovery.json';
 const PRIVATE_DIR_MODE = 0o700;
 const PRIVATE_FILE_MODE = 0o600;
 const MAX_AGENT_AUTH_FILE_BYTES = 16 * 1024;
@@ -57,15 +58,15 @@ export function resolveAgentAuthTokenFilePath(agentKeyId: string): string {
   );
 }
 
-export function storeAgentAuthTokenInFile(agentKeyId: string, token: string): string {
-  const normalizedAgentKeyId = assertValidAgentKeyId(agentKeyId);
-  const normalizedToken = assertValidAgentAuthToken(token, 'agentAuthToken');
-  const directoryPath = ensureAgentAuthTokenDirectory();
-  const targetPath = path.join(directoryPath, `${normalizedAgentKeyId}.token`);
+/**
+ * Write a 0600 file atomically: the payload lands in a fresh `wx` temp file next to the target and
+ * is renamed into place, so a crash never leaves a partially written secret behind.
+ */
+function writePrivateFileAtomically(targetPath: string, contents: string, label: string): string {
   const tempPath = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
 
   try {
-    fs.writeFileSync(tempPath, normalizedToken, {
+    fs.writeFileSync(tempPath, contents, {
       encoding: 'utf8',
       mode: PRIVATE_FILE_MODE,
       flag: 'wx',
@@ -73,12 +74,48 @@ export function storeAgentAuthTokenInFile(agentKeyId: string, token: string): st
     tightenPermissions(tempPath, PRIVATE_FILE_MODE);
     fs.renameSync(tempPath, targetPath);
     tightenPermissions(targetPath, PRIVATE_FILE_MODE);
-    assertTrustedPrivateFilePath(targetPath, 'agent auth token file');
+    assertTrustedPrivateFilePath(targetPath, label);
     return targetPath;
   } catch (error) {
     fs.rmSync(tempPath, { force: true });
     throw error;
   }
+}
+
+export function storeAgentAuthTokenInFile(agentKeyId: string, token: string): string {
+  const normalizedAgentKeyId = assertValidAgentKeyId(agentKeyId);
+  const normalizedToken = assertValidAgentAuthToken(token, 'agentAuthToken');
+  const directoryPath = ensureAgentAuthTokenDirectory();
+  const targetPath = path.join(directoryPath, `${normalizedAgentKeyId}.token`);
+  return writePrivateFileAtomically(targetPath, normalizedToken, 'agent auth token file');
+}
+
+export function resolveAgentAuthRecoveryFilePath(agentKeyId: string): string {
+  return path.join(
+    resolveAgentAuthTokenFileDirectory(),
+    `${assertValidAgentKeyId(agentKeyId)}${AGENT_AUTH_RECOVERY_FILE_SUFFIX}`,
+  );
+}
+
+/**
+ * Persist a freshly rotated token that could not be stored in the credential backend, in the
+ * bootstrap-credentials JSON shape that `agentpay config agent-auth import` consumes.
+ */
+export function writeAgentAuthRecoveryFile(
+  agentKeyId: string,
+  payload: Record<string, unknown>,
+): string {
+  const normalizedAgentKeyId = assertValidAgentKeyId(agentKeyId);
+  const directoryPath = ensureAgentAuthTokenDirectory();
+  const targetPath = path.join(
+    directoryPath,
+    `${normalizedAgentKeyId}${AGENT_AUTH_RECOVERY_FILE_SUFFIX}`,
+  );
+  return writePrivateFileAtomically(
+    targetPath,
+    `${JSON.stringify(payload, null, 2)}\n`,
+    'agent auth recovery file',
+  );
 }
 
 export function readAgentAuthTokenFromFile(agentKeyId: string): string | null {

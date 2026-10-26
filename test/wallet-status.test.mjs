@@ -1234,3 +1234,52 @@ test('getWalletStatus captures legacy keychain comparison errors and formatWalle
   );
   assert.match(keychainError, /agent auth token: macOS Keychain check failed: exec failed/);
 });
+
+test('getWalletStatus warns when a temporary wallet import key file was left behind', async () => {
+  const walletStatus = await loadWalletStatusModule(`${Date.now()}-leftover-import-key`);
+  const binaryPaths = {
+    'agentpay-daemon': '/trusted/bin/agentpay-daemon',
+    'agentpay-admin': '/trusted/bin/agentpay-admin',
+    'agentpay-agent': '/trusted/bin/agentpay-agent',
+  };
+
+  const result = walletStatus.getWalletStatus({
+    platform: 'darwin',
+    readConfig: () => ({
+      agentKeyId: TEST_AGENT_KEY_ID,
+      daemonSocket: '/trusted/run/daemon.sock',
+      stateFile: '/trusted/run/daemon-state.enc',
+      rustBinDir: '/trusted/bin',
+      chains: {},
+    }),
+    hasAgentAuthToken: (agentKeyId) => agentKeyId === TEST_AGENT_KEY_ID,
+    readAgentAuthToken: () => null,
+    assertTrustedDaemonSocketPath: (targetPath) => targetPath,
+    assertTrustedStateFilePath: (targetPath) => targetPath,
+    resolveRustBinaryPath: (binaryName) => binaryPaths[binaryName],
+    existsSync: () => true,
+    assertTrustedExecutablePath: () => {},
+    listBootstrapFiles: () => [
+      {
+        path: '/trusted/home/wallet-import-key-4242-1700000000000.key',
+        kind: 'wallet-import-key',
+        status: 'plaintext',
+        agentKeyId: null,
+        leaseExpiresAt: null,
+        leaseExpired: false,
+        error: null,
+      },
+    ],
+  });
+
+  assert.equal(result.security.ready, false);
+  assert.ok(
+    result.security.warnings.includes(
+      "temporary wallet import key file '/trusted/home/wallet-import-key-4242-1700000000000.key' still contains a plaintext private key; run `agentpay repair` to delete it securely",
+    ),
+  );
+  assert.equal(
+    result.security.warnings.some((warning) => warning.includes('plaintext bootstrap secrets')),
+    false,
+  );
+});

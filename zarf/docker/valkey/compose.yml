@@ -3,14 +3,16 @@ services:
     image: valkey/valkey:8.1
     container_name: agentpay-valkey
     restart: unless-stopped
+    # Bind to loopback only: this is a local development cache, never expose it on the LAN.
     ports:
-      - '6379:6379'
+      - '127.0.0.1:6379:6379'
     volumes:
       - valkey_data:/data
       - ./valkey.conf:/etc/valkey/valkey.conf:ro
     command: ['valkey-server', '/etc/valkey/valkey.conf']
     healthcheck:
-      test: ['CMD', 'valkey-cli', 'ping']
+      # The password must match `requirepass` in valkey.conf (see README.md).
+      test: ['CMD', 'valkey-cli', '-a', 'agentpay-dev-only', '--no-auth-warning', 'ping']
       interval: 10s
       timeout: 3s
       retries: 5
@@ -21,9 +23,10 @@ services:
     container_name: agentpay-valkey-commander
     restart: unless-stopped
     ports:
-      - '8081:8081'
+      - '127.0.0.1:8081:8081'
     environment:
-      REDIS_HOSTS: local:valkey:6379
+      # label:host:port:db:password
+      REDIS_HOSTS: local:valkey:6379:0:agentpay-dev-only
     depends_on:
       valkey:
         condition: service_healthy

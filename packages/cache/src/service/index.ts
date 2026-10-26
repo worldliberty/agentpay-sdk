@@ -124,6 +124,11 @@ export interface SyncDaemonRegistrationInput {
   policies?: RelayPolicyRecord[];
 }
 
+export interface RekeyDaemonInput {
+  daemonId: string;
+  daemonPublicKey: string;
+}
+
 export interface ApprovalRequestFilters {
   daemonId?: string;
   destination?: string;
@@ -169,27 +174,59 @@ export interface RecordApprovalCapabilityFailureResult {
   blockedUntil: string | null;
 }
 
+export interface ApprovalCapabilityBlockState {
+  blocked: boolean;
+  blockedUntil: string | null;
+}
+
+/**
+ * Result of issuing a fresh secure approval link. The plaintext capability is
+ * returned exactly once to the caller; the cache persists only its SHA-256 hash.
+ */
+export interface RotatedApprovalCapability {
+  approval: RelayApprovalRequestRecord;
+  approvalCapability: string;
+}
+
+type CacheSetArgument = 'EX' | 'NX' | 'XX' | number;
+
 interface JsonCache {
   del(key: string): Promise<number>;
   get(key: string): Promise<string | null>;
   ping(): Promise<string>;
   quit(): Promise<string>;
   sadd(key: string, ...members: string[]): Promise<number>;
-  set(key: string, value: string, mode?: 'NX' | 'XX'): Promise<'OK' | null>;
+  set(key: string, value: string, ...args: CacheSetArgument[]): Promise<'OK' | null>;
   smembers(key: string): Promise<string[]>;
   zadd(key: string, ...args: (string | number)[]): Promise<number>;
   zrange(key: string, start: number, stop: number, ...args: string[]): Promise<string[]>;
   zrem(key: string, ...members: string[]): Promise<number>;
 }
 
+interface CacheSetOptions {
+  mode?: 'NX' | 'XX';
+  ttlSeconds?: number;
+}
+
 const defaultNamespace = 'agentpay:relay';
 const approvalCapabilityFailureWindowMs = 5 * 60 * 1000;
 const approvalCapabilityMaxFailures = 5;
 const approvalCapabilityBlockWindowMs = 10 * 60 * 1000;
+/** Ephemeral records (consumed capabilities, failure counters, finished updates) expire after 7 days. */
+export const ephemeralRecordTtlSeconds = 7 * 24 * 60 * 60;
+/** Upper bound on daemon update index entries inspected when the active-slot index misses. */
+export const activeApprovalUpdateScanLimit = 200;
+
+const terminalUpdateStatuses = new Set<RelayUpdateStatus>(['applied', 'failed', 'rejected']);
 
 const toIsoTimestamp = (value = new Date()): string => value.toISOString();
 
 const dedupe = <T>(values: T[]): T[] => [...new Set(values)];
+
+const sha256Hex = (value: string): string =>
+  createHash('sha256').update(value, 'utf8').digest('hex');
+
+const normalizeHexKey = (value: string): string => value.trim().toLowerCase();
 
 const matchesOptionalFilter = (
   value: string | undefined,
@@ -212,8 +249,7 @@ const clampLimit = (limit: number | undefined, fallback: number, max: number): n
 
 const createApprovalCapabilityToken = (): string => randomBytes(32).toString('hex');
 
-const approvalCapabilityHash = (token: string): string =>
-  createHash('sha256').update(token, 'utf8').digest('hex');
+const approvalCapabilityHash = (token: string): string => sha256Hex(token);
 
 const isActiveApprovalUpdateRecord = (
   record: RelayEncryptedUpdateRecord | null | undefined,
@@ -226,25 +262,37 @@ const isActiveApprovalUpdateRecord = (
       (record.status === 'pending' || record.status === 'inflight'),
   );
 
+/**
+ * The plaintext capability token must never be persisted; only its hash is
+ * stored so a cache read cannot mint a valid secure approval link.
+ */
+const sanitizeApprovalMetadata = (
+  metadata: Record<string, string> | undefined,
+): Record<string, string> | undefined => {
+  if (!metadata) {
+    return undefined;
+  }
+
+  const { approvalCapabilityToken: _token, ...rest } = metadata;
+  return Object.keys(rest).length > 0 ? rest : undefined;
+};
+
 const preserveRotatedApprovalCapability = (
   incoming: RelayApprovalRequestRecord,
   existing: RelayApprovalRequestRecord | null,
 ): RelayApprovalRequestRecord => {
-  const existingMetadata = existing?.metadata;
-  const incomingMetadata = incoming.metadata;
-  const preservedCapabilityToken = existingMetadata?.approvalCapabilityToken?.trim();
-  const preservedCapabilityHash = existingMetadata?.approvalCapabilityHash?.trim();
+  const incomingMetadata = sanitizeApprovalMetadata(incoming.metadata);
+  const preservedCapabilityHash = existing?.metadata?.approvalCapabilityHash?.trim();
 
-  if (!preservedCapabilityToken && !preservedCapabilityHash) {
-    return incoming;
+  if (!preservedCapabilityHash) {
+    return { ...incoming, metadata: incomingMetadata };
   }
 
   return {
     ...incoming,
     metadata: {
       ...(incomingMetadata ?? {}),
-      ...(preservedCapabilityToken ? { approvalCapabilityToken: preservedCapabilityToken } : {}),
-      ...(preservedCapabilityHash ? { approvalCapabilityHash: preservedCapabilityHash } : {}),
+      approvalCapabilityHash: preservedCapabilityHash,
     },
   };
 };
@@ -271,14 +319,29 @@ export class RelayCacheService {
     approvalRequestCount: number;
     policyCount: number;
   }> {
-    const profile = {
-      ...input.daemon,
-      lastSeenAt: input.daemon.lastSeenAt || toIsoTimestamp(),
-      updatedAt: input.daemon.updatedAt || toIsoTimestamp(),
-    } satisfies RelayDaemonProfile;
+    const profileKey = this.daemonProfileKey(input.daemon.daemonId);
 
     try {
-      await this.writeJson(this.daemonProfileKey(profile.daemonId), profile);
+      const existing = await this.readJson<RelayDaemonProfile>(profileKey);
+      const incomingPublicKey = normalizeHexKey(input.daemon.daemonPublicKey);
+      if (existing && normalizeHexKey(existing.daemonPublicKey) !== incomingPublicKey) {
+        throw new CacheError({
+          code: cacheErrorCodes.conflict,
+          key: profileKey,
+          message: `Daemon '${input.daemon.daemonId}' is already registered with a different public key; rotate it explicitly with rekeyDaemon`,
+          operation: 'syncDaemonRegistration',
+        });
+      }
+
+      const profile = {
+        ...input.daemon,
+        daemonPublicKey: existing ? normalizeHexKey(existing.daemonPublicKey) : incomingPublicKey,
+        lastSeenAt: input.daemon.lastSeenAt || toIsoTimestamp(),
+        registeredAt: existing?.registeredAt ?? input.daemon.registeredAt,
+        updatedAt: input.daemon.updatedAt || toIsoTimestamp(),
+      } satisfies RelayDaemonProfile;
+
+      await this.writeJson(profileKey, profile);
       await this.client.sadd(this.daemonIndexKey(), profile.daemonId);
 
       if (input.policies) {
@@ -303,12 +366,12 @@ export class RelayCacheService {
         const nextApprovalIds = new Set<string>();
 
         for (const approvalRequest of input.approvalRequests) {
-          const existing = await this.readJson<RelayApprovalRequestRecord>(
+          const existingApproval = await this.readJson<RelayApprovalRequestRecord>(
             this.approvalKey(approvalRequest.approvalRequestId),
           );
           const normalized = preserveRotatedApprovalCapability(
             { ...approvalRequest, daemonId: profile.daemonId },
-            existing,
+            existingApproval,
           );
           nextApprovalIds.add(normalized.approvalRequestId);
           await this.writeJson(this.approvalKey(normalized.approvalRequestId), normalized);
@@ -339,10 +402,36 @@ export class RelayCacheService {
       };
     } catch (error) {
       throw toCacheError(error, {
-        key: this.daemonProfileKey(profile.daemonId),
+        key: profileKey,
         operation: 'syncDaemonRegistration',
       });
     }
+  }
+
+  /**
+   * Explicitly replaces the pinned X25519 public key for a registered daemon.
+   * Regular registration refuses to change the key, so this is the only path
+   * that rotates it and it must stay behind admin authentication.
+   */
+  async rekeyDaemon(input: RekeyDaemonInput): Promise<RelayDaemonProfile> {
+    const key = this.daemonProfileKey(input.daemonId);
+    const existing = await this.readJson<RelayDaemonProfile>(key);
+    if (!existing) {
+      throw new CacheError({
+        code: cacheErrorCodes.notFound,
+        key,
+        message: `Unknown daemon '${input.daemonId}'`,
+        operation: 'rekeyDaemon',
+      });
+    }
+
+    const nextProfile: RelayDaemonProfile = {
+      ...existing,
+      daemonPublicKey: normalizeHexKey(input.daemonPublicKey),
+      updatedAt: toIsoTimestamp(),
+    };
+    await this.writeJson(key, nextProfile);
+    return nextProfile;
   }
 
   async listDaemons(): Promise<RelayDaemonProfile[]> {
@@ -464,12 +553,22 @@ export class RelayCacheService {
     const updateKey = this.updateKey(updateId);
     let ownsActiveApprovalSlot = false;
 
-    await this.writeJson(updateKey, record);
+    // Reserve the update id atomically so a duplicate id is rejected instead of
+    // overwriting (or, on the failure path below, deleting) an existing record.
+    const reservedUpdate = await this.writeJson(updateKey, record, { mode: 'NX' });
+    if (!reservedUpdate) {
+      throw new CacheError({
+        code: cacheErrorCodes.conflict,
+        key: updateKey,
+        message: `Update '${updateId}' already exists`,
+        operation: 'createEncryptedUpdate',
+      });
+    }
 
     try {
       if (activeApprovalKey) {
-        const reserved = await this.client.set(activeApprovalKey, updateId, 'NX');
-        if (reserved !== 'OK') {
+        const reserved = await this.setValue(activeApprovalKey, updateId, { mode: 'NX' });
+        if (!reserved) {
           const existingUpdateId = await this.client.get(activeApprovalKey);
           const existingRecord = existingUpdateId
             ? await this.readJson<RelayEncryptedUpdateRecord>(this.updateKey(existingUpdateId))
@@ -485,8 +584,10 @@ export class RelayCacheService {
           }
 
           await this.client.del(activeApprovalKey);
-          const retriedReservation = await this.client.set(activeApprovalKey, updateId, 'NX');
-          if (retriedReservation !== 'OK') {
+          const retriedReservation = await this.setValue(activeApprovalKey, updateId, {
+            mode: 'NX',
+          });
+          if (!retriedReservation) {
             throw new CacheError({
               code: cacheErrorCodes.invalidPayload,
               key: activeApprovalKey,
@@ -524,12 +625,22 @@ export class RelayCacheService {
       await this.client.del(this.activeApprovalUpdateKey(approvalRequestId));
     }
 
-    const updateIds = await this.client.zrange(this.daemonUpdatesKey(daemonId), 0, -1, 'REV');
+    // Terminal updates are removed from the index, so only live updates remain;
+    // the scan is still bounded to keep a busy daemon from turning this into an
+    // unbounded key walk.
+    const updateIds = await this.client.zrange(
+      this.daemonUpdatesKey(daemonId),
+      0,
+      activeApprovalUpdateScanLimit - 1,
+      'REV',
+    );
 
     for (const updateId of updateIds) {
       const record = await this.readJson<RelayEncryptedUpdateRecord>(this.updateKey(updateId));
       if (isActiveApprovalUpdateRecord(record, approvalRequestId)) {
-        await this.client.set(this.activeApprovalUpdateKey(approvalRequestId), updateId, 'NX');
+        await this.setValue(this.activeApprovalUpdateKey(approvalRequestId), updateId, {
+          mode: 'NX',
+        });
         return true;
       }
     }
@@ -542,12 +653,11 @@ export class RelayCacheService {
     capabilityHash: string,
   ): Promise<boolean> {
     try {
-      const result = await this.client.set(
+      return await this.setValue(
         this.approvalCapabilityConsumedKey(approvalRequestId, capabilityHash),
         toIsoTimestamp(),
-        'NX',
+        { mode: 'NX', ttlSeconds: ephemeralRecordTtlSeconds },
       );
-      return result === 'OK';
     } catch (error) {
       throw toCacheError(error, {
         key: this.approvalCapabilityConsumedKey(approvalRequestId, capabilityHash),
@@ -581,10 +691,67 @@ export class RelayCacheService {
     }
   }
 
+  /**
+   * Reports whether the approval (or the submitting client) is currently locked
+   * out. Callers must consult this before comparing a presented capability so a
+   * locked approval rejects even a correct token.
+   */
+  async getApprovalCapabilityBlockState(
+    approvalRequestId: string,
+    clientKey?: string,
+  ): Promise<ApprovalCapabilityBlockState> {
+    const nowMs = Date.now();
+    const keys = [
+      this.approvalCapabilityFailuresKey(approvalRequestId),
+      ...(clientKey ? [this.approvalCapabilityClientFailuresKey(clientKey)] : []),
+    ];
+    let blockedUntil: string | null = null;
+
+    for (const key of keys) {
+      const record = await this.readJson<ApprovalCapabilityFailureRecord>(key);
+      const recordBlockedUntil = record?.blockedUntil;
+      if (recordBlockedUntil && Date.parse(recordBlockedUntil) > nowMs) {
+        if (!blockedUntil || Date.parse(recordBlockedUntil) > Date.parse(blockedUntil)) {
+          blockedUntil = recordBlockedUntil;
+        }
+      }
+    }
+
+    return { blocked: blockedUntil !== null, blockedUntil };
+  }
+
   async recordApprovalCapabilityFailure(
     approvalRequestId: string,
+    clientKey?: string,
   ): Promise<RecordApprovalCapabilityFailureResult> {
-    const key = this.approvalCapabilityFailuresKey(approvalRequestId);
+    const approvalResult = await this.recordCapabilityFailureForKey(
+      this.approvalCapabilityFailuresKey(approvalRequestId),
+    );
+    if (!clientKey) {
+      return approvalResult;
+    }
+
+    const clientResult = await this.recordCapabilityFailureForKey(
+      this.approvalCapabilityClientFailuresKey(clientKey),
+    );
+    const blockedUntilCandidates = [approvalResult.blockedUntil, clientResult.blockedUntil].filter(
+      (value): value is string => value !== null,
+    );
+    const blockedUntil =
+      blockedUntilCandidates.length > 0
+        ? blockedUntilCandidates.sort((left, right) => Date.parse(right) - Date.parse(left))[0]!
+        : null;
+
+    return {
+      attempts: approvalResult.attempts,
+      blocked: approvalResult.blocked || clientResult.blocked,
+      blockedUntil,
+    };
+  }
+
+  private async recordCapabilityFailureForKey(
+    key: string,
+  ): Promise<RecordApprovalCapabilityFailureResult> {
     const now = new Date();
     const nowMs = now.getTime();
     const existing = await this.readJson<ApprovalCapabilityFailureRecord>(key);
@@ -610,12 +777,16 @@ export class RelayCacheService {
         ? new Date(nowMs + approvalCapabilityBlockWindowMs).toISOString()
         : undefined;
 
-    await this.writeJson(key, {
-      attempts,
-      blockedUntil,
-      firstFailedAt,
-      lastFailedAt: now.toISOString(),
-    } satisfies ApprovalCapabilityFailureRecord);
+    await this.writeJson(
+      key,
+      {
+        attempts,
+        blockedUntil,
+        firstFailedAt,
+        lastFailedAt: now.toISOString(),
+      } satisfies ApprovalCapabilityFailureRecord,
+      { ttlSeconds: ephemeralRecordTtlSeconds },
+    );
 
     return {
       attempts,
@@ -624,7 +795,7 @@ export class RelayCacheService {
     };
   }
 
-  async rotateApprovalCapability(approvalRequestId: string): Promise<RelayApprovalRequestRecord> {
+  async rotateApprovalCapability(approvalRequestId: string): Promise<RotatedApprovalCapability> {
     const key = this.approvalKey(approvalRequestId);
     const approval = await this.readJson<RelayApprovalRequestRecord>(key);
 
@@ -650,9 +821,8 @@ export class RelayCacheService {
     const nextRecord: RelayApprovalRequestRecord = {
       ...approval,
       metadata: {
-        ...(approval.metadata ?? {}),
+        ...(sanitizeApprovalMetadata(approval.metadata) ?? {}),
         approvalCapabilityHash: approvalCapabilityHash(capabilityToken),
-        approvalCapabilityToken: capabilityToken,
       },
       updatedAt: toIsoTimestamp(),
     };
@@ -660,7 +830,7 @@ export class RelayCacheService {
     await this.writeJson(key, nextRecord);
     await this.clearApprovalCapabilityFailures(approvalRequestId);
 
-    return nextRecord;
+    return { approval: nextRecord, approvalCapability: capabilityToken };
   }
 
   async claimEncryptedUpdates(
@@ -671,12 +841,8 @@ export class RelayCacheService {
     const now = new Date();
     const nowMs = now.getTime();
     const claimUntil = new Date(nowMs + leaseSeconds * 1000).toISOString();
-    const updateIds = await this.client.zrange(
-      this.daemonUpdatesKey(input.daemonId),
-      0,
-      limit * 4,
-      'REV',
-    );
+    const updatesIndexKey = this.daemonUpdatesKey(input.daemonId);
+    const updateIds = await this.client.zrange(updatesIndexKey, 0, limit * 4, 'REV');
     const claimed: RelayEncryptedUpdateRecord[] = [];
 
     for (const updateId of updateIds) {
@@ -688,8 +854,11 @@ export class RelayCacheService {
       let ownsClaimLock = false;
 
       try {
-        const reserved = await this.client.set(claimLockKey, claimUntil, 'NX');
-        if (reserved !== 'OK') {
+        const reserved = await this.setValue(claimLockKey, claimUntil, {
+          mode: 'NX',
+          ttlSeconds: leaseSeconds,
+        });
+        if (!reserved) {
           const existingClaimLockUntil = await this.client.get(claimLockKey);
           if (
             existingClaimLockUntil &&
@@ -700,8 +869,11 @@ export class RelayCacheService {
           }
 
           await this.client.del(claimLockKey);
-          const retriedReservation = await this.client.set(claimLockKey, claimUntil, 'NX');
-          if (retriedReservation !== 'OK') {
+          const retriedReservation = await this.setValue(claimLockKey, claimUntil, {
+            mode: 'NX',
+            ttlSeconds: leaseSeconds,
+          });
+          if (!retriedReservation) {
             continue;
           }
         }
@@ -709,15 +881,9 @@ export class RelayCacheService {
         ownsClaimLock = true;
 
         const record = await this.readJson<RelayEncryptedUpdateRecord>(this.updateKey(updateId));
-        if (!record) {
-          continue;
-        }
-
-        if (
-          record.status === 'applied' ||
-          record.status === 'failed' ||
-          record.status === 'rejected'
-        ) {
+        if (!record || terminalUpdateStatuses.has(record.status)) {
+          // Legacy index entries for finished or vanished updates are pruned lazily.
+          await this.client.zrem(updatesIndexKey, updateId);
           continue;
         }
 
@@ -810,7 +976,9 @@ export class RelayCacheService {
       updatedAt: toIsoTimestamp(),
     };
 
-    await this.writeJson(key, nextRecord);
+    // Terminal updates leave the live index and expire on their own.
+    await this.writeJson(key, nextRecord, { ttlSeconds: ephemeralRecordTtlSeconds });
+    await this.client.zrem(this.daemonUpdatesKey(input.daemonId), input.updateId);
     if (record.targetApprovalRequestId && record.type === 'manual_approval_decision') {
       const activeApprovalKey = this.activeApprovalUpdateKey(record.targetApprovalRequestId);
       const indexedUpdateId = await this.client.get(activeApprovalKey);
@@ -868,6 +1036,9 @@ export class RelayCacheService {
     `${this.namespace}:approval:${approvalRequestId}:capability:${capabilityHash}:consumed`;
   private readonly approvalCapabilityFailuresKey = (approvalRequestId: string): string =>
     `${this.namespace}:approval:${approvalRequestId}:capability-failures`;
+  /** Client identifiers (usually IP addresses) are hashed so they never appear in key names. */
+  private readonly approvalCapabilityClientFailuresKey = (clientKey: string): string =>
+    `${this.namespace}:capability-client:${sha256Hex(clientKey)}:failures`;
   private readonly activeApprovalUpdateKey = (approvalRequestId: string): string =>
     `${this.namespace}:approval:${approvalRequestId}:active-update`;
   private readonly updateClaimLockKey = (updateId: string): string =>
@@ -887,12 +1058,36 @@ export class RelayCacheService {
     }
   }
 
-  private async writeJson(key: string, value: unknown): Promise<void> {
+  /**
+   * Writes a JSON document. Returns `false` only when `mode: 'NX'`/`'XX'` prevented the write.
+   */
+  private async writeJson(
+    key: string,
+    value: unknown,
+    options: CacheSetOptions = {},
+  ): Promise<boolean> {
     try {
-      await this.client.set(key, JSON.stringify(value));
+      return await this.setValue(key, JSON.stringify(value), options);
     } catch (error) {
       throw toCacheError(error, { key, operation: 'writeJson' });
     }
+  }
+
+  private async setValue(
+    key: string,
+    value: string,
+    options: CacheSetOptions = {},
+  ): Promise<boolean> {
+    const args: CacheSetArgument[] = [];
+    if (options.ttlSeconds !== undefined) {
+      args.push('EX', Math.max(1, Math.ceil(options.ttlSeconds)));
+    }
+    if (options.mode) {
+      args.push(options.mode);
+    }
+
+    const result = await this.client.set(key, value, ...args);
+    return result === 'OK';
   }
 }
 

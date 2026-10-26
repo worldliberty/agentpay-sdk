@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const extension = process.platform === 'win32' ? '.exe' : '';
 const MIN_RUST_VERSION = {
   major: 1,
-  minor: 87,
+  minor: 89,
   patch: 0,
 };
 const commonRustBins = ['agentpay-daemon', 'agentpay-admin', 'agentpay-agent'];
@@ -25,6 +25,12 @@ const macOsHelperScripts = [
 ];
 const RERUN_INSTRUCTIONS =
   'After installing prerequisites, rerun the source install steps from this repo checkout: `npm run build && npm run install:cli-launcher && npm run install:rust-binaries`.';
+const MISSING_CARGO_POSTINSTALL_WARNING = [
+  '[agentpay] warning: Rust toolchain (cargo) was not found on PATH, so the Rust runtime binaries were not built during postinstall.',
+  '[agentpay] The JavaScript workspace is installed; `agentpay` needs the Rust binaries in ~/.agentpay/bin before it can talk to the daemon.',
+  '[agentpay] Either install Rust from https://rustup.rs and run `npm run install:rust-binaries`, or use the prebuilt installer: `curl -fsSL https://wlfi.sh | bash`.',
+  '[agentpay] Set AGENTPAY_REQUIRE_RUST_INSTALL=1 to make postinstall fail instead when cargo is missing.',
+].join('\n');
 
 function assertSupportedSourceInstallPlatform(platform) {
   if (platform !== 'win32') {
@@ -210,6 +216,18 @@ export function installCliLauncher({
   return true;
 }
 
+function cargoLooksAvailable(spawnSyncImpl) {
+  const result = runCheck(spawnSyncImpl, 'cargo', ['--version']);
+  return normalizedExitCode(result.status, result.signal) === 0;
+}
+
+export function shouldToleratePostinstallWithoutCargo(env = process.env) {
+  if (env.AGENTPAY_REQUIRE_RUST_INSTALL === '1') {
+    return false;
+  }
+  return env.npm_lifecycle_event === 'postinstall';
+}
+
 function checkCargoAvailable(spawnSyncImpl) {
   const result = runCheck(spawnSyncImpl, 'cargo', ['--version']);
   const exitCode = normalizedExitCode(result.status, result.signal);
@@ -312,12 +330,17 @@ export function installRustBinaries({
   spawnSyncImpl = spawnSync,
   env = process.env,
   platform = process.platform,
+  warn = (message) => process.stderr.write(`${message}\n`),
 } = {}) {
   if (env.AGENTPAY_SKIP_RUST_INSTALL === '1') {
     return 0;
   }
 
   assertSupportedSourceInstallPlatform(platform);
+  if (shouldToleratePostinstallWithoutCargo(env) && !cargoLooksAvailable(spawnSyncImpl)) {
+    warn(MISSING_CARGO_POSTINSTALL_WARNING);
+    return 0;
+  }
   verifyRustInstallPrerequisites({ spawnSyncImpl, platform });
 
   const { agentpayHome, binDir } = resolveAgentPayPaths(env);

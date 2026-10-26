@@ -304,8 +304,8 @@ test('createSudoSession maps signaled child exits to shell-style exit codes', as
   assert.equal(result.stderr, 'visible-err\n');
 });
 
-test('createSudoSession injects explicit environment assignments through sudo when requested', async () => {
-  const sudo = await import(modulePath.href + `?case=${Date.now()}-sudo-env`);
+test('createSudoSession never places secrets on the sudo argv and delivers them on stdin', async () => {
+  const sudo = await import(modulePath.href + `?case=${Date.now()}-sudo-stdin-secrets`);
   const { calls, spawnCommand } = createSpawnStub([{ code: 0 }, { code: 0, stdout: 'ok\n' }]);
 
   const session = sudo.createSudoSession({
@@ -314,11 +314,16 @@ test('createSudoSession injects explicit environment assignments through sudo wh
     spawnCommand,
   });
 
-  const result = await session.run(['/usr/bin/true'], {
-    env: {
-      AGENTPAY_RELAY_DAEMON_TOKEN: 'relay-secret',
+  const result = await session.run(
+    ['/usr/bin/true', '--vault-password-stdin', '--relay-token-stdin'],
+    {
+      stdin: 'vault-secret\nrelay-secret\n',
+      // Legacy callers that still pass `env` must not leak it onto argv through /usr/bin/env.
+      env: {
+        AGENTPAY_RELAY_DAEMON_TOKEN: 'relay-secret',
+      },
     },
-  });
+  );
 
   assert.equal(result.code, 0);
   assert.equal(result.stdout, 'ok\n');
@@ -326,9 +331,17 @@ test('createSudoSession injects explicit environment assignments through sudo wh
     calls.map((call) => [call.command, call.args]),
     [
       ['sudo', ['-S', '-p', '', '-v']],
-      ['sudo', ['-n', '/usr/bin/env', 'AGENTPAY_RELAY_DAEMON_TOKEN=relay-secret', '/usr/bin/true']],
+      ['sudo', ['-n', '/usr/bin/true', '--vault-password-stdin', '--relay-token-stdin']],
     ],
   );
+  for (const call of calls) {
+    assert.equal(call.args.includes('/usr/bin/env'), false);
+    assert.equal(
+      call.args.some((arg) => String(arg).includes('relay-secret')),
+      false,
+    );
+  }
+  assert.equal(calls[1].stdin, 'vault-secret\nrelay-secret\n');
 });
 
 test('createSudoSession retries on each recognized sudo authentication failure shape', async () => {

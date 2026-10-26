@@ -21,6 +21,8 @@ Options:
   --allow-admin-euid <uid>       Allowed admin client uid (required)
   --allow-agent-euid <uid>       Allowed agent client uid (required)
   --vault-password-stdin         Read vault password from stdin and store it in System.keychain
+  --relay-token-stdin            Read the relay daemon token from the second stdin line
+                                 (line 1: vault password, line 2: relay daemon token)
   --help                         Show this help
 EOF2
 }
@@ -53,6 +55,26 @@ read_secret_from_stdin() {
     exit 1
   fi
   printf '%s' "$raw"
+}
+
+# Reads exactly one line of stdin into the named variable so several secrets can be passed on
+# consecutive lines without ever touching argv or the environment of this root process.
+read_secret_line_from_stdin() {
+  local label="$1"
+  local var_name="$2"
+  local line=""
+  if ! IFS= read -r line; then
+    if [[ -z "$line" ]]; then
+      echo "$label must not be empty or whitespace" >&2
+      exit 1
+    fi
+  fi
+  line="${line%$'\r'}"
+  if [[ -z "${line//[[:space:]]/}" ]]; then
+    echo "$label must not be empty or whitespace" >&2
+    exit 1
+  fi
+  printf -v "$var_name" '%s' "$line"
 }
 
 require_regular_executable() {
@@ -116,6 +138,7 @@ signer_backend="software"
 allow_admin_euid=""
 allow_agent_euid=""
 vault_password_stdin=false
+relay_token_stdin=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -178,6 +201,10 @@ while [[ $# -gt 0 ]]; do
       vault_password_stdin=true
       shift
       ;;
+    --relay-token-stdin)
+      relay_token_stdin=true
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -218,9 +245,15 @@ if [[ "$vault_password_stdin" != true ]]; then
   exit 1
 fi
 
-vault_password="$(read_secret_from_stdin 'vault password')"
-trap 'unset vault_password' EXIT
-relay_daemon_token="${AGENTPAY_RELAY_DAEMON_TOKEN:-}"
+vault_password=""
+relay_daemon_token=""
+if [[ "$relay_token_stdin" == true ]]; then
+  read_secret_line_from_stdin 'vault password' vault_password
+  read_secret_line_from_stdin 'relay daemon token' relay_daemon_token
+else
+  vault_password="$(read_secret_from_stdin 'vault password')"
+fi
+trap 'unset vault_password relay_daemon_token' EXIT
 
 launch_daemons_dir="/Library/LaunchDaemons"
 plist_path="${launch_daemons_dir}/${label}.plist"
@@ -267,11 +300,12 @@ else
 fi
 
 replace_keychain_password() {
-  "$managed_keychain_helper" replace-generic-password \
+  # A pipe keeps the password off disk; bash here-strings can spill to a $TMPDIR temp file.
+  printf '%s\n' "$vault_password" | "$managed_keychain_helper" replace-generic-password \
     --keychain /Library/Keychains/System.keychain \
     --service "$keychain_service" \
     --account "$keychain_account" \
-    --password-stdin <<<"$vault_password"
+    --password-stdin
 }
 
 replace_status=0

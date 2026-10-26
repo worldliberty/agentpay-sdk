@@ -235,6 +235,7 @@ interface ResolveWalletProfileWithBalancesDeps {
   getNativeBalance: (
     rpcUrl: string,
     address: Address,
+    decimals?: number,
   ) => Promise<{
     raw: bigint;
     formatted: string;
@@ -284,6 +285,8 @@ interface WalletBalanceTarget {
   family: ChainFamily;
 }
 
+// Tempo has no native gas token (fees are paid in TIP-20 tokens via feeToken), so a native
+// eth_getBalance row would be misleading there.
 const TEMPO_CHAIN_IDS = new Set([4217, 42431]);
 
 function toWalletBalanceTarget(
@@ -518,7 +521,7 @@ export async function resolveWalletProfileWithBalances(
           };
         }
         try {
-          const balance = await nativeBalance(target.rpcUrl, owner);
+          const balance = await nativeBalance(target.rpcUrl, owner, target.decimals);
           return {
             tokenKey: target.tokenKey,
             symbol: target.symbol,
@@ -699,6 +702,7 @@ export function formatWalletProfileText(
     profile.address ? `Address: ${profile.address}` : null,
     profile.solanaAddress ? `Solana Address: ${profile.solanaAddress}` : null,
     profile.solanaPublicKey ? `Solana Public Key: ${profile.solanaPublicKey}` : null,
+    profile.railgunAddress ? `Railgun Address: ${profile.railgunAddress}` : null,
     profile.agentKeyId ? `Agent Key ID: ${profile.agentKeyId}` : null,
     `Policy Attachment: ${profile.policyAttachment}`,
     profile.policyNote ? `Policy Note: ${profile.policyNote}` : null,

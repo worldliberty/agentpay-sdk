@@ -1,6 +1,11 @@
 /// Daemon-level errors.
 pub(crate) const MAX_AUTH_SECRET_BYTES: usize = 16 * 1024;
 
+/// Maximum number of nonces a single reservation may skip ahead of the tracked
+/// chain head. Larger skips would force the daemon to materialize every skipped
+/// nonce as a reusable gap, so they are rejected up front.
+pub const MAX_NONCE_SKIP: u64 = 1024;
+
 #[derive(Debug, Error)]
 pub enum DaemonError {
     /// Password mismatch.
@@ -66,6 +71,16 @@ pub enum DaemonError {
         /// Maximum active nonce reservations allowed at once.
         max_active: usize,
     },
+    /// Nonce reservation skipped too far ahead of the tracked chain head.
+    #[error(
+        "nonce reservation skips {requested_skip} nonces ahead of the chain head (max {max_skip})"
+    )]
+    NonceSkipTooLarge {
+        /// Number of nonces the request would have skipped.
+        requested_skip: u64,
+        /// Maximum permitted skip.
+        max_skip: u64,
+    },
     /// Nonce reservation id was not found.
     #[error("unknown nonce reservation id: {0}")]
     UnknownNonceReservation(Uuid),
@@ -80,6 +95,9 @@ pub enum DaemonError {
     /// Policy payload was invalid.
     #[error("invalid policy payload: {0}")]
     InvalidPolicy(String),
+    /// Sign request action failed domain validation (for example unrecognized calldata).
+    #[error("invalid sign request action: {0}")]
+    InvalidAction(String),
     /// Relay configuration payload was invalid.
     #[error("invalid relay configuration: {0}")]
     InvalidRelayConfig(String),
@@ -98,6 +116,14 @@ pub enum DaemonError {
     ManualApprovalRequestNotPending {
         approval_request_id: Uuid,
         status: ManualApprovalStatus,
+    },
+    /// Agent key already has the maximum number of pending manual approval requests.
+    #[error("agent key {agent_key_id} already has {max_pending} pending manual approval requests; resolve or wait for them to expire before requesting more")]
+    TooManyPendingManualApprovalRequests {
+        /// Agent key that owns the pending requests.
+        agent_key_id: Uuid,
+        /// Maximum pending requests allowed per agent key.
+        max_pending: usize,
     },
     /// Policy engine denied request.
     #[error("policy check failed: {0}")]
@@ -159,6 +185,16 @@ pub struct DaemonConfig {
     pub argon2_parallelism: u32,
     /// Relay poll cadence for encrypted approval updates.
     pub relay_poll_interval: Duration,
+    /// Maximum number of `Pending` manual approval requests a single agent key may hold.
+    pub max_pending_manual_approval_requests_per_agent: usize,
+    /// Maximum number of recoverable agent results retained in memory (oldest evicted first).
+    pub max_recoverable_agent_results: usize,
+    /// Maximum Argon2 memory cost (KiB) accepted from a persisted state file.
+    pub max_persisted_argon2_memory_kib: u32,
+    /// Maximum Argon2 time cost accepted from a persisted state file.
+    pub max_persisted_argon2_time_cost: u32,
+    /// Maximum Argon2 parallelism accepted from a persisted state file.
+    pub max_persisted_argon2_parallelism: u32,
 }
 
 impl Default for DaemonConfig {
@@ -181,6 +217,11 @@ impl Default for DaemonConfig {
             argon2_time_cost: 2,
             argon2_parallelism: 1,
             relay_poll_interval: Duration::seconds(1),
+            max_pending_manual_approval_requests_per_agent: 64,
+            max_recoverable_agent_results: 256,
+            max_persisted_argon2_memory_kib: 1_048_576,
+            max_persisted_argon2_time_cost: 32,
+            max_persisted_argon2_parallelism: 16,
         }
     }
 }
@@ -246,6 +287,33 @@ pub trait KeyManagerDaemonApi: Send + Sync {
         session: &AdminSession,
         vault_key_id: Uuid,
     ) -> Result<String, DaemonError>;
+
+    /// Returns the encoded Railgun shielded address (`0zk1...`) derived for a
+    /// vault key.
+    ///
+    /// Backends that cannot derive Baby Jubjub key material from the vault
+    /// key (for example because they cannot extract the secp256k1 master)
+    /// return [`SignerError::Unsupported`]; the daemon forwards it as
+    /// [`DaemonError::Signer`] so callers can degrade gracefully while
+    /// Railgun derivation rolls out (Track 2 Phase B).
+    async fn railgun_master_public_key(
+        &self,
+        session: &AdminSession,
+        vault_key_id: Uuid,
+    ) -> Result<String, DaemonError>;
+
+    /// Returns the wallet's X25519 viewing public key + Baby Jubjub spending
+    /// master public key. Sidecars need both to bootstrap chain scanning
+    /// (viewing pubkey selects which commitments to trial-decrypt) and to
+    /// pin the spend authority field element in zk witnesses (master
+    /// pubkey).
+    ///
+    /// Same `Unsupported` / Phase B degradation as `railgun_master_public_key`.
+    async fn railgun_viewing_public_key(
+        &self,
+        session: &AdminSession,
+        vault_key_id: Uuid,
+    ) -> Result<vault_domain::RailgunViewingPublicKeys, DaemonError>;
 
     /// Creates an agent key attached to all policies or a selected subset.
     ///
@@ -420,6 +488,23 @@ pub enum DaemonRpcRequest {
         /// Vault key id.
         vault_key_id: Uuid,
     },
+    /// Derive the encoded Railgun shielded address (`0zk1...`) for an existing
+    /// vault key.
+    RailgunMasterPublicKey {
+        /// Admin session.
+        session: AdminSession,
+        /// Vault key id.
+        vault_key_id: Uuid,
+    },
+    /// Derive the X25519 viewing pubkey + Baby Jubjub spending master pubkey
+    /// for an existing vault key. Sidecar bootstrap uses this to pre-load
+    /// the read-only public material needed for chain scanning.
+    RailgunViewingPublicKey {
+        /// Admin session.
+        session: AdminSession,
+        /// Vault key id.
+        vault_key_id: Uuid,
+    },
     /// Rotate agent auth token.
     RotateAgentAuthToken {
         /// Admin session.
@@ -504,6 +589,8 @@ impl DaemonRpcRequest {
             | Self::RefreshAgentKey { session, .. }
             | Self::ExportVaultPrivateKey { session, .. }
             | Self::SolanaPublicKey { session, .. }
+            | Self::RailgunMasterPublicKey { session, .. }
+            | Self::RailgunViewingPublicKey { session, .. }
             | Self::RotateAgentAuthToken { session, .. }
             | Self::RevokeAgentKey { session, .. }
             | Self::ListManualApprovalRequests { session }
@@ -584,6 +671,22 @@ impl std::fmt::Debug for DaemonRpcRequest {
                 vault_key_id,
             } => f
                 .debug_struct("SolanaPublicKey")
+                .field("session", session)
+                .field("vault_key_id", vault_key_id)
+                .finish(),
+            Self::RailgunMasterPublicKey {
+                session,
+                vault_key_id,
+            } => f
+                .debug_struct("RailgunMasterPublicKey")
+                .field("session", session)
+                .field("vault_key_id", vault_key_id)
+                .finish(),
+            Self::RailgunViewingPublicKey {
+                session,
+                vault_key_id,
+            } => f
+                .debug_struct("RailgunViewingPublicKey")
                 .field("session", session)
                 .field("vault_key_id", vault_key_id)
                 .finish(),
@@ -681,6 +784,8 @@ pub enum DaemonRpcResponse {
     PrivateKey(Option<String>),
     /// Public key response.
     PublicKey(String),
+    /// Railgun viewing + master pubkey bundle response.
+    RailgunViewingPublicKey(vault_domain::RailgunViewingPublicKeys),
     /// Rotated auth token response.
     AuthToken(String),
     /// Manual approval request list response.
@@ -731,6 +836,10 @@ impl std::fmt::Debug for DaemonRpcResponse {
             Self::PrivateKey(Some(_)) => f.debug_tuple("PrivateKey").field(&"<redacted>").finish(),
             Self::PrivateKey(None) => f.debug_tuple("PrivateKey").field(&"<none>").finish(),
             Self::PublicKey(public_key) => f.debug_tuple("PublicKey").field(public_key).finish(),
+            Self::RailgunViewingPublicKey(keys) => f
+                .debug_tuple("RailgunViewingPublicKey")
+                .field(keys)
+                .finish(),
             Self::AuthToken(_) => f.debug_tuple("AuthToken").field(&"<redacted>").finish(),
             Self::ManualApprovalRequests(requests) => f
                 .debug_tuple("ManualApprovalRequests")

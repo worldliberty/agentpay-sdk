@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -84,7 +85,14 @@ test('defaultWalletBackupOutputPath uses the dedicated agentpay-backups director
   assert.match(outputPath, /agentpay-wallet-backup-1234567890ab\.json$/u);
 });
 
-test('temporary wallet import key files are written under AGENTPAY_HOME and cleaned up', async () => {
+function writeLegacyWalletImportKeyFile(agentpayHome) {
+  fs.mkdirSync(agentpayHome, { recursive: true, mode: 0o700 });
+  const writtenPath = path.join(agentpayHome, `wallet-import-key-${process.pid}-${Date.now()}.key`);
+  fs.writeFileSync(writtenPath, `${TEST_PRIVATE_KEY}\n`, { mode: 0o600, flag: 'wx' });
+  return writtenPath;
+}
+
+test('legacy temporary wallet import key files under AGENTPAY_HOME are cleaned up', async () => {
   const walletBackup = await import(
     walletBackupModulePath.href + `?case=${Date.now()}-temporary-import-file`
   );
@@ -93,8 +101,7 @@ test('temporary wallet import key files are written under AGENTPAY_HOME and clea
 
   process.env.AGENTPAY_HOME = agentpayHome;
   try {
-    const writtenPath = walletBackup.writeTemporaryWalletImportKeyFile(TEST_PRIVATE_KEY);
-    assert.equal(path.dirname(writtenPath), path.resolve(agentpayHome));
+    const writtenPath = writeLegacyWalletImportKeyFile(agentpayHome);
     assert.equal(fs.readFileSync(writtenPath, 'utf8').trim(), TEST_PRIVATE_KEY);
 
     assert.deepEqual(walletBackup.cleanupTemporaryWalletImportKeyFile(writtenPath), {
@@ -121,7 +128,7 @@ test('temporary wallet import key cleanup reports failures without throwing', as
 
   process.env.AGENTPAY_HOME = agentpayHome;
   try {
-    const writtenPath = walletBackup.writeTemporaryWalletImportKeyFile(TEST_PRIVATE_KEY);
+    const writtenPath = writeLegacyWalletImportKeyFile(agentpayHome);
     const originalRmSync = fs.rmSync;
     fs.rmSync = (targetPath, ...args) => {
       if (path.resolve(String(targetPath)) === path.resolve(writtenPath)) {
@@ -175,6 +182,12 @@ test('exportEncryptedWalletBackup pulls the private key from rust admin JSON and
           assert.ok(nonce >= 0);
           assert.equal(args[nonce + 1], TEST_VAULT_KEY_ID);
           assert.equal(options?.stdin, 'vault-secret\n');
+          assert.equal(options?.preSuppliedSecretStdin, 'vaultPassword');
+          assert.equal(
+            options?.sensitiveStdout,
+            true,
+            'private-key export stdout must never reach error messages',
+          );
           return {
             vault_key_id: TEST_VAULT_KEY_ID,
             vault_private_key: TEST_PRIVATE_KEY,
@@ -189,5 +202,192 @@ test('exportEncryptedWalletBackup pulls the private key from rust admin JSON and
     assert.equal(verified.sourceVaultKeyId, TEST_VAULT_KEY_ID);
   } finally {
     fs.rmSync(outputPath, { force: true });
+  }
+});
+
+function writeBackupJson(backup) {
+  const backupPath = tempPath('agentpay-wallet-backup', '.json');
+  fs.writeFileSync(backupPath, `${JSON.stringify(backup, null, 2)}\n`, { mode: 0o600 });
+  return backupPath;
+}
+
+function createLegacyV1Backup(wallet, password) {
+  // Mirrors the format written by CLIs before v2: scrypt N=2^15 and no GCM AAD.
+  const salt = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(12);
+  const n = 1 << 15;
+  const key = crypto.scryptSync(password, salt, 32, { N: n, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+  const createdAt = '2025-01-01T00:00:00.000Z';
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const plaintext = JSON.stringify({
+    createdAt,
+    privateKeyHex: TEST_PRIVATE_KEY,
+    address: wallet.address,
+    vaultPublicKey: wallet.vaultPublicKey,
+    sourceVaultKeyId: wallet.sourceVaultKeyId,
+  });
+  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  return {
+    kind: 'agentpay-wallet-backup',
+    version: 1,
+    createdAt,
+    wallet,
+    encryption: {
+      algorithm: 'aes-256-gcm',
+      kdf: 'scrypt',
+      saltHex: salt.toString('hex'),
+      ivHex: iv.toString('hex'),
+      authTagHex: cipher.getAuthTag().toString('hex'),
+      n,
+      r: 8,
+      p: 1,
+    },
+    ciphertextHex: ciphertext.toString('hex'),
+  };
+}
+
+test('wallet backup v2 uses scrypt N=2^18 and binds header metadata as GCM AAD', async () => {
+  const walletBackup = await import(walletBackupModulePath.href + `?case=${Date.now()}-v2-aad`);
+
+  const backup = walletBackup.createEncryptedWalletBackup({
+    privateKeyHex: TEST_PRIVATE_KEY,
+    sourceVaultKeyId: TEST_VAULT_KEY_ID,
+    password: 'backup-secret',
+  });
+  assert.equal(backup.version, 2);
+  assert.equal(backup.encryption.n, 1 << 18);
+  assert.equal(backup.encryption.r, 8);
+  assert.equal(backup.encryption.p, 1);
+
+  // Editing header-only metadata (not covered by the plaintext address checks) must break the tag.
+  const tampered = structuredClone(backup);
+  tampered.createdAt = '2001-01-01T00:00:00.000Z';
+  assert.throws(
+    () => walletBackup.decryptWalletBackup(tampered, 'backup-secret'),
+    /wallet backup password is incorrect or the backup file is corrupted/u,
+  );
+
+  // Downgrading the version label to skip AAD verification must also fail.
+  const downgraded = structuredClone(backup);
+  downgraded.version = 1;
+  assert.throws(
+    () => walletBackup.decryptWalletBackup(downgraded, 'backup-secret'),
+    /wallet backup password is incorrect or the backup file is corrupted/u,
+  );
+});
+
+test('wallet backup still reads and verifies legacy v1 files', async () => {
+  const walletBackup = await import(walletBackupModulePath.href + `?case=${Date.now()}-v1-compat`);
+  const current = walletBackup.createEncryptedWalletBackup({
+    privateKeyHex: TEST_PRIVATE_KEY,
+    sourceVaultKeyId: TEST_VAULT_KEY_ID,
+    password: 'backup-secret',
+  });
+  const backupPath = writeBackupJson(createLegacyV1Backup(current.wallet, 'backup-secret'));
+
+  try {
+    const parsed = walletBackup.readWalletBackupFile(backupPath);
+    assert.equal(parsed.version, 1);
+    assert.equal(parsed.encryption.n, 1 << 15);
+    const summary = walletBackup.verifyWalletBackupFile(backupPath, 'backup-secret');
+    assert.equal(summary.address, current.wallet.address);
+    assert.equal(
+      walletBackup.decryptWalletBackup(parsed, 'backup-secret').privateKeyHex,
+      TEST_PRIVATE_KEY,
+    );
+  } finally {
+    fs.rmSync(backupPath, { force: true });
+  }
+});
+
+test('wallet backup rejects unsupported versions and out-of-range scrypt parameters on read', async () => {
+  const walletBackup = await import(
+    walletBackupModulePath.href + `?case=${Date.now()}-param-bounds`
+  );
+  const backup = walletBackup.createEncryptedWalletBackup({
+    privateKeyHex: TEST_PRIVATE_KEY,
+    password: 'backup-secret',
+  });
+
+  const cases = [
+    [{ version: 3 }, /wallet backup version must be 1 or 2/u],
+    [
+      { encryption: { ...backup.encryption, n: 1 << 21 } },
+      /encryption parameters are unsupported/u,
+    ],
+    [
+      { encryption: { ...backup.encryption, n: 1 << 14 } },
+      /encryption parameters are unsupported/u,
+    ],
+    [
+      { encryption: { ...backup.encryption, n: (1 << 18) + 1 } },
+      /encryption parameters are unsupported/u,
+    ],
+    [{ encryption: { ...backup.encryption, r: 16 } }, /encryption parameters are unsupported/u],
+    [{ encryption: { ...backup.encryption, p: 4 } }, /encryption parameters are unsupported/u],
+  ];
+  for (const [overrides, pattern] of cases) {
+    const backupPath = writeBackupJson({ ...backup, ...overrides });
+    try {
+      assert.throws(() => walletBackup.readWalletBackupFile(backupPath), pattern);
+    } finally {
+      fs.rmSync(backupPath, { force: true });
+    }
+  }
+});
+
+test('wallet backup module no longer writes plaintext import key files', async () => {
+  const walletBackup = await import(walletBackupModulePath.href + `?case=${Date.now()}-no-writer`);
+  // Restores hand the decrypted key to the Rust admin over an fd 3 pipe; only the legacy
+  // cleanup/sweep helpers remain for files left behind by older releases.
+  assert.equal(walletBackup.writeTemporaryWalletImportKeyFile, undefined);
+  assert.equal(walletBackup.registerTemporaryWalletImportKeyCleanup, undefined);
+  assert.equal(typeof walletBackup.cleanupTemporaryWalletImportKeyFile, 'function');
+  assert.equal(typeof walletBackup.sweepStaleTemporaryWalletImportKeyFiles, 'function');
+});
+
+test('sweepStaleTemporaryWalletImportKeyFiles removes keys from dead setup runs only', async () => {
+  const walletBackup = await import(
+    walletBackupModulePath.href + `?case=${Date.now()}-sweep-stale`
+  );
+  const agentpayHome = tempPath('agentpay-home-sweep');
+  fs.mkdirSync(agentpayHome, { recursive: true, mode: 0o700 });
+
+  try {
+    const stalePath = path.join(agentpayHome, 'wallet-import-key-111-1700000000000.key');
+    const livePath = path.join(agentpayHome, 'wallet-import-key-222-1700000000000.key');
+    const ownPath = path.join(agentpayHome, 'wallet-import-key-333-1700000000000.key');
+    const unrelatedPath = path.join(agentpayHome, 'bootstrap-1-2.json');
+    for (const target of [stalePath, livePath, ownPath, unrelatedPath]) {
+      fs.writeFileSync(target, 'secret', { mode: 0o600 });
+    }
+
+    const results = walletBackup.sweepStaleTemporaryWalletImportKeyFiles({
+      resolveAgentPayHome: () => agentpayHome,
+      isProcessAlive: (pid) => pid === 222,
+      currentPid: 333,
+    });
+
+    const byName = Object.fromEntries(
+      results.map((result) => [path.basename(result.path), result.action]),
+    );
+    assert.deepEqual(byName, {
+      'wallet-import-key-111-1700000000000.key': 'deleted',
+      'wallet-import-key-222-1700000000000.key': 'skipped',
+      'wallet-import-key-333-1700000000000.key': 'skipped',
+    });
+    assert.equal(fs.existsSync(stalePath), false);
+    assert.equal(fs.existsSync(livePath), true);
+    assert.equal(fs.existsSync(ownPath), true);
+    assert.equal(fs.existsSync(unrelatedPath), true);
+
+    assert.deepEqual(
+      walletBackup.sweepStaleTemporaryWalletImportKeyFiles({
+        resolveAgentPayHome: () => path.join(agentpayHome, 'missing'),
+      }),
+      [],
+    );
+  } finally {
+    fs.rmSync(agentpayHome, { recursive: true, force: true });
   }
 });

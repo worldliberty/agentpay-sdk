@@ -1,4 +1,5 @@
 export const cacheErrorCodes = {
+  conflict: 'CACHE_CONFLICT',
   connectionFailed: 'CACHE_CONNECTION_FAILED',
   invalidPayload: 'CACHE_INVALID_PAYLOAD',
   notFound: 'CACHE_NOT_FOUND',

@@ -4,7 +4,10 @@
 //! Enclave), software-backed, and future TEE-backed implementations can be
 //! swapped without changing policy logic.
 
+pub mod railgun;
+
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
@@ -17,7 +20,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use time::OffsetDateTime;
 use uuid::Uuid;
-use vault_domain::{KeyAlgorithm, KeySource, Signature, VaultKey};
+use vault_domain::{
+    KeyAlgorithm, KeySource, RailgunDecryptedNote, RailgunMerklePath, RailgunNoteCiphertext,
+    RailgunNoteInput, RailgunNullifier, RailgunViewingPublicKeys, RailgunWitnessBundle, Signature,
+    VaultKey,
+};
 use zeroize::Zeroizing;
 
 #[cfg(target_os = "windows")]
@@ -63,19 +70,48 @@ pub enum BackendKind {
 }
 
 /// Key creation request from daemon/admin.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Import variants carry raw private key material: it is wrapped in
+/// [`Zeroizing`] so it is wiped on drop and redacted from `Debug` output. The
+/// serde shape is unchanged (a plain hex string).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum KeyCreateRequest {
     /// Generate a fresh private key.
     Generate,
     /// Generate a fresh private key with an explicit algorithm.
     GenerateWithAlgorithm { algorithm: KeyAlgorithm },
     /// Import an existing hex-encoded 32-byte secp256k1 private key.
-    Import { private_key_hex: String },
+    Import {
+        #[serde(with = "vault_domain::serde_helpers::zeroizing_string")]
+        private_key_hex: Zeroizing<String>,
+    },
     /// Import an existing hex-encoded 32-byte private key with an explicit algorithm.
     ImportWithAlgorithm {
         algorithm: KeyAlgorithm,
-        private_key_hex: String,
+        #[serde(with = "vault_domain::serde_helpers::zeroizing_string")]
+        private_key_hex: Zeroizing<String>,
     },
+}
+
+impl fmt::Debug for KeyCreateRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Generate => formatter.write_str("Generate"),
+            Self::GenerateWithAlgorithm { algorithm } => formatter
+                .debug_struct("GenerateWithAlgorithm")
+                .field("algorithm", algorithm)
+                .finish(),
+            Self::Import { .. } => formatter
+                .debug_struct("Import")
+                .field("private_key_hex", &"<redacted>")
+                .finish(),
+            Self::ImportWithAlgorithm { algorithm, .. } => formatter
+                .debug_struct("ImportWithAlgorithm")
+                .field("algorithm", algorithm)
+                .field("private_key_hex", &"<redacted>")
+                .finish(),
+        }
+    }
 }
 
 /// Errors returned by signer backends.
@@ -96,6 +132,10 @@ pub enum SignerError {
     /// Backend-specific failure.
     #[error("internal backend failure: {0}")]
     Internal(String),
+    /// Railgun crypto primitive (poseidon / babyjub / EdDSA / bech32m / AES /
+    /// X25519 / BIP32) failed for reasons internal to the port.
+    #[error("railgun crypto error: {0}")]
+    RailgunCrypto(String),
 }
 
 /// Backend interface used by daemon.
@@ -147,6 +187,79 @@ pub trait VaultSignerBackend: Send + Sync {
         vault_key_id: Uuid,
         digest: [u8; 32],
     ) -> Result<Signature, SignerError>;
+
+    /// Returns the encoded Railgun shielded address (`0zk1...`) derived from
+    /// the spending + viewing keys for the wallet rooted at `vault_key_id`.
+    ///
+    /// The default implementation rejects unsupported. Backends that can
+    /// derive Baby Jubjub key material override this. Hardware backends that
+    /// cannot extract the raw secp256k1 master have nothing to derive from
+    /// and should leave the default in place.
+    async fn railgun_master_public_key(&self, _vault_key_id: Uuid) -> Result<String, SignerError> {
+        Err(SignerError::Unsupported(
+            "backend does not support Railgun key derivation".to_string(),
+        ))
+    }
+
+    /// Returns the X25519 viewing public key + Baby Jubjub spending master
+    /// public key for trial-decrypting incoming notes and pinning the spend
+    /// authority in zk witnesses.
+    async fn railgun_viewing_public_key(
+        &self,
+        _vault_key_id: Uuid,
+    ) -> Result<RailgunViewingPublicKeys, SignerError> {
+        Err(SignerError::Unsupported(
+            "backend does not support Railgun key derivation".to_string(),
+        ))
+    }
+
+    /// Computes the Poseidon nullifier for a spent note without exposing the
+    /// spending key. Called once per spent note during proof preparation;
+    /// the returned 32-byte field element is fed back into the circuit and
+    /// also published on-chain to mark the note as spent.
+    async fn railgun_compute_nullifier(
+        &self,
+        _vault_key_id: Uuid,
+        _note: &RailgunNoteInput,
+    ) -> Result<RailgunNullifier, SignerError> {
+        Err(SignerError::Unsupported(
+            "backend does not support Railgun nullifier derivation".to_string(),
+        ))
+    }
+
+    /// Attempts to decrypt one on-chain commitment ciphertext using the
+    /// viewing key derived for `vault_key_id`. Returns `Ok(None)` if the
+    /// note was sent to a different wallet (decryption did not authenticate).
+    async fn railgun_decrypt_note(
+        &self,
+        _vault_key_id: Uuid,
+        _ciphertext: &RailgunNoteCiphertext,
+    ) -> Result<Option<RailgunDecryptedNote>, SignerError> {
+        Err(SignerError::Unsupported(
+            "backend does not support Railgun note decryption".to_string(),
+        ))
+    }
+
+    /// Bundles the spending-key-derived inputs needed by the snarkjs prover
+    /// for an unshield or private-transfer proof: per-note nullifiers,
+    /// per-note Baby Jubjub spend signatures, and the spend authority
+    /// public key. The sidecar feeds the bundle directly into the circuit
+    /// as private witnesses.
+    ///
+    /// `notes`, `merkle_paths`, and the prover's recipient-and-output list
+    /// (passed opaquely through `recipients_payload_hex`) must be index-
+    /// aligned; the daemon does not validate semantic alignment.
+    async fn railgun_witness_inputs(
+        &self,
+        _vault_key_id: Uuid,
+        _notes: &[RailgunNoteInput],
+        _merkle_paths: &[RailgunMerklePath],
+        _recipients_payload_hex: &str,
+    ) -> Result<RailgunWitnessBundle, SignerError> {
+        Err(SignerError::Unsupported(
+            "backend does not support Railgun witness generation".to_string(),
+        ))
+    }
 
     /// Exports persistable key material for the requested vault key IDs.
     ///
@@ -214,9 +327,9 @@ impl SoftwareSignerBackend {
     }
 
     fn derive_ed25519_from_secp256k1(signing_key: &SigningKey) -> Ed25519SigningKey {
-        let private_key_bytes = signing_key.to_bytes();
-        let mut seed = [0u8; 32];
-        seed.copy_from_slice(private_key_bytes.as_ref());
+        let private_key_bytes = Zeroizing::new(signing_key.to_bytes());
+        let mut seed = Zeroizing::new([0u8; 32]);
+        seed.copy_from_slice(&private_key_bytes);
         Ed25519SigningKey::from_bytes(&seed)
     }
 
@@ -253,12 +366,14 @@ impl SoftwareSignerBackend {
     }
 
     fn parse_import_secp256k1_key(private_key_hex: &str) -> Result<SigningKey, SignerError> {
-        let raw = hex::decode(
-            private_key_hex
-                .strip_prefix("0x")
-                .unwrap_or(private_key_hex),
-        )
-        .map_err(|_| SignerError::InvalidPrivateKey)?;
+        let raw = Zeroizing::new(
+            hex::decode(
+                private_key_hex
+                    .strip_prefix("0x")
+                    .unwrap_or(private_key_hex),
+            )
+            .map_err(|_| SignerError::InvalidPrivateKey)?,
+        );
         if raw.len() != 32 {
             return Err(SignerError::InvalidPrivateKey);
         }
@@ -266,14 +381,17 @@ impl SoftwareSignerBackend {
     }
 
     fn parse_import_ed25519_key(private_key_hex: &str) -> Result<Ed25519SigningKey, SignerError> {
-        let raw = hex::decode(
-            private_key_hex
-                .strip_prefix("0x")
-                .unwrap_or(private_key_hex),
-        )
-        .map_err(|_| SignerError::InvalidPrivateKey)?;
-        let bytes =
-            <[u8; 32]>::try_from(raw.as_slice()).map_err(|_| SignerError::InvalidPrivateKey)?;
+        let raw = Zeroizing::new(
+            hex::decode(
+                private_key_hex
+                    .strip_prefix("0x")
+                    .unwrap_or(private_key_hex),
+            )
+            .map_err(|_| SignerError::InvalidPrivateKey)?,
+        );
+        let bytes = Zeroizing::new(
+            <[u8; 32]>::try_from(raw.as_slice()).map_err(|_| SignerError::InvalidPrivateKey)?,
+        );
         Ok(Ed25519SigningKey::from_bytes(&bytes))
     }
 }
@@ -311,7 +429,8 @@ impl VaultSignerBackend for SoftwareSignerBackend {
             KeyCreateRequest::GenerateWithAlgorithm {
                 algorithm: KeyAlgorithm::Ed25519,
             } => {
-                let key = Ed25519SigningKey::from_bytes(&random::<[u8; 32]>());
+                let seed = Zeroizing::new(random::<[u8; 32]>());
+                let key = Ed25519SigningKey::from_bytes(&seed);
                 let public_key_hex = Self::ed25519_public_key_hex(&key);
                 (
                     SoftwareSigningKey::Ed25519(key),
@@ -355,6 +474,24 @@ impl VaultSignerBackend for SoftwareSignerBackend {
                     KeyAlgorithm::Ed25519,
                     public_key_hex,
                 )
+            }
+            // Railgun keys are derived on demand from the existing Secp256k1
+            // master inside the railgun_* trait methods rather than persisted
+            // as independent vault keys. The standalone create/import paths
+            // are intentionally rejected to keep the trust boundary narrow
+            // (only one private key lives in the daemon per wallet).
+            KeyCreateRequest::GenerateWithAlgorithm {
+                algorithm: KeyAlgorithm::RailgunSpending | KeyAlgorithm::RailgunViewing,
+            }
+            | KeyCreateRequest::ImportWithAlgorithm {
+                algorithm: KeyAlgorithm::RailgunSpending | KeyAlgorithm::RailgunViewing,
+                ..
+            } => {
+                return Err(SignerError::Unsupported(
+                    "Railgun keys are derived from the existing secp256k1 master; \
+                     use the railgun_* signer methods instead of creating a standalone key"
+                        .to_string(),
+                ));
             }
         };
 
@@ -520,6 +657,178 @@ impl VaultSignerBackend for SoftwareSignerBackend {
             .map_err(|_| SignerError::Internal("poisoned lock".into()))?
             .remove(&vault_key_id);
         Ok(())
+    }
+
+    // Railgun derivation surface. The software backend is the only one
+    // capable of supporting Railgun (Secure Enclave / TPM keys cannot be
+    // extracted to feed Baby Jubjub derivation). Track 2 Phase B landed the
+    // primitives in `crate::railgun::*`; the three key-derivation methods
+    // below are wired through `wallet::derive_wallet_keys`, which uses the
+    // existing secp256k1 vault key bytes as the Railgun BIP-32 seed (the
+    // daemon never owns an independent BIP-39 mnemonic for the user). Each
+    // wallet thus has a single deterministic Railgun shielded address.
+    //
+    // `decrypt_note` and `witness_inputs` remain `Unsupported`: they require
+    // wire-format details (note plaintext layout, prover input assembly) that
+    // live in the Track 3 engine fork and the Track 4 prover sidecar
+    // respectively. Phase B only owns the primitives, not the orchestration.
+
+    async fn railgun_master_public_key(&self, vault_key_id: Uuid) -> Result<String, SignerError> {
+        let keys = self.derive_railgun_wallet_keys(vault_key_id)?;
+        Ok(keys.encoded_address)
+    }
+
+    async fn railgun_viewing_public_key(
+        &self,
+        vault_key_id: Uuid,
+    ) -> Result<RailgunViewingPublicKeys, SignerError> {
+        let keys = self.derive_railgun_wallet_keys(vault_key_id)?;
+        Ok(RailgunViewingPublicKeys {
+            viewing_pubkey_hex: hex::encode(keys.viewing_public_key),
+            master_pubkey_hex: hex::encode(keys.master_public_key),
+        })
+    }
+
+    async fn railgun_compute_nullifier(
+        &self,
+        vault_key_id: Uuid,
+        note: &RailgunNoteInput,
+    ) -> Result<RailgunNullifier, SignerError> {
+        let keys = self.derive_railgun_wallet_keys(vault_key_id)?;
+        let nullifier =
+            crate::railgun::wallet::get_nullifier(&keys.nullifying_key, note.leaf_index)?;
+        Ok(RailgunNullifier {
+            nullifier_hex: hex::encode(nullifier),
+        })
+    }
+
+    async fn railgun_decrypt_note(
+        &self,
+        vault_key_id: Uuid,
+        ciphertext: &RailgunNoteCiphertext,
+    ) -> Result<Option<RailgunDecryptedNote>, SignerError> {
+        let keys = self.derive_railgun_wallet_keys(vault_key_id)?;
+
+        fn decode_fixed<const N: usize>(label: &str, value: &str) -> Result<[u8; N], SignerError> {
+            let normalized = value.strip_prefix("0x").unwrap_or(value);
+            let bytes = hex::decode(normalized)
+                .map_err(|e| SignerError::RailgunCrypto(format!("{label} hex: {e}")))?;
+            <[u8; N]>::try_from(bytes.as_slice()).map_err(|_| {
+                SignerError::RailgunCrypto(format!("{label} must encode exactly {N} bytes"))
+            })
+        }
+
+        let ephemeral_pub =
+            decode_fixed::<32>("ephemeralPubkeyHex", &ciphertext.ephemeral_pubkey_hex)?;
+        let iv = decode_fixed::<16>("ivHex", &ciphertext.iv_hex)?;
+        let tag = decode_fixed::<16>("tagHex", &ciphertext.tag_hex)?;
+
+        let mut ct_bytes = Vec::with_capacity(ciphertext.data_chunks_hex.len() * 32);
+        for (i, chunk_hex) in ciphertext.data_chunks_hex.iter().enumerate() {
+            let chunk = decode_fixed::<32>(&format!("dataChunksHex[{i}]"), chunk_hex)?;
+            ct_bytes.extend_from_slice(&chunk);
+        }
+
+        let chunks = crate::railgun::wallet::decrypt_note_chunks(
+            &keys.viewing_private_key,
+            &ephemeral_pub,
+            &iv,
+            &ct_bytes,
+            &tag,
+        )?;
+
+        Ok(chunks.map(|cs| RailgunDecryptedNote {
+            chunks_hex: cs.into_iter().map(|c| hex::encode(c)).collect(),
+        }))
+    }
+
+    async fn railgun_witness_inputs(
+        &self,
+        vault_key_id: Uuid,
+        notes: &[RailgunNoteInput],
+        merkle_paths: &[RailgunMerklePath],
+        recipients_payload_hex: &str,
+    ) -> Result<RailgunWitnessBundle, SignerError> {
+        // Currently unused; reserved for future Railgun variants that bind the
+        // signature to specific Merkle paths. The sidecar still passes them so
+        // the trait shape stays stable.
+        let _ = merkle_paths;
+
+        let keys = self.derive_railgun_wallet_keys(vault_key_id)?;
+
+        // Contract: `recipients_payload_hex` is the sidecar's pre-computed
+        // Poseidon digest of the full Railgun-side message
+        // (poseidon([merkleRoot, boundParamsHash, ...nullifiers, ...commitmentsOut])).
+        // We require it pre-hashed so the daemon does not have to know the
+        // exact Railgun message-assembly shape (which changes per protocol
+        // version) — only sign it under the spending key.
+        let normalized = recipients_payload_hex
+            .strip_prefix("0x")
+            .unwrap_or(recipients_payload_hex);
+        let payload_bytes = hex::decode(normalized)
+            .map_err(|e| SignerError::RailgunCrypto(format!("recipients_payload_hex: {e}")))?;
+        if payload_bytes.len() != 32 {
+            return Err(SignerError::RailgunCrypto(format!(
+                "recipients_payload_hex must encode exactly 32 bytes (the sidecar's pre-hashed \
+                 Poseidon digest); got {} bytes",
+                payload_bytes.len()
+            )));
+        }
+        let mut digest = [0u8; 32];
+        digest.copy_from_slice(&payload_bytes);
+
+        let mut nullifiers_hex = Vec::with_capacity(notes.len());
+        for note in notes {
+            let nullifier =
+                crate::railgun::wallet::get_nullifier(&keys.nullifying_key, note.leaf_index)?;
+            nullifiers_hex.push(hex::encode(nullifier));
+        }
+
+        let signature = crate::railgun::eddsa::sign_poseidon(&keys.spending_private_key, &digest)?;
+
+        let pubkey_packed = crate::railgun::babyjubjub::pack_point(
+            &crate::railgun::eddsa::prv_to_pub(&keys.spending_private_key),
+        );
+
+        Ok(RailgunWitnessBundle {
+            nullifiers_hex,
+            spending_signatures_hex: vec![hex::encode(signature.to_unpacked_xy_s_bytes())],
+            spend_authority_pubkey_hex: hex::encode(pubkey_packed),
+        })
+    }
+}
+
+impl SoftwareSignerBackend {
+    /// Derives the full Railgun wallet (index 0) from the existing secp256k1
+    /// vault key. Used by the `railgun_*` trait methods to keep the wallet
+    /// keys ephemeral — nothing about the Railgun keypair is persisted in
+    /// daemon state; each call re-derives from the underlying secp256k1
+    /// material.
+    fn derive_railgun_wallet_keys(
+        &self,
+        vault_key_id: Uuid,
+    ) -> Result<crate::railgun::wallet::RailgunWalletKeys, SignerError> {
+        let keys = self
+            .keys
+            .read()
+            .map_err(|_| SignerError::Internal("poisoned lock".into()))?;
+        let signing_key = keys
+            .get(&vault_key_id)
+            .ok_or(SignerError::UnknownKey(vault_key_id))?;
+        let raw = match signing_key {
+            SoftwareSigningKey::Secp256k1(sk) => Zeroizing::new(sk.to_bytes()),
+            SoftwareSigningKey::Ed25519(_) => {
+                return Err(SignerError::Unsupported(
+                    "Railgun derivation requires a secp256k1 vault key; Ed25519-only keys cannot \
+                     seed a Railgun wallet"
+                        .to_string(),
+                ));
+            }
+        };
+        // Wallet index 0 is the only one we surface today; per-wallet
+        // multiplicity (different shielded addresses for the same root key)
+        // lands when there's a product reason to expose it.
+        crate::railgun::wallet::derive_wallet_keys(raw.as_ref(), 0)
     }
 }
 
@@ -734,6 +1043,13 @@ impl VaultSignerBackend for SecureEnclaveSignerBackend {
                 } => Err(SignerError::Unsupported(
                     "Secure Enclave backend does not support Ed25519 keys".to_string(),
                 )),
+                KeyCreateRequest::GenerateWithAlgorithm {
+                    algorithm: KeyAlgorithm::RailgunSpending | KeyAlgorithm::RailgunViewing,
+                } => Err(SignerError::Unsupported(
+                    "Secure Enclave backend does not support Railgun keys; Railgun requires \
+                     extractable software-resident key material for zk witness generation"
+                        .to_string(),
+                )),
                 KeyCreateRequest::Import { .. } | KeyCreateRequest::ImportWithAlgorithm { .. } => Err(SignerError::Unsupported(
                     "Secure Enclave keys are non-importable; use a non-enclave backend for imports"
                         .to_string(),
@@ -815,6 +1131,8 @@ mod tests {
 
     use async_trait::async_trait;
     use uuid::Uuid;
+
+    use vault_domain::KeyAlgorithm;
 
     use super::{
         AttestableSignerBackend, BackendKind, KeyCreateRequest, SecureEnclaveSignerBackend,
@@ -929,12 +1247,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn key_create_request_debug_redacts_private_key_material() {
+        let secret = "11".repeat(32);
+        let import = KeyCreateRequest::Import {
+            private_key_hex: secret.clone().into(),
+        };
+        let import_with_algorithm = KeyCreateRequest::ImportWithAlgorithm {
+            algorithm: KeyAlgorithm::Ed25519,
+            private_key_hex: secret.clone().into(),
+        };
+
+        for rendered in [format!("{import:?}"), format!("{import_with_algorithm:?}")] {
+            assert!(!rendered.contains(&secret), "{rendered}");
+            assert!(rendered.contains("<redacted>"), "{rendered}");
+        }
+        assert!(format!("{import_with_algorithm:?}").contains("Ed25519"));
+        assert_eq!(format!("{:?}", KeyCreateRequest::Generate), "Generate");
+        assert_eq!(
+            format!(
+                "{:?}",
+                KeyCreateRequest::GenerateWithAlgorithm {
+                    algorithm: KeyAlgorithm::Secp256k1
+                }
+            ),
+            "GenerateWithAlgorithm { algorithm: Secp256k1 }"
+        );
+    }
+
+    #[test]
+    fn key_create_request_serde_shape_is_a_plain_hex_string() {
+        let secret = "11".repeat(32);
+        let import = KeyCreateRequest::Import {
+            private_key_hex: secret.clone().into(),
+        };
+
+        let json = serde_json::to_string(&import).expect("serialize");
+        assert_eq!(
+            json,
+            format!(r#"{{"Import":{{"private_key_hex":"{secret}"}}}}"#)
+        );
+        let decoded: KeyCreateRequest = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, import);
+
+        let with_algorithm: KeyCreateRequest = serde_json::from_str(&format!(
+            r#"{{"ImportWithAlgorithm":{{"algorithm":"ed25519","private_key_hex":"{secret}"}}}}"#
+        ))
+        .expect("deserialize legacy shape");
+        assert_eq!(
+            with_algorithm,
+            KeyCreateRequest::ImportWithAlgorithm {
+                algorithm: KeyAlgorithm::Ed25519,
+                private_key_hex: secret.into(),
+            }
+        );
+    }
+
     #[tokio::test]
     async fn import_path_marks_keys_as_imported_and_accepts_prefixed_hex() {
         let backend = SoftwareSignerBackend::default();
         let key = backend
             .create_vault_key(KeyCreateRequest::Import {
-                private_key_hex: format!("0x{}", "11".repeat(32)),
+                private_key_hex: format!("0x{}", "11".repeat(32)).into(),
             })
             .await
             .expect("must import key");
@@ -1020,7 +1394,7 @@ mod tests {
         let backend = SoftwareSignerBackend::default();
         let key = backend
             .create_vault_key(KeyCreateRequest::Import {
-                private_key_hex: "11".repeat(32),
+                private_key_hex: "11".repeat(32).into(),
             })
             .await
             .expect("must import key");
@@ -1085,7 +1459,7 @@ mod tests {
         let backend = SoftwareSignerBackend::default();
         let result = backend
             .create_vault_key(KeyCreateRequest::Import {
-                private_key_hex: "0x1234".to_string(),
+                private_key_hex: "0x1234".to_string().into(),
             })
             .await;
 
@@ -1198,7 +1572,7 @@ mod tests {
         assert!(matches!(
             backend
                 .create_vault_key(KeyCreateRequest::Import {
-                    private_key_hex: "11".repeat(32)
+                    private_key_hex: "11".repeat(32).into()
                 })
                 .await,
             Err(SignerError::Unsupported(message)) if message.contains("requires macOS")
@@ -1221,7 +1595,7 @@ mod tests {
         let backend = SecureEnclaveSignerBackend::default();
         let result = backend
             .create_vault_key(KeyCreateRequest::Import {
-                private_key_hex: "0x11".repeat(32),
+                private_key_hex: "0x11".repeat(32).into(),
             })
             .await;
 
@@ -1331,5 +1705,231 @@ mod tests {
         backend
             .delete_if_present(key.id)
             .expect("cleanup should not fail");
+    }
+
+    #[tokio::test]
+    async fn software_backend_rejects_railgun_key_creation_with_phase_b_marker() {
+        let backend = SoftwareSignerBackend::default();
+        for algorithm in [
+            vault_domain::KeyAlgorithm::RailgunSpending,
+            vault_domain::KeyAlgorithm::RailgunViewing,
+        ] {
+            let err = backend
+                .create_vault_key(KeyCreateRequest::GenerateWithAlgorithm { algorithm })
+                .await
+                .expect_err("railgun keys are not generated standalone");
+            assert!(
+                matches!(err, SignerError::Unsupported(msg) if msg.contains("railgun_")
+                || msg.contains("Railgun keys are derived"))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn software_backend_railgun_key_derivation_returns_real_address() {
+        // Phase B step 3 wired the three key-derivation methods through
+        // `wallet::derive_wallet_keys`. With a real secp256k1 vault key in
+        // place, all three return concrete values; the two unimplemented
+        // methods (`decrypt_note`, `witness_inputs`) keep returning
+        // `Unsupported` but with sharper error messages that explicitly
+        // name the Track 3 / Track 4 dependency.
+        use vault_domain::{
+            RailgunMerklePath, RailgunNoteCiphertext, RailgunNoteInput, RailgunTreeNumber,
+        };
+
+        let backend = SoftwareSignerBackend::default();
+        let vault_key = backend
+            .create_vault_key(KeyCreateRequest::Generate)
+            .await
+            .expect("create secp256k1 vault key");
+
+        let address = backend
+            .railgun_master_public_key(vault_key.id)
+            .await
+            .expect("master public key derivation succeeds");
+        assert!(
+            address.starts_with("0zk1"),
+            "encoded address must use the 0zk1 bech32 HRP, got {address}",
+        );
+
+        let viewing = backend
+            .railgun_viewing_public_key(vault_key.id)
+            .await
+            .expect("viewing public key derivation succeeds");
+        assert_eq!(
+            viewing.viewing_pubkey_hex.len(),
+            64,
+            "viewing pub is a 32-byte hex string",
+        );
+        assert_eq!(
+            viewing.master_pubkey_hex.len(),
+            64,
+            "master pub is a 32-byte hex string",
+        );
+
+        let note = RailgunNoteInput {
+            chain_id: 1,
+            tree_number: RailgunTreeNumber::Utxo,
+            leaf_index: 42,
+            commitment_hex: "00".repeat(32),
+            random_hex: "11".repeat(32),
+            token: "0x1111111111111111111111111111111111111111"
+                .parse()
+                .unwrap(),
+            value_wei: 1,
+        };
+        let nullifier = backend
+            .railgun_compute_nullifier(vault_key.id, &note)
+            .await
+            .expect("nullifier derivation succeeds");
+        assert_eq!(
+            nullifier.nullifier_hex.len(),
+            64,
+            "nullifier is a 32-byte hex string",
+        );
+
+        // Determinism check: same vault key + same leaf index → same nullifier
+        // (this is what makes Railgun "compute then publish" sound on-chain).
+        let nullifier2 = backend
+            .railgun_compute_nullifier(vault_key.id, &note)
+            .await
+            .expect("nullifier derivation succeeds on repeat");
+        assert_eq!(
+            nullifier, nullifier2,
+            "nullifier derivation must be deterministic"
+        );
+
+        // decrypt_note now does ECDH + AES-256-GCM under the wallet's viewing
+        // key. On a junk ciphertext + bogus ephemeral pubkey the auth tag
+        // verification fails and the daemon returns Ok(None) — never an
+        // error. The byte-equality success-path test lives in the
+        // railgun::wallet module against engine-generated vectors.
+        let ciphertext = RailgunNoteCiphertext {
+            ephemeral_pubkey_hex: "22".repeat(32),
+            iv_hex: "33".repeat(16),
+            tag_hex: "44".repeat(16),
+            data_chunks_hex: vec!["55".repeat(32), "66".repeat(32), "77".repeat(32)],
+        };
+        let decrypt_result = backend
+            .railgun_decrypt_note(vault_key.id, &ciphertext)
+            .await
+            .expect("decrypt_note must not error on auth failure — only return None");
+        assert!(
+            decrypt_result.is_none(),
+            "junk ciphertext must auth-fail rather than decrypt to garbage; got {decrypt_result:?}",
+        );
+
+        let path = RailgunMerklePath {
+            tree_number: RailgunTreeNumber::Utxo,
+            leaf_index: 0,
+            path_elements_hex: vec!["55".repeat(32)],
+            root_hex: "66".repeat(32),
+        };
+
+        // witness_inputs requires a 32-byte pre-hashed Poseidon digest. Empty
+        // input must fail loudly so a sidecar bug never silently produces
+        // garbage signatures.
+        let bad_payload = backend
+            .railgun_witness_inputs(vault_key.id, &[note.clone()], &[path.clone()], "")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                &bad_payload,
+                SignerError::RailgunCrypto(msg) if msg.contains("32 bytes")
+            ),
+            "empty payload must trigger the 32-byte-digest precondition; got {bad_payload:?}",
+        );
+
+        // With a valid 32-byte digest the call succeeds and produces a bundle
+        // shaped per the trait contract (one nullifier per note, one
+        // unpacked-96-byte signature per transaction).
+        let digest_hex = "ab".repeat(32);
+        let bundle = backend
+            .railgun_witness_inputs(vault_key.id, &[note.clone()], &[path.clone()], &digest_hex)
+            .await
+            .expect("witness inputs succeed with a valid digest");
+        assert_eq!(
+            bundle.nullifiers_hex.len(),
+            1,
+            "one nullifier per spent note",
+        );
+        assert_eq!(
+            bundle.nullifiers_hex[0].len(),
+            64,
+            "nullifier is a 32-byte hex string",
+        );
+        assert_eq!(
+            bundle.spending_signatures_hex.len(),
+            1,
+            "one transaction signature per witness call",
+        );
+        assert_eq!(
+            bundle.spending_signatures_hex[0].len(),
+            96 * 2,
+            "unpacked signature is R8.x || R8.y || S = 96 bytes hex",
+        );
+        assert_eq!(
+            bundle.spend_authority_pubkey_hex.len(),
+            64,
+            "packed spend authority pubkey is 32 bytes hex",
+        );
+
+        // Same key + same digest must produce a byte-identical bundle — the
+        // EdDSA-Poseidon signature is deterministic for fixed (priv, msg).
+        let bundle2 = backend
+            .railgun_witness_inputs(vault_key.id, &[note], &[path], &digest_hex)
+            .await
+            .expect("witness inputs repeat");
+        assert_eq!(
+            bundle, bundle2,
+            "EdDSA-Poseidon signature must be deterministic"
+        );
+    }
+
+    #[tokio::test]
+    async fn trait_default_railgun_methods_return_unsupported_for_dummy_backend() {
+        use vault_domain::{RailgunNoteCiphertext, RailgunNoteInput, RailgunTreeNumber};
+
+        let backend = DummyTeeBackend;
+        let id = Uuid::new_v4();
+        let note = RailgunNoteInput {
+            chain_id: 1,
+            tree_number: RailgunTreeNumber::LegacyUtxo,
+            leaf_index: 7,
+            commitment_hex: "ab".repeat(32),
+            random_hex: "cd".repeat(32),
+            token: "0x2222222222222222222222222222222222222222"
+                .parse()
+                .unwrap(),
+            value_wei: 100,
+        };
+        let ciphertext = RailgunNoteCiphertext {
+            ephemeral_pubkey_hex: "11".repeat(32),
+            iv_hex: "22".repeat(16),
+            tag_hex: "33".repeat(16),
+            data_chunks_hex: vec!["44".repeat(32), "55".repeat(32), "66".repeat(32)],
+        };
+
+        assert!(matches!(
+            backend.railgun_master_public_key(id).await,
+            Err(SignerError::Unsupported(_))
+        ));
+        assert!(matches!(
+            backend.railgun_viewing_public_key(id).await,
+            Err(SignerError::Unsupported(_))
+        ));
+        assert!(matches!(
+            backend.railgun_compute_nullifier(id, &note).await,
+            Err(SignerError::Unsupported(_))
+        ));
+        assert!(matches!(
+            backend.railgun_decrypt_note(id, &ciphertext).await,
+            Err(SignerError::Unsupported(_))
+        ));
+        assert!(matches!(
+            backend.railgun_witness_inputs(id, &[], &[], "").await,
+            Err(SignerError::Unsupported(_))
+        ));
     }
 }

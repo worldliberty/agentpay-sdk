@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import * as MppxTempo from 'mppx/tempo';
-import { createPublicClient, keccak256, parseSignature, http as viemHttp } from 'viem';
+import { createPublicClient, encodeAbiParameters, keccak256, http as viemHttp } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { tempo as tempoChain } from 'viem/chains';
 import { Actions as TempoActions, Transaction as TempoTransaction } from 'viem/tempo';
@@ -17,6 +17,7 @@ const repoRoot = new URL('..', import.meta.url).pathname;
 const AGENT_KEY_ID = '00000000-0000-0000-0000-000000000123';
 const TOKEN_ADDRESS = '0x20C000000000000000000000b9537d11c60E8b50';
 const RECIPIENT_ADDRESS = '0x000000000000000000000000000000000000dEaD';
+const TEMPO_TEST_PRIVATE_KEY = '0x59c6995e998f97a5a0044966f094538f5f4e0e46f95cebf7f5f88f5f2b5b9f10';
 
 function makeIsolatedHome() {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-payment-http-'));
@@ -27,6 +28,34 @@ function makeIsolatedHome() {
 
 function writeExecutable(filePath, body) {
   fs.writeFileSync(filePath, `#!/bin/sh\n${body}\n`, { mode: 0o700 });
+}
+
+const TEMPO_AGENT_MOCK_PATH = path.join(repoRoot, 'test', 'tempo-agent-mock.mjs');
+
+// Installs an agentpay-agent double that rebuilds the Tempo session payload from the CLI flags and
+// signs the reference digest, mirroring what the Rust daemon reconstructs before signing.
+function writeTempoAgentMock(rustBinDir, privateKey, argsLogPath = '') {
+  writeExecutable(
+    path.join(rustBinDir, 'agentpay-agent'),
+    `exec node ${JSON.stringify(TEMPO_AGENT_MOCK_PATH)} ${JSON.stringify(privateKey)} ${JSON.stringify(argsLogPath)} "$@"`,
+  );
+}
+
+function computeTempoChannelId({ payer, recipient, token, salt, escrowContract, chainId }) {
+  return keccak256(
+    encodeAbiParameters(
+      [
+        { type: 'address' },
+        { type: 'address' },
+        { type: 'address' },
+        { type: 'bytes32' },
+        { type: 'address' },
+        { type: 'address' },
+        { type: 'uint256' },
+      ],
+      [payer, recipient, token, salt, payer, escrowContract, BigInt(chainId)],
+    ),
+  );
 }
 
 function writeConfig(agentpayHome, config) {
@@ -72,16 +101,6 @@ function runCliAsync(args, { homeDir, env = {} }) {
 
 function combinedOutput(result) {
   return `${result.stdout ?? ''}${result.stderr ?? ''}`;
-}
-
-function recoverableSignatureArtifacts(signatureHex, signatureHexOutput = signatureHex) {
-  const parsed = parseSignature(signatureHex);
-  return {
-    signatureHex: signatureHexOutput,
-    rHex: parsed.r,
-    sHex: parsed.s,
-    v: parsed.yParity ?? Number(parsed.v - 27n),
-  };
 }
 
 async function startUnixSocket(socketPath) {
@@ -985,35 +1004,7 @@ test('agentpay mpp opens and closes a one-shot Tempo session request', async () 
   let openPayloadValidation = Promise.resolve();
 
   try {
-    writeExecutable(
-      path.join(rustBinDir, 'agentpay-agent'),
-      [
-        'exec node --input-type=module - "$@" <<\'EOF\'',
-        "import { parseSignature } from 'viem';",
-        "import { privateKeyToAccount } from 'viem/accounts';",
-        `const account = privateKeyToAccount(${JSON.stringify(accountPrivateKey)});`,
-        'const args = process.argv.slice(2);',
-        "const cmd = args.find((value) => value === 'tempo-session-open-transaction' || value === 'tempo-session-voucher');",
-        "if (!cmd) throw new Error(`unexpected-command:${args.join(' ')}`);",
-        "const hashIndex = args.indexOf('--signing-hash-hex');",
-        "if (hashIndex < 0 || !args[hashIndex + 1]) throw new Error('missing --signing-hash-hex');",
-        'const signatureHex = await account.sign({ hash: args[hashIndex + 1] });',
-        'const parsed = parseSignature(signatureHex);',
-        'const v = Number(parsed.yParity ?? (parsed.v - 27n));',
-        'process.stdout.write(JSON.stringify({',
-        '  command: cmd,',
-        "  network: '4217',",
-        `  asset: 'erc20:${TOKEN_ADDRESS}',`,
-        `  counterparty: '${RECIPIENT_ADDRESS}',`,
-        "  amount_wei: '1000000',",
-        '  signature_hex: signatureHex,',
-        '  r_hex: parsed.r,',
-        '  s_hex: parsed.s,',
-        '  v,',
-        '}));',
-        'EOF',
-      ].join('\n'),
-    );
+    writeTempoAgentMock(rustBinDir, accountPrivateKey);
     writeExecutable(path.join(rustBinDir, 'agentpay-admin'), 'printf "{}"');
 
     writeConfig(agentpayHome, {
@@ -1337,12 +1328,6 @@ test('agentpay mpp reuses persisted Tempo session state and closes it on demand'
     '0x59c6995e998f97a5a0044966f094538f5f4e0e46f95cebf7f5f88f5f2b5b9f10',
   );
   const walletAddress = account.address;
-  const openSignatureHex = await account.sign({
-    hash: `0x${'4'.repeat(64)}`,
-  });
-  const voucherSignatureHex = await account.sign({
-    hash: `0x${'5'.repeat(64)}`,
-  });
   const expectedRequestBody = JSON.stringify({ prompt: 'reuse' });
   const escrowContract = '0x33b901018174DDabE4841042ab76ba85D4e24f25';
 
@@ -1356,44 +1341,7 @@ test('agentpay mpp reuses persisted Tempo session state and closes it on demand'
   let server = null;
 
   try {
-    writeExecutable(
-      path.join(rustBinDir, 'agentpay-agent'),
-      [
-        'cmd=""',
-        'for arg in "$@"; do',
-        '  case "$arg" in',
-        '    tempo-session-open-transaction|tempo-session-voucher)',
-        '      cmd="$arg"',
-        '      break',
-        '      ;;',
-        '  esac',
-        'done',
-        'case "$cmd" in',
-        '  tempo-session-open-transaction)',
-        '    printf "{\\"command\\":\\"tempo-session-open-transaction\\",\\"network\\":\\"4217\\",\\"asset\\":\\"erc20:' +
-          TOKEN_ADDRESS +
-          '\\",\\"counterparty\\":\\"' +
-          RECIPIENT_ADDRESS +
-          '\\",\\"amount_wei\\":\\"1000000\\",\\"signature_hex\\":\\"' +
-          openSignatureHex +
-          '\\"}"',
-        '    ;;',
-        '  tempo-session-voucher)',
-        '    printf "{\\"command\\":\\"tempo-session-voucher\\",\\"network\\":\\"4217\\",\\"asset\\":\\"erc20:' +
-          TOKEN_ADDRESS +
-          '\\",\\"counterparty\\":\\"' +
-          RECIPIENT_ADDRESS +
-          '\\",\\"amount_wei\\":\\"1000000\\",\\"signature_hex\\":\\"' +
-          voucherSignatureHex +
-          '\\"}"',
-        '    ;;',
-        '  *)',
-        '    echo "unexpected-command:$cmd" 1>&2',
-        '    exit 9',
-        '    ;;',
-        'esac',
-      ].join('\n'),
-    );
+    writeTempoAgentMock(rustBinDir, TEMPO_TEST_PRIVATE_KEY);
     writeExecutable(path.join(rustBinDir, 'agentpay-admin'), 'printf "{}"');
 
     writeConfig(agentpayHome, {
@@ -1658,15 +1606,6 @@ test('agentpay mpp automatically tops up persisted Tempo session state when need
     '0x59c6995e998f97a5a0044966f094538f5f4e0e46f95cebf7f5f88f5f2b5b9f10',
   );
   const walletAddress = account.address;
-  const openSignatureHex = await account.sign({
-    hash: `0x${'6'.repeat(64)}`,
-  });
-  const topUpSignatureHex = await account.sign({
-    hash: `0x${'7'.repeat(64)}`,
-  });
-  const voucherSignatureHex = await account.sign({
-    hash: `0x${'8'.repeat(64)}`,
-  });
   const expectedRequestBody = JSON.stringify({ prompt: 'topup' });
   const escrowContract = '0x33b901018174DDabE4841042ab76ba85D4e24f25';
 
@@ -1680,53 +1619,7 @@ test('agentpay mpp automatically tops up persisted Tempo session state when need
   let server = null;
 
   try {
-    writeExecutable(
-      path.join(rustBinDir, 'agentpay-agent'),
-      [
-        'cmd=""',
-        'for arg in "$@"; do',
-        '  case "$arg" in',
-        '    tempo-session-open-transaction|tempo-session-top-up-transaction|tempo-session-voucher)',
-        '      cmd="$arg"',
-        '      break',
-        '      ;;',
-        '  esac',
-        'done',
-        'case "$cmd" in',
-        '  tempo-session-open-transaction)',
-        '    printf "{\\"command\\":\\"tempo-session-open-transaction\\",\\"network\\":\\"4217\\",\\"asset\\":\\"erc20:' +
-          TOKEN_ADDRESS +
-          '\\",\\"counterparty\\":\\"' +
-          RECIPIENT_ADDRESS +
-          '\\",\\"amount_wei\\":\\"1000000\\",\\"signature_hex\\":\\"' +
-          openSignatureHex +
-          '\\"}"',
-        '    ;;',
-        '  tempo-session-top-up-transaction)',
-        '    printf "{\\"command\\":\\"tempo-session-top-up-transaction\\",\\"network\\":\\"4217\\",\\"asset\\":\\"erc20:' +
-          TOKEN_ADDRESS +
-          '\\",\\"counterparty\\":\\"' +
-          RECIPIENT_ADDRESS +
-          '\\",\\"amount_wei\\":\\"1000000\\",\\"signature_hex\\":\\"' +
-          topUpSignatureHex +
-          '\\"}"',
-        '    ;;',
-        '  tempo-session-voucher)',
-        '    printf "{\\"command\\":\\"tempo-session-voucher\\",\\"network\\":\\"4217\\",\\"asset\\":\\"erc20:' +
-          TOKEN_ADDRESS +
-          '\\",\\"counterparty\\":\\"' +
-          RECIPIENT_ADDRESS +
-          '\\",\\"amount_wei\\":\\"1000000\\",\\"signature_hex\\":\\"' +
-          voucherSignatureHex +
-          '\\"}"',
-        '    ;;',
-        '  *)',
-        '    echo "unexpected-command:$cmd" 1>&2',
-        '    exit 9',
-        '    ;;',
-        'esac',
-      ].join('\n'),
-    );
+    writeTempoAgentMock(rustBinDir, TEMPO_TEST_PRIVATE_KEY);
     writeExecutable(path.join(rustBinDir, 'agentpay-admin'), 'printf "{}"');
 
     writeConfig(agentpayHome, {
@@ -1966,7 +1859,15 @@ test('agentpay mpp reports required amount details when a Tempo session topUp la
 
   const walletAddress = '0x4000000000000000000000000000000000000000';
   const escrowContract = '0x33b901018174DDabE4841042ab76ba85D4e24f25';
-  const channelId = `0x${'1'.repeat(64)}`;
+  const salt = `0x${'1'.repeat(64)}`;
+  const channelId = computeTempoChannelId({
+    payer: walletAddress,
+    recipient: RECIPIENT_ADDRESS,
+    token: TOKEN_ADDRESS,
+    salt,
+    escrowContract,
+    chainId: 4217,
+  });
   const socketServer = await startUnixSocket(socketPath);
   const { server: rpcServer, rpcUrl } = await startMockRpcServer({
     chainId: 4217,
@@ -2000,7 +1901,7 @@ test('agentpay mpp reports required amount details when a Tempo session topUp la
       sessionStatePath,
       `${JSON.stringify(
         {
-          version: 1,
+          version: 2,
           kind: 'tempo_session',
           chainId: 4217,
           rpcUrl,
@@ -2008,6 +1909,8 @@ test('agentpay mpp reports required amount details when a Tempo session topUp la
           token: TOKEN_ADDRESS,
           recipient: RECIPIENT_ADDRESS,
           walletAddress,
+          authorizedSigner: walletAddress,
+          salt,
           channelId,
           depositWei: '1000000',
           cumulativeAmountWei: '1000000',
@@ -2096,6 +1999,213 @@ test('agentpay mpp reports required amount details when a Tempo session topUp la
   }
 });
 
+async function runOneShotTempoSessionScenario({
+  methodDetails,
+  receiptChannelId = (openedChannelId) => openedChannelId,
+  sessionState,
+}) {
+  const { homeDir, agentpayHome } = makeIsolatedHome();
+  const rustBinDir = path.join(agentpayHome, 'bin');
+  const socketPath = path.join(agentpayHome, 'daemon.sock');
+  const argsLogPath = path.join(agentpayHome, 'agent-args.jsonl');
+  const sessionStatePath = path.join(agentpayHome, 'tempo-session-scenario.json');
+  fs.mkdirSync(rustBinDir, { recursive: true, mode: 0o700 });
+  const walletAddress = privateKeyToAccount(TEMPO_TEST_PRIVATE_KEY).address;
+
+  const socketServer = await startUnixSocket(socketPath);
+  const { server: rpcServer, rpcUrl } = await startMockRpcServer({
+    chainId: methodDetails.chainId,
+    txHash: `0x${'9'.repeat(64)}`,
+    from: walletAddress,
+    to: TOKEN_ADDRESS,
+    methodOverrides: { eth_call: '0x' },
+  });
+  let server = null;
+  const requests = [];
+  try {
+    writeTempoAgentMock(rustBinDir, TEMPO_TEST_PRIVATE_KEY, argsLogPath);
+    writeExecutable(path.join(rustBinDir, 'agentpay-admin'), 'printf "{}"');
+    writeConfig(agentpayHome, {
+      rustBinDir,
+      daemonSocket: socketPath,
+      agentKeyId: AGENT_KEY_ID,
+      wallet: {
+        address: walletAddress,
+        vaultKeyId: 'vault-key-test',
+        vaultPublicKey: '03abcdef',
+        agentKeyId: AGENT_KEY_ID,
+        policyAttachment: 'policy_set',
+      },
+    });
+    if (sessionState) {
+      fs.writeFileSync(sessionStatePath, `${JSON.stringify(sessionState({ rpcUrl }), null, 2)}\n`);
+    }
+    const challengeRequest = {
+      amount: '1000000',
+      currency: TOKEN_ADDRESS,
+      recipient: RECIPIENT_ADDRESS,
+      decimals: 6,
+      methodDetails,
+    };
+    const challengeHeader = `Payment ${[
+      'id="session-scenario"',
+      'realm="api.example.com"',
+      'method="tempo"',
+      'intent="session"',
+      `request="${Buffer.from(JSON.stringify(challengeRequest), 'utf8').toString('base64url')}"`,
+    ].join(', ')}`;
+    server = http.createServer((req, res) => {
+      req.resume();
+      req.on('end', () => {
+        const authHeader = req.headers.authorization;
+        if (typeof authHeader !== 'string') {
+          requests.push(null);
+          res.statusCode = 402;
+          res.setHeader('WWW-Authenticate', challengeHeader);
+          res.end('');
+          return;
+        }
+        const credential = JSON.parse(
+          Buffer.from(authHeader.replace(/^Payment\s+/u, ''), 'base64url').toString('utf8'),
+        );
+        requests.push(credential.payload);
+        const receipt = {
+          method: 'tempo',
+          intent: 'session',
+          status: 'success',
+          timestamp: '2026-03-22T00:00:00.000Z',
+          reference: credential.payload.channelId,
+          challengeId: 'session-scenario',
+          channelId: receiptChannelId(credential.payload.channelId),
+          acceptedCumulative: '1000000',
+          spent: '1000000',
+          units: 1,
+        };
+        res.statusCode = 200;
+        res.setHeader(
+          'Payment-Receipt',
+          Buffer.from(JSON.stringify(receipt), 'utf8').toString('base64url'),
+        );
+        res.end('');
+      });
+    });
+    await new Promise((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve(undefined));
+    });
+    const result = await runCliAsync(
+      [
+        'mpp',
+        `http://127.0.0.1:${server.address().port}/mpp-session-scenario`,
+        '--amount',
+        '1',
+        ...(sessionState ? ['--session-state-file', sessionStatePath] : []),
+        '--rpc-url',
+        rpcUrl,
+        '--agent-key-id',
+        AGENT_KEY_ID,
+        '--agent-auth-token',
+        'test-agent-auth-token',
+        '--allow-legacy-agent-auth-source',
+        '--daemon-socket',
+        socketPath,
+        '--json',
+      ],
+      { homeDir, env: { AGENTPAY_TELEMETRY: '0' } },
+    );
+    const agentCalls = fs.existsSync(argsLogPath)
+      ? fs
+          .readFileSync(argsLogPath, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => JSON.parse(line))
+      : [];
+    return { result, requests, agentCalls, walletAddress };
+  } finally {
+    await closeServer(server);
+    await closeServer(rpcServer);
+    await closeServer(socketServer);
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+}
+
+test('agentpay mpp signs sponsored Tempo session opens against the fee-payer sender digest', async () => {
+  const { result, requests, agentCalls, walletAddress } = await runOneShotTempoSessionScenario({
+    methodDetails: {
+      chainId: 42431,
+      escrowContract: '0xe1c4d3dce17bc111181ddf716f75bae49e61a336',
+      feePayer: true,
+    },
+  });
+  assert.equal(result.status, 0, combinedOutput(result));
+  const openCall = agentCalls.find((call) => call.command === 'tempo-session-open-transaction');
+  assert.ok(openCall, 'open transaction must be signed by the agent');
+  assert.ok(openCall.args.includes('--fee-payer'));
+  assert.equal(openCall.args.includes('--fee-token'), false);
+  assert.equal(openCall.args[openCall.args.indexOf('--payer') + 1], walletAddress);
+  assert.equal(openCall.args.includes('--signing-hash-hex'), false);
+
+  const openPayload = requests.find((payload) => payload?.action === 'open');
+  // Sponsored transactions travel to the fee payer in the 0x78 fee-payer envelope.
+  assert.match(openPayload.transaction, /^0x78/u);
+  const tx = TempoTransaction.deserialize(openPayload.transaction);
+  assert.equal(tx.calls.length, 2);
+  assert.equal(tx.calls[1].to.toLowerCase(), '0xe1c4d3dce17bc111181ddf716f75bae49e61a336');
+});
+
+test('agentpay mpp rejects a Tempo session challenge whose escrow differs from the pinned one', async () => {
+  const { result, agentCalls } = await runOneShotTempoSessionScenario({
+    methodDetails: {
+      chainId: 4217,
+      escrowContract: '0x3333333333333333333333333333333333333333',
+    },
+  });
+  assert.equal(result.status, 1, combinedOutput(result));
+  assert.match(combinedOutput(result), /does not match the pinned Tempo stream-channel escrow/u);
+  assert.equal(agentCalls.length, 0);
+});
+
+test('agentpay mpp rejects a payment receipt that names a different Tempo channel', async () => {
+  const { result } = await runOneShotTempoSessionScenario({
+    methodDetails: { chainId: 4217 },
+    receiptChannelId: () => `0x${'7'.repeat(64)}`,
+  });
+  assert.equal(result.status, 1, combinedOutput(result));
+  assert.match(
+    combinedOutput(result),
+    /payment\.receipt\.channelId .* does not match the locally derived tempo channel id/u,
+  );
+});
+
+test('agentpay mpp refuses legacy v1 Tempo session state without a channel salt', async () => {
+  const { result, agentCalls } = await runOneShotTempoSessionScenario({
+    methodDetails: { chainId: 4217 },
+    sessionState: ({ rpcUrl }) => ({
+      version: 1,
+      kind: 'tempo_session',
+      chainId: 4217,
+      rpcUrl,
+      escrowContract: '0x33b901018174DDabE4841042ab76ba85D4e24f25',
+      token: TOKEN_ADDRESS,
+      recipient: RECIPIENT_ADDRESS,
+      walletAddress: privateKeyToAccount(TEMPO_TEST_PRIVATE_KEY).address,
+      channelId: `0x${'1'.repeat(64)}`,
+      depositWei: '1000000',
+      cumulativeAmountWei: '0',
+    }),
+  });
+  assert.equal(result.status, 1, combinedOutput(result));
+  const output = combinedOutput(result);
+  assert.match(output, /legacy v1 format/u);
+  assert.match(output, /still holds your escrow deposit/u);
+  assert.match(output, new RegExp(`channel id 0x${'1'.repeat(64)}`, 'u'));
+  assert.match(output, /escrow contract 0x33b901018174DDabE4841042ab76ba85D4e24f25/u);
+  assert.match(output, /chain id 4217/u);
+  assert.match(output, /withdraw the deposit .* before deleting this file/u);
+  assert.doesNotMatch(output, /delete it and re-open the session/u);
+  assert.equal(agentCalls.length, 0);
+});
+
 test('agentpay mpp handles payment-need-voucher events during a Tempo session stream', async () => {
   const { homeDir, agentpayHome } = makeIsolatedHome();
   const rustBinDir = path.join(agentpayHome, 'bin');
@@ -2106,15 +2216,6 @@ test('agentpay mpp handles payment-need-voucher events during a Tempo session st
     '0x59c6995e998f97a5a0044966f094538f5f4e0e46f95cebf7f5f88f5f2b5b9f10',
   );
   const walletAddress = account.address;
-  const openSignatureHex = await account.sign({
-    hash: `0x${'9'.repeat(64)}`,
-  });
-  const topUpSignatureHex = await account.sign({
-    hash: `0x${'a'.repeat(64)}`,
-  });
-  const voucherSignatureHex = await account.sign({
-    hash: `0x${'b'.repeat(64)}`,
-  });
   const expectedRequestBody = JSON.stringify({ prompt: 'stream' });
   const escrowContract = '0x33b901018174DDabE4841042ab76ba85D4e24f25';
 
@@ -2128,53 +2229,7 @@ test('agentpay mpp handles payment-need-voucher events during a Tempo session st
   let server = null;
 
   try {
-    writeExecutable(
-      path.join(rustBinDir, 'agentpay-agent'),
-      [
-        'cmd=""',
-        'for arg in "$@"; do',
-        '  case "$arg" in',
-        '    tempo-session-open-transaction|tempo-session-top-up-transaction|tempo-session-voucher)',
-        '      cmd="$arg"',
-        '      break',
-        '      ;;',
-        '  esac',
-        'done',
-        'case "$cmd" in',
-        '  tempo-session-open-transaction)',
-        '    printf "{\\"command\\":\\"tempo-session-open-transaction\\",\\"network\\":\\"4217\\",\\"asset\\":\\"erc20:' +
-          TOKEN_ADDRESS +
-          '\\",\\"counterparty\\":\\"' +
-          RECIPIENT_ADDRESS +
-          '\\",\\"amount_wei\\":\\"1000000\\",\\"signature_hex\\":\\"' +
-          openSignatureHex +
-          '\\"}"',
-        '    ;;',
-        '  tempo-session-top-up-transaction)',
-        '    printf "{\\"command\\":\\"tempo-session-top-up-transaction\\",\\"network\\":\\"4217\\",\\"asset\\":\\"erc20:' +
-          TOKEN_ADDRESS +
-          '\\",\\"counterparty\\":\\"' +
-          RECIPIENT_ADDRESS +
-          '\\",\\"amount_wei\\":\\"1000000\\",\\"signature_hex\\":\\"' +
-          topUpSignatureHex +
-          '\\"}"',
-        '    ;;',
-        '  tempo-session-voucher)',
-        '    printf "{\\"command\\":\\"tempo-session-voucher\\",\\"network\\":\\"4217\\",\\"asset\\":\\"erc20:' +
-          TOKEN_ADDRESS +
-          '\\",\\"counterparty\\":\\"' +
-          RECIPIENT_ADDRESS +
-          '\\",\\"amount_wei\\":\\"1000000\\",\\"signature_hex\\":\\"' +
-          voucherSignatureHex +
-          '\\"}"',
-        '    ;;',
-        '  *)',
-        '    echo "unexpected-command:$cmd" 1>&2',
-        '    exit 9',
-        '    ;;',
-        'esac',
-      ].join('\n'),
-    );
+    writeTempoAgentMock(rustBinDir, TEMPO_TEST_PRIVATE_KEY);
     writeExecutable(path.join(rustBinDir, 'agentpay-admin'), 'printf "{}"');
 
     writeConfig(agentpayHome, {
@@ -2368,15 +2423,6 @@ test('agentpay mpp emits NDJSON events for Tempo session streams in --json mode'
     '0x59c6995e998f97a5a0044966f094538f5f4e0e46f95cebf7f5f88f5f2b5b9f10',
   );
   const walletAddress = account.address;
-  const openSignatureHex = await account.sign({
-    hash: `0x${'c'.repeat(64)}`,
-  });
-  const topUpSignatureHex = await account.sign({
-    hash: `0x${'d'.repeat(64)}`,
-  });
-  const voucherSignatureHex = await account.sign({
-    hash: `0x${'e'.repeat(64)}`,
-  });
   const expectedRequestBody = JSON.stringify({ prompt: 'stream-json' });
   const escrowContract = '0x33b901018174DDabE4841042ab76ba85D4e24f25';
 
@@ -2390,53 +2436,7 @@ test('agentpay mpp emits NDJSON events for Tempo session streams in --json mode'
   let server = null;
 
   try {
-    writeExecutable(
-      path.join(rustBinDir, 'agentpay-agent'),
-      [
-        'cmd=""',
-        'for arg in "$@"; do',
-        '  case "$arg" in',
-        '    tempo-session-open-transaction|tempo-session-top-up-transaction|tempo-session-voucher)',
-        '      cmd="$arg"',
-        '      break',
-        '      ;;',
-        '  esac',
-        'done',
-        'case "$cmd" in',
-        '  tempo-session-open-transaction)',
-        '    printf "{\\"command\\":\\"tempo-session-open-transaction\\",\\"network\\":\\"4217\\",\\"asset\\":\\"erc20:' +
-          TOKEN_ADDRESS +
-          '\\",\\"counterparty\\":\\"' +
-          RECIPIENT_ADDRESS +
-          '\\",\\"amount_wei\\":\\"1000000\\",\\"signature_hex\\":\\"' +
-          openSignatureHex +
-          '\\"}"',
-        '    ;;',
-        '  tempo-session-top-up-transaction)',
-        '    printf "{\\"command\\":\\"tempo-session-top-up-transaction\\",\\"network\\":\\"4217\\",\\"asset\\":\\"erc20:' +
-          TOKEN_ADDRESS +
-          '\\",\\"counterparty\\":\\"' +
-          RECIPIENT_ADDRESS +
-          '\\",\\"amount_wei\\":\\"1000000\\",\\"signature_hex\\":\\"' +
-          topUpSignatureHex +
-          '\\"}"',
-        '    ;;',
-        '  tempo-session-voucher)',
-        '    printf "{\\"command\\":\\"tempo-session-voucher\\",\\"network\\":\\"4217\\",\\"asset\\":\\"erc20:' +
-          TOKEN_ADDRESS +
-          '\\",\\"counterparty\\":\\"' +
-          RECIPIENT_ADDRESS +
-          '\\",\\"amount_wei\\":\\"1000000\\",\\"signature_hex\\":\\"' +
-          voucherSignatureHex +
-          '\\"}"',
-        '    ;;',
-        '  *)',
-        '    echo "unexpected-command:$cmd" 1>&2',
-        '    exit 9',
-        '    ;;',
-        'esac',
-      ].join('\n'),
-    );
+    writeTempoAgentMock(rustBinDir, TEMPO_TEST_PRIVATE_KEY);
     writeExecutable(path.join(rustBinDir, 'agentpay-admin'), 'printf "{}"');
 
     writeConfig(agentpayHome, {

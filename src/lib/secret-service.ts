@@ -67,10 +67,15 @@ function defaultSecretToolRunner(command: SecretToolCommandInvocation): string {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
-  if (result.error) {
+  const exitCode = result.status ?? signalExitCode(result.signal);
+  // `secret-tool store` reads the secret from stdin, so a `secret-tool` that fails before reading
+  // all of it breaks the pipe. Report its exit status and output instead of the EPIPE; an EPIPE
+  // after a zero exit still throws, because the secret may never have been read.
+  const failedBeforeReadingInput =
+    (result.error as NodeJS.ErrnoException | undefined)?.code === 'EPIPE' && exitCode !== 0;
+  if (result.error && !failedBeforeReadingInput) {
     throw result.error;
   }
-  const exitCode = result.status ?? signalExitCode(result.signal);
   if (exitCode !== 0) {
     const error = new Error(
       result.stderr.trim() ||
@@ -88,7 +93,18 @@ function defaultSecretToolRunner(command: SecretToolCommandInvocation): string {
     throw error;
   }
 
-  return result.stdout.trim();
+  return stripSingleTrailingNewline(result.stdout);
+}
+
+/**
+ * secret-tool terminates the secret with exactly one newline. Only that byte is removed so a
+ * stored token that legitimately begins or ends with whitespace round-trips unchanged.
+ */
+function stripSingleTrailingNewline(value: string): string {
+  if (value.endsWith('\r\n')) {
+    return value.slice(0, -2);
+  }
+  return value.endsWith('\n') ? value.slice(0, -1) : value;
 }
 
 function assertLinuxSecretServiceAvailable(): void {
@@ -118,9 +134,17 @@ function isMissingSecret(error: unknown): boolean {
 
   const status = 'status' in error && typeof error.status === 'number' ? error.status : null;
   const message = renderRunnerError(error)?.toLowerCase() ?? '';
+  // `secret-tool lookup` exits 1 with no output when nothing is stored; the default runner then
+  // falls back to a generic message, so judge emptiness by the captured output, not the message.
+  const hasCapturedOutput = 'stderr' in error || 'stdout' in error;
+  const output = hasCapturedOutput
+    ? `${'stderr' in error && typeof error.stderr === 'string' ? error.stderr : ''}${
+        'stdout' in error && typeof error.stdout === 'string' ? error.stdout : ''
+      }`.trim()
+    : message;
   return (
     status === 1 &&
-    (message === '' ||
+    (output === '' ||
       message.includes('no such secret collection') ||
       message.includes('no such secret') ||
       message.includes('not found'))

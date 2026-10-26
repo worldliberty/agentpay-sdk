@@ -15,7 +15,7 @@ use vault_domain::{
 };
 use zeroize::{Zeroize, Zeroizing};
 
-use super::RecoverableAgentResult;
+use super::{RecoverableAgentResult, TempoChannelRecord};
 
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -48,9 +48,29 @@ impl PersistentStoreConfig {
     }
 }
 
+/// Newest persisted-state schema this daemon build understands.
+///
+/// Files written by a newer daemon carry a higher version and are rejected at
+/// load time instead of being silently reinterpreted.
+pub(crate) const CURRENT_SCHEMA_VERSION: u32 = 1;
+
+/// Schema version tag stored inside the encrypted state payload.
+///
+/// Legacy files without the field deserialize as version 1.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(transparent)]
+pub(crate) struct SchemaVersion(pub u32);
+
+impl Default for SchemaVersion {
+    fn default() -> Self {
+        Self(CURRENT_SCHEMA_VERSION)
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(default)]
 pub(crate) struct PersistedDaemonState {
+    pub schema_version: SchemaVersion,
     pub leases: HashMap<Uuid, Lease>,
     pub policies: HashMap<Uuid, SpendingPolicy>,
     pub vault_keys: HashMap<Uuid, VaultKey>,
@@ -68,12 +88,17 @@ pub(crate) struct PersistedDaemonState {
     pub relay_config: RelayConfig,
     #[serde(with = "vault_domain::serde_helpers::zeroizing_string")]
     pub relay_private_key_hex: Zeroizing<String>,
+    /// Tempo session channels opened through this daemon, keyed by channel id.
+    /// Older state files predate the registry and load with an empty map.
+    #[serde(default)]
+    pub tempo_channels: HashMap<String, TempoChannelRecord>,
 }
 
 impl std::fmt::Debug for PersistedDaemonState {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("PersistedDaemonState")
+            .field("schema_version", &self.schema_version)
             .field("leases", &self.leases)
             .field("policies", &self.policies)
             .field("vault_keys", &self.vault_keys)
@@ -87,6 +112,7 @@ impl std::fmt::Debug for PersistedDaemonState {
             .field("manual_approval_requests", &self.manual_approval_requests)
             .field("relay_config", &self.relay_config)
             .field("relay_private_key_hex", &"<redacted>")
+            .field("tempo_channels", &self.tempo_channels)
             .finish()
     }
 }
@@ -96,6 +122,50 @@ struct KdfParams {
     memory_kib: u32,
     time_cost: u32,
     parallelism: u32,
+}
+
+/// Upper bounds for KDF parameters read back from a state file.
+///
+/// The parameters live in the unauthenticated envelope header, so a tampered
+/// file could otherwise request gigabytes of Argon2 memory and crash the daemon
+/// at startup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct KdfLimits {
+    max_memory_kib: u32,
+    max_time_cost: u32,
+    max_parallelism: u32,
+}
+
+impl KdfLimits {
+    fn from_config(config: &crate::DaemonConfig) -> Self {
+        Self {
+            max_memory_kib: config.max_persisted_argon2_memory_kib,
+            max_time_cost: config.max_persisted_argon2_time_cost,
+            max_parallelism: config.max_persisted_argon2_parallelism,
+        }
+    }
+
+    fn validate(&self, kdf: &KdfParams) -> Result<(), String> {
+        if kdf.memory_kib > self.max_memory_kib {
+            return Err(format!(
+                "state file kdf memory_kib {} exceeds configured maximum {}",
+                kdf.memory_kib, self.max_memory_kib
+            ));
+        }
+        if kdf.time_cost > self.max_time_cost {
+            return Err(format!(
+                "state file kdf time_cost {} exceeds configured maximum {}",
+                kdf.time_cost, self.max_time_cost
+            ));
+        }
+        if kdf.parallelism > self.max_parallelism {
+            return Err(format!(
+                "state file kdf parallelism {} exceeds configured maximum {}",
+                kdf.parallelism, self.max_parallelism
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -139,7 +209,8 @@ impl EncryptedStateStore {
         ensure_secure_path(&path, allow_current_uid_in_tests)?;
         if path.exists() {
             let bytes = read_file_secure(&path, allow_current_uid_in_tests)?;
-            let (state, key, salt, kdf) = load_state_from_envelope_bytes(&bytes, password)?;
+            let (state, key, salt, kdf) =
+                load_state_from_envelope_bytes(&bytes, password, &KdfLimits::from_config(config))?;
             Ok((
                 Self {
                     path,
@@ -188,6 +259,7 @@ impl EncryptedStateStore {
 fn load_state_from_envelope_bytes(
     bytes: &[u8],
     password: &str,
+    kdf_limits: &KdfLimits,
 ) -> Result<
     (
         PersistedDaemonState,
@@ -206,6 +278,7 @@ fn load_state_from_envelope_bytes(
         ));
     }
     let kdf = envelope.kdf;
+    kdf_limits.validate(&kdf)?;
     let salt_bytes = hex::decode(&envelope.salt_hex)
         .map_err(|err| format!("invalid state salt encoding: {err}"))?;
     if salt_bytes.len() != SALT_LEN {
@@ -231,6 +304,12 @@ fn load_state_from_envelope_bytes(
     );
     let state: PersistedDaemonState = serde_json::from_slice(&plaintext)
         .map_err(|err| format!("failed to deserialize state payload: {err}"))?;
+    if state.schema_version.0 > CURRENT_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported state schema version {}; this daemon supports up to {}",
+            state.schema_version.0, CURRENT_SCHEMA_VERSION
+        ));
+    }
     let state = crate::prepare_loaded_state(state)
         .map_err(|err| format!("loaded state failed integrity validation: {err}"))?;
     Ok((state, key, salt, kdf))
@@ -632,6 +711,10 @@ mod tests {
         }
     }
 
+    fn test_kdf_limits() -> KdfLimits {
+        KdfLimits::from_config(&crate::DaemonConfig::default())
+    }
+
     fn sample_state() -> PersistedDaemonState {
         let relay_private_key_hex = "11".repeat(32);
         let secret = x25519_dalek::StaticSecret::from([0x11; 32]);
@@ -691,7 +774,8 @@ mod tests {
         let bytes = serialize_state_envelope(&envelope).expect("serialize");
 
         let (loaded, loaded_key, loaded_salt, loaded_kdf) =
-            load_state_from_envelope_bytes(&bytes, "vault-password").expect("load state");
+            load_state_from_envelope_bytes(&bytes, "vault-password", &test_kdf_limits())
+                .expect("load state");
 
         assert_eq!(loaded, state);
         assert_eq!(loaded_key, key);
@@ -721,6 +805,7 @@ mod tests {
         let err = load_state_from_envelope_bytes(
             &serde_json::to_vec(&wrong_version).expect("serialize"),
             "vault-password",
+            &test_kdf_limits(),
         )
         .expect_err("wrong version");
         assert!(err.contains("unsupported state file version"));
@@ -730,6 +815,7 @@ mod tests {
         let err = load_state_from_envelope_bytes(
             &serde_json::to_vec(&bad_salt).expect("serialize"),
             "vault-password",
+            &test_kdf_limits(),
         )
         .expect_err("bad salt");
         assert!(err.contains("invalid state salt encoding"));
@@ -739,6 +825,7 @@ mod tests {
         let err = load_state_from_envelope_bytes(
             &serde_json::to_vec(&short_nonce).expect("serialize"),
             "vault-password",
+            &test_kdf_limits(),
         )
         .expect_err("short nonce");
         assert!(err.contains("invalid state nonce length"));
@@ -750,8 +837,8 @@ mod tests {
         let envelope =
             build_encrypted_state_envelope(&state, &key, &salt, &kdf, nonce).expect("envelope");
         let bytes = serialize_state_envelope(&envelope).expect("serialize");
-        let err =
-            load_state_from_envelope_bytes(&bytes, "wrong-password").expect_err("wrong password");
+        let err = load_state_from_envelope_bytes(&bytes, "wrong-password", &test_kdf_limits())
+            .expect_err("wrong password");
         assert!(err.contains("failed to decrypt state"));
     }
 
@@ -775,6 +862,7 @@ mod tests {
         let err = load_state_from_envelope_bytes(
             &serde_json::to_vec(&short_salt).expect("serialize"),
             "vault-password",
+            &test_kdf_limits(),
         )
         .expect_err("short salt");
         assert!(err.contains("invalid state salt length"));
@@ -784,6 +872,7 @@ mod tests {
         let err = load_state_from_envelope_bytes(
             &serde_json::to_vec(&bad_nonce).expect("serialize"),
             "vault-password",
+            &test_kdf_limits(),
         )
         .expect_err("bad nonce");
         assert!(err.contains("invalid state nonce encoding"));
@@ -793,6 +882,7 @@ mod tests {
         let err = load_state_from_envelope_bytes(
             &serde_json::to_vec(&bad_ciphertext).expect("serialize"),
             "vault-password",
+            &test_kdf_limits(),
         )
         .expect_err("bad ciphertext");
         assert!(err.contains("invalid state ciphertext encoding"));
@@ -814,6 +904,7 @@ mod tests {
         let err = load_state_from_envelope_bytes(
             &serde_json::to_vec(&invalid_payload).expect("serialize"),
             "vault-password",
+            &test_kdf_limits(),
         )
         .expect_err("invalid payload");
         assert!(err.contains("failed to deserialize state payload"));
@@ -857,7 +948,7 @@ mod tests {
             build_encrypted_state_envelope(&state, &key, &salt, &kdf, nonce).expect("envelope");
         let bytes = serialize_state_envelope(&envelope).expect("serialize");
 
-        let err = load_state_from_envelope_bytes(&bytes, "vault-password")
+        let err = load_state_from_envelope_bytes(&bytes, "vault-password", &test_kdf_limits())
             .expect_err("mismatched agent key entry should fail");
         assert!(err.contains("loaded state failed integrity validation"));
         assert!(err.contains("agent key entry keyed by"));
@@ -1134,5 +1225,119 @@ mod tests {
         assert_eq!(loaded_state, state);
 
         std::fs::remove_dir_all(root).expect("cleanup");
+    }
+    #[test]
+    fn load_state_rejects_kdf_params_above_configured_maxima() {
+        let state = sample_state();
+        let salt = [5u8; SALT_LEN];
+        let nonce = [9u8; NONCE_LEN];
+        let kdf = KdfParams {
+            memory_kib: 19_456,
+            time_cost: 2,
+            parallelism: 1,
+        };
+        let key = derive_key("vault-password", &salt, &kdf).expect("derive key");
+        let envelope =
+            build_encrypted_state_envelope(&state, &key, &salt, &kdf, nonce).expect("envelope");
+
+        let mut huge_memory = envelope.clone();
+        huge_memory.kdf.memory_kib = u32::MAX;
+        let err = load_state_from_envelope_bytes(
+            &serialize_state_envelope(&huge_memory).expect("serialize"),
+            "vault-password",
+            &test_kdf_limits(),
+        )
+        .expect_err("tampered memory cost must be rejected before key derivation");
+        assert!(err.contains("kdf memory_kib"));
+        assert!(err.contains("exceeds configured maximum"));
+
+        let mut huge_time = envelope.clone();
+        huge_time.kdf.time_cost = u32::MAX;
+        let err = load_state_from_envelope_bytes(
+            &serialize_state_envelope(&huge_time).expect("serialize"),
+            "vault-password",
+            &test_kdf_limits(),
+        )
+        .expect_err("tampered time cost must be rejected");
+        assert!(err.contains("kdf time_cost"));
+
+        let mut huge_parallelism = envelope.clone();
+        huge_parallelism.kdf.parallelism = u32::MAX;
+        let err = load_state_from_envelope_bytes(
+            &serialize_state_envelope(&huge_parallelism).expect("serialize"),
+            "vault-password",
+            &test_kdf_limits(),
+        )
+        .expect_err("tampered parallelism must be rejected");
+        assert!(err.contains("kdf parallelism"));
+
+        let tight_limits = KdfLimits {
+            max_memory_kib: kdf.memory_kib - 1,
+            max_time_cost: kdf.time_cost,
+            max_parallelism: kdf.parallelism,
+        };
+        let err = load_state_from_envelope_bytes(
+            &serialize_state_envelope(&envelope).expect("serialize"),
+            "vault-password",
+            &tight_limits,
+        )
+        .expect_err("limits below the file's params must reject");
+        assert!(err.contains("exceeds configured maximum"));
+
+        let (loaded, _, _, _) = load_state_from_envelope_bytes(
+            &serialize_state_envelope(&envelope).expect("serialize"),
+            "vault-password",
+            &test_kdf_limits(),
+        )
+        .expect("params at or below the maxima load normally");
+        assert_eq!(loaded, state);
+    }
+
+    #[test]
+    fn schema_version_defaults_to_current_and_newer_files_are_rejected() {
+        assert_eq!(
+            SchemaVersion::default(),
+            SchemaVersion(CURRENT_SCHEMA_VERSION)
+        );
+        assert_eq!(
+            PersistedDaemonState::default().schema_version,
+            SchemaVersion(CURRENT_SCHEMA_VERSION)
+        );
+
+        // Legacy payloads without the field deserialize as version 1.
+        let legacy: PersistedDaemonState =
+            serde_json::from_str("{}").expect("legacy payload without schema_version");
+        assert_eq!(legacy.schema_version, SchemaVersion(1));
+
+        let salt = [6u8; SALT_LEN];
+        let nonce = [7u8; NONCE_LEN];
+        let kdf = KdfParams {
+            memory_kib: 19_456,
+            time_cost: 2,
+            parallelism: 1,
+        };
+        let key = derive_key("vault-password", &salt, &kdf).expect("key");
+        let mut future_state = serde_json::to_value(sample_state()).expect("state json");
+        future_state["schema_version"] = serde_json::json!(CURRENT_SCHEMA_VERSION + 1);
+        let plaintext = serde_json::to_vec(&future_state).expect("serialize future state");
+        let cipher = XChaCha20Poly1305::new((&key).into());
+        let ciphertext = cipher
+            .encrypt((&nonce).into(), plaintext.as_slice())
+            .expect("encrypt");
+        let envelope = EncryptedStateEnvelope {
+            version: ENVELOPE_VERSION,
+            kdf,
+            salt_hex: hex::encode(salt),
+            nonce_hex: hex::encode(nonce),
+            ciphertext_hex: hex::encode(ciphertext),
+        };
+        let err = load_state_from_envelope_bytes(
+            &serialize_state_envelope(&envelope).expect("serialize"),
+            "vault-password",
+            &test_kdf_limits(),
+        )
+        .expect_err("newer schema version must be rejected");
+        assert!(err.contains("unsupported state schema version 2"));
+        assert!(err.contains("supports up to 1"));
     }
 }

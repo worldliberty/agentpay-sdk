@@ -31,6 +31,21 @@ Please redact private keys, seed phrases, access tokens, and personal data.
 - Please do not disclose publicly until a fix is released and maintainers confirm disclosure timing.
 - Once fixed, we may publish a security advisory and release notes.
 
+## Telemetry
+
+The CLI sends anonymous usage analytics and crash diagnostics by default. See
+[Telemetry and privacy](README.md#telemetry-and-privacy) for exactly what is and is not collected,
+and for the three supported ways to disable it.
+
+Telemetry is keyed to a random install id, never to a wallet address. Crash reports never contain
+output from the Rust signing binaries: it is replaced with the binary name and exit code before the
+report is built, not scrubbed.
+
+Reports that telemetry transmits a secret, a wallet address, a recipient address, a transaction
+hash, an exact amount, an RPC URL path or key, or anything else that could link an analytics
+identity to an on-chain identity are in scope and should be reported through the private channels
+above.
+
 ## Scope notes
 
 Security reports may include, but are not limited to:

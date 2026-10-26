@@ -1585,7 +1585,7 @@ impl AppState {
             .find(|ch| !is_allowed_input_char(selected_field, *ch))
         {
             self.set_error_message(format!(
-                "invalid character '{invalid}' for the selected field"
+                "invalid character {invalid:?} for the selected field"
             ));
             return;
         }
@@ -1895,6 +1895,21 @@ impl AppState {
     }
 }
 
+/// Agent key id recorded for the current wallet (`wallet.agentKeyId`, falling back to the legacy
+/// top-level `agentKeyId`), so a wallet reuse keeps the existing agent key instead of minting one.
+pub(crate) fn resolve_shared_config_agent_key_id(config: &WlfiConfig) -> Result<Option<Uuid>> {
+    config
+        .wallet
+        .as_ref()
+        .and_then(|profile| profile.agent_key_id.as_deref())
+        .or(config.agent_key_id.as_deref())
+        .map(|value| {
+            Uuid::parse_str(value)
+                .with_context(|| format!("wallet.agentKeyId '{value}' must be a valid UUID"))
+        })
+        .transpose()
+}
+
 pub(crate) fn build_bootstrap_params_from_shared_config(
     config: &WlfiConfig,
     print_agent_auth_token: bool,
@@ -1910,15 +1925,7 @@ pub(crate) fn build_bootstrap_params_from_shared_config(
     let (existing_agent_key_id, existing_vault_key_id, existing_vault_public_key) =
         if reuse_existing_wallet {
             let wallet = config.wallet.as_ref();
-            let parsed_agent_key_id = wallet
-                .and_then(|profile| profile.agent_key_id.as_deref())
-                .or(config.agent_key_id.as_deref())
-                .map(|value| {
-                    Uuid::parse_str(value).with_context(|| {
-                        format!("wallet.agentKeyId '{value}' must be a valid UUID")
-                    })
-                })
-                .transpose()?;
+            let parsed_agent_key_id = resolve_shared_config_agent_key_id(config)?;
             let parsed_vault_key_id = wallet
                 .and_then(|profile| profile.vault_key_id.as_deref())
                 .map(|value| {
@@ -2021,11 +2028,10 @@ pub(crate) fn run_bootstrap_tui<T>(
     print_agent_auth_token: bool,
     on_apply: impl FnMut(BootstrapParams, &mut dyn FnMut(&str) -> Result<()>) -> Result<T>,
 ) -> Result<Option<T>> {
-    enable_raw_mode().context("failed to enable raw mode")?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)
-        .context("failed to enter alternate screen")?;
-    let backend = CrosstermBackend::new(stdout);
+    // The guard restores the terminal on every exit path, including `?` early returns and
+    // panics inside the event loop, so the user's shell is never left in raw mode.
+    let mut guard = TerminalGuard::enter()?;
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend).context("failed to initialize terminal backend")?;
 
     let run_result = run_event_loop(
@@ -2033,7 +2039,9 @@ pub(crate) fn run_bootstrap_tui<T>(
         AppState::from_shared_config(shared_config, print_agent_auth_token),
         on_apply,
     );
-    let cleanup_result = cleanup_terminal(&mut terminal);
+    let cleanup_result = guard
+        .restore()
+        .and_then(|()| terminal.show_cursor().context("failed to show cursor"));
     match (run_result, cleanup_result) {
         (Ok(output), Ok(())) => Ok(output),
         (Err(run_err), Ok(())) => Err(run_err),
@@ -2042,16 +2050,46 @@ pub(crate) fn run_bootstrap_tui<T>(
     }
 }
 
-fn cleanup_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
-    disable_raw_mode().context("failed to disable raw mode")?;
-    execute!(
-        terminal.backend_mut(),
-        DisableBracketedPaste,
-        LeaveAlternateScreen
-    )
-    .context("failed to leave alternate screen")?;
-    terminal.show_cursor().context("failed to show cursor")?;
-    Ok(())
+/// Owns raw mode, the alternate screen, and bracketed paste for the lifetime of the TUI.
+/// `Drop` performs a best-effort restore when `restore` was not reached.
+struct TerminalGuard {
+    active: bool,
+}
+
+impl TerminalGuard {
+    fn enter() -> Result<Self> {
+        enable_raw_mode().context("failed to enable raw mode")?;
+        let guard = Self { active: true };
+        execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste)
+            .context("failed to enter alternate screen")?;
+        Ok(guard)
+    }
+
+    fn restore(&mut self) -> Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        self.active = false;
+        let raw_result = disable_raw_mode().context("failed to disable raw mode");
+        let screen_result = execute!(io::stdout(), DisableBracketedPaste, LeaveAlternateScreen)
+            .context("failed to leave alternate screen");
+        raw_result.and(screen_result)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        if self.active {
+            self.active = false;
+            let _ = disable_raw_mode();
+            let _ = execute!(
+                io::stdout(),
+                DisableBracketedPaste,
+                LeaveAlternateScreen,
+                crossterm::cursor::Show
+            );
+        }
+    }
 }
 
 fn render_frame<B: Backend>(terminal: &mut Terminal<B>, app: &AppState) -> Result<()> {

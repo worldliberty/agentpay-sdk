@@ -4,7 +4,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { createLinkCard, linkCliVersion, runLinkCliJson } from '../src/lib/link.ts';
+import {
+  createLinkCard,
+  linkCliVersion,
+  resolveBundledLinkCliInvocation,
+  runLinkCli,
+  runLinkCliJson,
+} from '../src/lib/link.ts';
 
 const repoRoot = new URL('..', import.meta.url).pathname;
 
@@ -177,6 +183,100 @@ test('agentpay link card --json wraps create and retrieve', () => {
       calls.filter((entry) => entry[0] === 'spend-request' && entry[1] === 'retrieve').length,
       1,
     );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function writeScript(dir, name, body, mode = 0o700) {
+  const scriptPath = path.join(dir, name);
+  fs.writeFileSync(scriptPath, `#!/usr/bin/env node\n${body}\n`, { mode });
+  // writeFileSync's mode is filtered by the umask; chmod so group/other-writable fixtures stick.
+  fs.chmodSync(scriptPath, mode);
+  return scriptPath;
+}
+
+test('link-cli receives only the allowlisted environment and no AGENTPAY_* variables', async () => {
+  const dir = makeTempDir();
+  const scriptPath = writeScript(
+    dir,
+    'env-dump-link-cli.mjs',
+    'console.log(JSON.stringify(process.env)); process.exit(0);',
+  );
+
+  try {
+    const childEnv = await runLinkCliJson(['auth', 'status'], {
+      env: {
+        ...process.env,
+        AGENTPAY_LINK_CLI_BIN: scriptPath,
+        AGENTPAY_DAEMON_SOCKET: '/tmp/agentpay-test.sock',
+        AGENTPAY_HOME: '/tmp/agentpay-test-home',
+        AGENTPAY_VAULT_PASSWORD: 'vault-secret',
+        DYLD_INSERT_LIBRARIES: '/tmp/evil.dylib',
+        LD_PRELOAD: '/tmp/evil.so',
+        NODE_OPTIONS: '--require /tmp/evil.js',
+        GITHUB_TOKEN: 'ghp_secret',
+        LC_ALL: 'C.UTF-8',
+        HTTPS_PROXY: 'http://proxy.test:3128',
+      },
+    });
+
+    assert.equal(childEnv.PATH, process.env.PATH);
+    assert.equal(childEnv.NO_UPDATE_NOTIFIER, '1');
+    assert.equal(childEnv.LC_ALL, 'C.UTF-8');
+    assert.equal(childEnv.HTTPS_PROXY, 'http://proxy.test:3128');
+
+    assert.deepEqual(
+      Object.keys(childEnv).filter((key) => key.startsWith('AGENTPAY_')),
+      [],
+      'no AGENTPAY_* variable may reach the third-party link-cli',
+    );
+    assert.equal(childEnv.DYLD_INSERT_LIBRARIES, undefined);
+    assert.equal(childEnv.LD_PRELOAD, undefined);
+    assert.equal(childEnv.NODE_OPTIONS, undefined);
+    assert.equal(childEnv.GITHUB_TOKEN, undefined);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runLinkCli survives a link-cli that exits before draining stdin', async () => {
+  const dir = makeTempDir();
+  const scriptPath = writeScript(dir, 'early-exit-link-cli.mjs', 'process.exit(3);');
+
+  try {
+    const result = await runLinkCli(['spend-request', 'create'], {
+      env: { ...process.env, AGENTPAY_LINK_CLI_BIN: scriptPath },
+      // Larger than the pipe buffer so the write cannot complete before the child is gone.
+      input: 'x'.repeat(4 * 1024 * 1024),
+    });
+
+    assert.equal(result.status, 3);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('resolveBundledLinkCliInvocation rejects untrusted AGENTPAY_LINK_CLI_BIN overrides', () => {
+  const dir = makeTempDir();
+
+  try {
+    const writable = writeScript(dir, 'writable-link-cli.mjs', 'process.exit(0);', 0o777);
+    assert.throws(
+      () => resolveBundledLinkCliInvocation({ AGENTPAY_LINK_CLI_BIN: writable }),
+      /link-cli binary '.*writable-link-cli\.mjs' must not be writable by group\/other/u,
+    );
+
+    const target = writeScript(dir, 'real-link-cli.mjs', 'process.exit(0);');
+    const symlinkPath = path.join(dir, 'symlinked-link-cli.mjs');
+    fs.symlinkSync(target, symlinkPath);
+    assert.throws(
+      () => resolveBundledLinkCliInvocation({ AGENTPAY_LINK_CLI_BIN: symlinkPath }),
+      /link-cli binary '.*symlinked-link-cli\.mjs' must not be a symlink/u,
+    );
+
+    const trusted = resolveBundledLinkCliInvocation({ AGENTPAY_LINK_CLI_BIN: target });
+    assert.deepEqual(trusted, { command: target, args: [] });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

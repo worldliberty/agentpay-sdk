@@ -1182,3 +1182,207 @@ test('writeConfig rejects invalid native token addresses', async () => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
 });
+
+function withTempAgentPayHome(fn) {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-config-test-'));
+  process.env.AGENTPAY_HOME = path.join(tempRoot, 'home');
+  return Promise.resolve()
+    .then(() => fn(tempRoot))
+    .finally(() => {
+      delete process.env.AGENTPAY_HOME;
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    });
+}
+
+test('default chain and token seeds derive from the builtin tables', async () => {
+  await withTempAgentPayHome(async () => {
+    const config = await import(modulePath.href + `?case=${Date.now()}-derived-seeds`);
+    const parsed = config.readConfig();
+
+    for (const key of ['eth', 'bsc', 'tempo', 'tempo-testnet', 'solana-mainnet']) {
+      assert.equal(parsed.chains?.[key]?.chainId, config.BUILTIN_CHAINS[key].chainId);
+      assert.equal(parsed.chains?.[key]?.rpcUrl, config.BUILTIN_CHAINS[key].rpcUrl);
+      assert.equal(parsed.chains?.[key]?.family, config.BUILTIN_CHAINS[key].family);
+    }
+    assert.equal(parsed.chains?.eth?.name, 'ETH');
+    assert.equal(parsed.chains?.['tempo-testnet']?.name, 'Tempo Testnet (Moderato)');
+
+    // The builtin ETH entry is keyed `ethereum`, but seeded configs use the seeded chain key.
+    assert.equal(parsed.tokens?.eth?.chains?.eth?.chainId, 1);
+    assert.equal(parsed.tokens?.eth?.chains?.ethereum, undefined);
+    assert.equal(parsed.tokens?.eth?.chains?.sepolia, undefined);
+
+    // USD1 on Tempo previously existed only in BUILTIN_TOKENS.
+    assert.equal(
+      parsed.tokens?.usd1?.chains?.tempo?.address,
+      config.BUILTIN_TOKENS.usd1.chains.tempo.address,
+    );
+    assert.equal(parsed.tokens?.usd1?.chains?.tempo?.decimals, 18);
+    assert.equal(parsed.tokens?.usd1?.defaultPolicy, undefined);
+    assert.equal(parsed.tokens?.usd1?.chains?.tempo?.defaultPolicy, undefined);
+    assert.equal(parsed.removedBuiltins, undefined);
+  });
+});
+
+test('removeChainProfile persists a tombstone so builtin chains stay removed across re-reads', async () => {
+  await withTempAgentPayHome(async () => {
+    const config = await import(modulePath.href + `?case=${Date.now()}-remove-builtin-chain`);
+    assert.equal(config.readConfig().chains?.bsc?.chainId, 56);
+
+    const removed = config.removeChainProfile('BSC');
+    assert.equal(removed.chains?.bsc, undefined);
+    assert.deepEqual(removed.removedBuiltins, { chains: ['bsc'] });
+
+    const reread = config.readConfig();
+    assert.equal(reread.chains?.bsc, undefined);
+    assert.equal(reread.chains?.eth?.chainId, 1);
+    assert.deepEqual(reread.removedBuiltins, { chains: ['bsc'] });
+
+    const persisted = JSON.parse(fs.readFileSync(config.resolveConfigPath(), 'utf8'));
+    assert.deepEqual(persisted.removedBuiltins, { chains: ['bsc'] });
+
+    const fresh = await import(modulePath.href + `?case=${Date.now()}-remove-builtin-chain-fresh`);
+    assert.equal(fresh.readConfig().chains?.bsc, undefined);
+
+    const restored = fresh.saveChainProfile('bsc', {
+      chainId: 56,
+      name: 'BSC',
+      rpcUrl: 'https://bsc.example',
+    });
+    assert.equal(restored.chains?.bsc?.rpcUrl, 'https://bsc.example');
+    assert.equal(restored.removedBuiltins, undefined);
+    assert.equal(fresh.readConfig().chains?.bsc?.rpcUrl, 'https://bsc.example');
+  });
+});
+
+test('removeChainProfile leaves custom chain removals without tombstones', async () => {
+  await withTempAgentPayHome(async () => {
+    const config = await import(modulePath.href + `?case=${Date.now()}-remove-custom-chain`);
+    config.saveChainProfile('custom', {
+      chainId: 4242,
+      name: 'Custom',
+      rpcUrl: 'https://custom.example',
+    });
+
+    const removed = config.removeChainProfile('custom');
+    assert.equal(removed.chains?.custom, undefined);
+    assert.equal(removed.removedBuiltins, undefined);
+    assert.equal(config.readConfig().chains?.custom, undefined);
+  });
+});
+
+test('removeTokenProfile and removeTokenChainProfile persist tombstones for builtin tokens', async () => {
+  await withTempAgentPayHome(async () => {
+    const config = await import(modulePath.href + `?case=${Date.now()}-remove-builtin-token`);
+
+    const withoutUsd1Tempo = config.removeTokenChainProfile('usd1', 'tempo');
+    assert.equal(withoutUsd1Tempo.tokens?.usd1?.chains?.tempo, undefined);
+    assert.equal(withoutUsd1Tempo.tokens?.usd1?.chains?.bsc?.chainId, 56);
+    assert.deepEqual(withoutUsd1Tempo.removedBuiltins, { tokens: ['usd1:tempo'] });
+
+    const rereadChain = config.readConfig();
+    assert.equal(rereadChain.tokens?.usd1?.chains?.tempo, undefined);
+    assert.equal(rereadChain.tokens?.usd1?.chains?.eth?.chainId, 1);
+
+    const withoutBnb = config.removeTokenProfile('bnb');
+    assert.equal(withoutBnb.tokens?.bnb, undefined);
+    assert.deepEqual(withoutBnb.removedBuiltins, { tokens: ['bnb', 'usd1:tempo'] });
+
+    const fresh = await import(modulePath.href + `?case=${Date.now()}-remove-builtin-token-fresh`);
+    const reread = fresh.readConfig();
+    assert.equal(reread.tokens?.bnb, undefined);
+    assert.equal(reread.tokens?.usd1?.chains?.tempo, undefined);
+    assert.equal(reread.tokens?.usd?.chains?.tempo?.isNative, true);
+
+    // Removing the last chain of a builtin token tombstones the whole token.
+    const withoutUsd = fresh.removeTokenChainProfile('usd', 'tempo');
+    assert.equal(withoutUsd.tokens?.usd, undefined);
+    assert.deepEqual(withoutUsd.removedBuiltins, {
+      tokens: ['bnb', 'usd', 'usd1:tempo', 'usd:tempo'],
+    });
+    assert.equal(fresh.readConfig().tokens?.usd, undefined);
+
+    // Re-adding clears the matching tombstones.
+    const restoredUsd1 = fresh.saveTokenChainProfile('usd1', 'tempo', {
+      chainId: 4217,
+      isNative: false,
+      address: '0x111111d2bf19e43C34263401e0CAd979eD1cdb61',
+      decimals: 18,
+    });
+    assert.equal(restoredUsd1.tokens?.usd1?.chains?.tempo?.chainId, 4217);
+    assert.deepEqual(restoredUsd1.removedBuiltins, { tokens: ['bnb', 'usd', 'usd:tempo'] });
+
+    const restoredBnb = fresh.saveTokenProfile('bnb', {
+      symbol: 'BNB',
+      chains: { bsc: { chainId: 56, isNative: true, decimals: 18 } },
+    });
+    assert.deepEqual(restoredBnb.removedBuiltins, { tokens: ['usd', 'usd:tempo'] });
+    assert.equal(fresh.readConfig().tokens?.bnb?.chains?.bsc?.isNative, true);
+  });
+});
+
+test('switchActiveChain treats a blank rpcUrl as unset and falls back to the profile', async () => {
+  await withTempAgentPayHome(async () => {
+    const config = await import(modulePath.href + `?case=${Date.now()}-switch-blank-rpc`);
+
+    const blank = config.switchActiveChain('bsc', { rpcUrl: '' });
+    assert.equal(blank.chainId, 56);
+    assert.equal(blank.rpcUrl, 'https://bsc.drpc.org');
+
+    const whitespace = config.switchActiveChain('tempo', { rpcUrl: '   ' });
+    assert.equal(whitespace.chainId, 4217);
+    assert.equal(whitespace.rpcUrl, 'https://rpc.presto.tempo.xyz');
+
+    const explicit = config.switchActiveChain('bsc', { rpcUrl: 'https://bsc.example' });
+    assert.equal(explicit.rpcUrl, 'https://bsc.example');
+  });
+});
+
+test('readConfig reports wrong-typed config fields with clear errors', async () => {
+  const cases = [
+    [{ rpcUrl: 123 }, /config field rpcUrl must be a string/],
+    [{ chainId: '56' }, /config field chainId must be a number/],
+    [{ chains: 'bsc' }, /config field chains must be an object/],
+    [{ chains: { bsc: 'nope' } }, /config field chains\.bsc must be an object/],
+    [
+      { tokens: { bnb: { symbol: 'BNB', chains: [] } } },
+      /config field tokens\.bnb\.chains must be an object/,
+    ],
+    [
+      { tokens: { bnb: { symbol: 42, chains: {} } } },
+      /token profile 'bnb' symbol must be a string/,
+    ],
+    [
+      { wallet: { vaultPublicKey: 123, policyAttachment: 'default' } },
+      /wallet\.vaultPublicKey must be a string/,
+    ],
+    [
+      { wallet: { vaultPublicKey: '0xabc', policyAttachment: 'default', address: 42 } },
+      /wallet\.address must be a string/,
+    ],
+    [
+      { removedBuiltins: { chains: 'bsc' } },
+      /config field removedBuiltins\.chains must be an array of strings/,
+    ],
+    [[], /config file must contain a JSON object/],
+  ];
+
+  for (const [index, [payload, expected]] of cases.entries()) {
+    await withTempAgentPayHome(async (tempRoot) => {
+      const agentpayHome = path.join(tempRoot, 'home');
+      fs.mkdirSync(agentpayHome, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(agentpayHome, 'config.json'), JSON.stringify(payload), {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
+
+      const config = await import(modulePath.href + `?case=${Date.now()}-bad-types-${index}`);
+      assert.throws(() => config.readConfig(), expected, `case ${index}`);
+      assert.throws(
+        () => config.readConfig(),
+        (error) => !(error instanceof TypeError),
+        `case ${index} must not surface a TypeError`,
+      );
+    });
+  }
+});

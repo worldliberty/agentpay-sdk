@@ -82,18 +82,36 @@ test('prepareAgentAuthRelay reads agent auth tokens from stdin when requested', 
   assert.equal(prepared.stdin, 'stdin-secret\n');
 });
 
-test('prepareAgentAuthRelay relays AGENTPAY_AGENT_AUTH_TOKEN through stdin and scrubs env', async () => {
+test('prepareAgentAuthRelay refuses to relay AGENTPAY_AGENT_AUTH_TOKEN and names the migration path', async () => {
   const relay = await loadModule(`${Date.now()}-env`);
 
-  const prepared = await relay.prepareAgentAuthRelay(['transfer'], {
-    env: {
-      AGENTPAY_AGENT_AUTH_TOKEN: 'env-secret',
+  await assert.rejects(
+    relay.prepareAgentAuthRelay(['transfer'], {
+      env: {
+        AGENTPAY_AGENT_AUTH_TOKEN: 'env-secret',
+      },
+    }),
+    (error) => {
+      assert.match(
+        error.message,
+        /^AGENTPAY_AGENT_AUTH_TOKEN is disabled by default for security; use local credential storage or --agent-auth-token-stdin, migrate it with `agentpay config agent-auth set --agent-key-id <uuid> --agent-auth-token-stdin`, or pass --allow-legacy-agent-auth-source$/,
+      );
+      assert.doesNotMatch(error.message, /env-secret/);
+      return true;
     },
-  });
+  );
 
-  assert.deepEqual(prepared.args, ['--agent-auth-token-stdin', 'transfer']);
-  assert.equal(prepared.stdin, 'env-secret\n');
-  assert.equal(prepared.scrubSensitiveEnv, true);
+  await assert.rejects(
+    relay.prepareAgentAuthRelay(
+      ['--agent-key-id', '00000000-0000-0000-0000-000000000001', 'transfer'],
+      {
+        env: {
+          AGENTPAY_AGENT_AUTH_TOKEN: 'env-secret',
+        },
+      },
+    ),
+    /agent-auth set --agent-key-id 00000000-0000-0000-0000-000000000001 --agent-auth-token-stdin/,
+  );
 });
 
 test('prepareAgentAuthRelay rejects conflicting agent auth sources', async () => {
@@ -179,17 +197,17 @@ test('prepareAgentAuthRelay ignores flags after -- terminator', async () => {
   assert.equal(prepared.stdin, undefined);
 });
 
-test('prepareAgentAuthRelay still relays env secrets when help flags appear after --', async () => {
+test('prepareAgentAuthRelay still refuses env secrets when help flags appear after --', async () => {
   const relay = await loadModule(`${Date.now()}-env-terminator-help`);
 
-  const prepared = await relay.prepareAgentAuthRelay(['transfer', '--', '--help'], {
-    env: {
-      AGENTPAY_AGENT_AUTH_TOKEN: 'env-secret',
-    },
-  });
-
-  assert.deepEqual(prepared.args, ['--agent-auth-token-stdin', 'transfer', '--', '--help']);
-  assert.equal(prepared.stdin, 'env-secret\n');
+  await assert.rejects(
+    relay.prepareAgentAuthRelay(['transfer', '--', '--help'], {
+      env: {
+        AGENTPAY_AGENT_AUTH_TOKEN: 'env-secret',
+      },
+    }),
+    /AGENTPAY_AGENT_AUTH_TOKEN is disabled by default for security/,
+  );
 });
 
 test('prepareAgentAuthRelay skips env relay for direct help and version invocations', async () => {

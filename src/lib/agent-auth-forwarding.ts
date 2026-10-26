@@ -1,3 +1,4 @@
+import { envAgentAuthTokenDisabledError } from './agent-auth.js';
 import { assertValidAgentAuthToken, MAX_AGENT_AUTH_TOKEN_BYTES } from './agent-auth-token.js';
 
 export interface AgentAuthRelayOptions {
@@ -56,6 +57,20 @@ function resolveInlineAgentAuthTokenArg(args: string[]): {
   }
 
   return match;
+}
+
+function resolveAgentKeyIdArg(args: string[]): string | undefined {
+  const forwarded = forwardedArgsPrefix(args);
+  for (let index = 0; index < forwarded.length; index += 1) {
+    const current = forwarded[index];
+    if (current === '--agent-key-id') {
+      return forwarded[index + 1]?.trim() || undefined;
+    }
+    if (current.startsWith('--agent-key-id=')) {
+      return current.slice('--agent-key-id='.length).trim() || undefined;
+    }
+  }
+  return undefined;
 }
 
 function countAgentAuthTokenStdinFlags(args: string[]): number {
@@ -134,13 +149,10 @@ export async function prepareAgentAuthRelay(
       };
     }
 
-    return {
-      args: ['--agent-auth-token-stdin', ...args],
-      stdin: withTrailingNewline(
-        validateSecret(env.AGENTPAY_AGENT_AUTH_TOKEN ?? '', 'agentAuthToken'),
-      ),
-      scrubSensitiveEnv: true,
-    };
+    // The env source is never relayed to the child: reject it exactly like resolveAgentAuthToken
+    // does, so a token exported into the shell cannot silently authorize passthrough commands.
+    validateSecret(env.AGENTPAY_AGENT_AUTH_TOKEN ?? '', 'agentAuthToken');
+    throw envAgentAuthTokenDisabledError(resolveAgentKeyIdArg(args));
   }
 
   return {

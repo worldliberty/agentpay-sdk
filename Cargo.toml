@@ -16,29 +16,50 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 license = "MIT"
-version = "0.5.0"
+version = "0.5.1"
+rust-version = "1.89"
 authors = ["AgentPay SDK Team"]
 
+[profile.release]
+overflow-checks = true
+
 [workspace.dependencies]
+aes = "0.8"
+aes-gcm = "0.10"
 alloy-chains = "0.2.33"
 alloy-dyn-abi = { version = "0.8.26", features = ["eip712"] }
 alloy-primitives = "0.8"
 alloy-sol-types = "0.8"
 anyhow = "1"
+ark-bn254 = "0.5"
+ark-ec = "0.5"
+ark-ed-on-bn254 = "0.5"
+ark-ff = { version = "0.5", features = ["std"] }
+ark-serialize = "0.5"
 argon2 = "0.5"
 async-trait = "0.1"
 base64 = "0.22"
+bech32 = "0.11"
 bincode = "1.3"
+bip39 = { version = "2", default-features = false, features = ["std"] }
+blake512-hash = "0.1"
 block = "0.1"
 bs58 = "0.5"
 chacha20poly1305 = "0.10"
 clap = { version = "4.5", features = ["derive", "env"] }
 core-foundation = "0.10"
 crossterm = "0.28"
+curve25519-dalek = { version = "4", features = ["digest"] }
 ed25519-dalek = { version = "3.0.0-pre.6", features = ["rand_core"] }
+generic-array = "0.14"
+ghash = "0.5"
 hex = "0.4"
+hkdf = "0.12"
+hmac = "0.12"
 k256 = { version = "0.13", features = ["ecdsa"] }
 libc = "0.2"
+light-poseidon = "0.4"
+pbkdf2 = "0.12"
 rand = "0.9"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 ratatui = "0.29"

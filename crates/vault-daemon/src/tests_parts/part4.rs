@@ -9,7 +9,7 @@ async fn disable_policy_stops_enforcement() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -77,7 +77,7 @@ async fn policy_set_agents_do_not_pick_up_policies_added_later() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -155,7 +155,7 @@ async fn rotate_agent_auth_token_invalidates_previous_token() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -217,7 +217,7 @@ async fn revoke_agent_key_blocks_future_signing() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -279,7 +279,7 @@ async fn revoke_agent_key_removes_manual_approval_requests_from_persistent_state
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -389,7 +389,7 @@ async fn evaluate_for_agent_has_no_spend_side_effects() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -472,7 +472,7 @@ async fn daily_spend_limit_counts_in_scope_history_across_assets_and_chains() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -573,7 +573,7 @@ async fn persistent_store_restores_policies_and_agent_auth_state() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -621,7 +621,7 @@ async fn persistent_store_restores_policies_and_agent_auth_state() {
         .await
         .expect("lease after restart");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     let listed = restarted
@@ -670,7 +670,7 @@ async fn persistent_store_restores_reclaimed_nonce_gaps_before_head() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -803,7 +803,7 @@ async fn persistent_store_scrubs_expired_ephemeral_state_on_startup() {
     .expect("daemon");
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -880,6 +880,7 @@ async fn persistent_store_scrubs_expired_ephemeral_state_on_startup() {
             .expect("recipient"),
         amount_wei: 7,
         at: now - time::Duration::days(9),
+        action_kind: vault_domain::ActionKind::Other,
     });
 
     let mut stale_request = sample_manual_approval_request();
@@ -1033,7 +1034,7 @@ async fn unrelated_persistence_paths_scrub_expired_ephemeral_state_before_save()
     .expect("daemon");
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -1110,6 +1111,7 @@ async fn unrelated_persistence_paths_scrub_expired_ephemeral_state_before_save()
                 .expect("recipient"),
             amount_wei: 8,
             at: now - time::Duration::days(9),
+            action_kind: vault_domain::ActionKind::Other,
         });
 
     let mut stale_request = sample_manual_approval_request();
@@ -1255,7 +1257,7 @@ async fn persistent_store_rejects_wrong_password() {
     .expect("daemon");
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1308,7 +1310,7 @@ async fn sign_success_survives_post_sign_persist_failure_and_flushes_later() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1511,7 +1513,7 @@ async fn persistent_store_rejects_group_readable_state_file() {
     .expect("daemon");
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1559,7 +1561,7 @@ async fn sign_for_agent_recovers_signature_after_post_sign_persist_failure() {
     .expect("daemon");
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1658,7 +1660,7 @@ async fn nonce_recovery_results_survive_restart() {
     .expect("daemon");
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1770,7 +1772,7 @@ async fn create_vault_key_cleans_up_backend_key_on_persist_failure() {
     .expect("daemon");
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -1806,7 +1808,7 @@ async fn manual_approval_requests_cannot_be_decided_after_resolution() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -1917,7 +1919,7 @@ async fn manual_approval_policy_hard_denies_amounts_above_maximum() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -1989,7 +1991,7 @@ async fn poisoned_manual_approval_link_secret_lock_fails_without_creating_reques
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -2057,7 +2059,7 @@ async fn rejected_manual_approval_requests_block_new_matching_requests_while_ret
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -2181,7 +2183,7 @@ async fn manual_approval_requests_expire_before_reuse() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -2358,7 +2360,7 @@ async fn approving_manual_approval_request_requires_triggering_policy_to_remain_
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -2450,7 +2452,7 @@ async fn approving_manual_approval_request_requires_triggering_policy_to_still_e
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -2598,7 +2600,7 @@ async fn solana_nonce_account_create_bypasses_manual_approval_and_spend_log() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -2665,7 +2667,7 @@ async fn solana_spl_transfer_manual_approval_requires_managed_durable_nonce_setu
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -2730,7 +2732,7 @@ async fn solana_spl_transfer_manual_approval_signs_with_durable_nonce() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -2826,7 +2828,7 @@ async fn solana_sol_transfer_manual_approval_signs_with_durable_nonce() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -2914,7 +2916,7 @@ async fn solana_spl_transfer_respects_per_tx_spending_policy() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -2976,7 +2978,7 @@ async fn approved_manual_approval_is_not_reused_after_triggering_policy_changes(
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -3094,7 +3096,7 @@ async fn rejected_manual_approval_is_not_reused_after_triggering_policy_changes(
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -3215,7 +3217,7 @@ async fn add_policy_prioritizes_retained_manual_approval_error_before_duplicate_
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -3343,7 +3345,7 @@ async fn completed_manual_approval_spend_counts_toward_later_auto_approved_limit
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -3509,7 +3511,7 @@ async fn eip712_defaults_to_manual_approval_and_does_not_record_spend() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -3567,7 +3569,7 @@ async fn eip712_allow_policy_signs_without_manual_approval() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -3627,7 +3629,7 @@ async fn eip712_deny_policy_rejects_signing() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -3678,7 +3680,7 @@ async fn completed_manual_approval_spend_counts_toward_later_weekly_limits() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 

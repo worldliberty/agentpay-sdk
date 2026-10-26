@@ -1,0 +1,17 @@
+{
+  "description": "Relay manual-approval envelope v2 sealed by apps/web/src/lib/crypto.ts. Regenerate with node scripts/generate-relay-envelope-vector.mjs.",
+  "algorithm": "x25519-hkdf-xchacha20poly1305-v2",
+  "daemonPrivateKeyHex": "1111111111111111111111111111111111111111111111111111111111111111",
+  "daemonPublicKeyHex": "7b4e909bbe7ffe44c465a220037d608ee35897d31ef972f07f74892cb0f73f13",
+  "ephemeralSecretKeyHex": "2222222222222222222222222222222222222222222222222222222222222222",
+  "approvalId": "6f1b8f5e-3a52-4c1e-9d0b-2b7f2f0b9a11",
+  "daemonId": "abababababababababababababababababababababababababababababababab",
+  "aadHex": "36663162386635652d336135322d346331652d396430622d3262376632663062396131317c61626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162616261626162",
+  "plaintext": "{\"approvalId\":\"6f1b8f5e-3a52-4c1e-9d0b-2b7f2f0b9a11\",\"daemonId\":\"abababababababababababababababababababababababababababababababab\",\"vaultPassword\":\"test-vector-vault-password\",\"decision\":\"approve\",\"note\":\"relay envelope v2 cross-language vector\"}",
+  "envelope": {
+    "algorithm": "x25519-hkdf-xchacha20poly1305-v2",
+    "ephemeralPublicKey": "0faa684ed28867b97f4a6a2dee5df8ce974e76b7018e3f22a1c4cf2678570f20",
+    "nonce": "333333333333333333333333333333333333333333333333",
+    "ciphertext": "d406dce92f46104cd0e513e3a5b1a11655a229e72698393cd74585919b734f04fa46a95cb380a53d851b7b30dec0975b2faf3b55c4f92ea36b8940a63b89beb34aed6ef487630efa79c78a5d9890c39e7326a021f8339c2a726868f5a27c0de94a96039f1deabdb5d697a976dfca2296c246c1adc8cf3c55d9fc36998e72fcc2771b58f6b6dc47f6e3d3863daee61ab2b930f08ac5157c4023d23504ea36932c323aac93c3c92b4172e72531a4e81a9c52156d07a2e27cdfab5f2797822dd24e3b78e97d2d7faa8339e8d42364d6a714807db0493df9d3ce9bcf6968cb05aa8c896ed2b07d4c06a5953a29a7d0c5fc24d3b2be43902ece7bc8be10c0af2ac649334b90f5671a"
+  }
+}

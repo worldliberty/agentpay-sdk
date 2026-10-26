@@ -14,7 +14,7 @@ Both servers expose a local `/api/photo` endpoint that charges `0.01` `PATH/USD`
 
 - `server.mjs`: official-style `mppx/server` one-time payment `charge` example
 - `session-server.mjs`: official-style `mppx/server` `session` example on Tempo Moderato
-- `buy-tempo-testnet.mjs`: end-to-end demo runner that pays the local server from Tempo Moderato using the real local `wlfi-agent` wallet and daemon
+- `buy-tempo-testnet.mjs`: end-to-end demo runner that pays the local server from Tempo Moderato using the real local `agentpay` wallet and daemon
 - `buy-tempo-testnet-session.mjs`: end-to-end demo runner that opens, reuses, and closes a Tempo session through the repo-local `agentpay` CLI against the local session example
 
 ## Run The Charge Demo
@@ -27,10 +27,10 @@ pnpm example:mpp:demo
 
 That script will:
 
-1. reuse your configured local `wlfi-agent` wallet and agent key
+1. reuse your configured local `agentpay` wallet and agent key
 2. fund that wallet on Tempo Moderato testnet if it lacks `PATH/USD`
 3. start the local `mppx/server` example on `http://127.0.0.1:4020`
-4. create a temporary compatibility `AGENTPAY_HOME` that points the repo-local `agentpay` CLI at the real `wlfi-agent` daemon/binaries
+4. create a temporary compatibility `AGENTPAY_HOME` that points the repo-local `agentpay` CLI at the installed `agentpay` daemon/binaries
 5. run `agentpay mpp http://127.0.0.1:4020/api/photo --amount 0.01 --rpc-url https://rpc.moderato.tempo.xyz`
 
 This is a real daemon-backed payment path, not a local signing shim.
@@ -45,11 +45,11 @@ pnpm example:mpp:session-demo
 
 That script will:
 
-1. prefer your configured local `agentpay` wallet and agent key; if that is unavailable, fall back to `wlfi-agent` compatibility mode
+1. prefer your configured local `agentpay` wallet and agent key; if that is unavailable, fall back to legacy-layout compatibility mode (an older install whose binaries live outside `~/.agentpay/bin`)
 2. fund that wallet on Tempo Moderato testnet if it lacks `PATH/USD`
 3. generate a fresh testnet recipient account for the server and fund it so the server can close the session on-chain
 4. start the local `mppx/server` session example on `http://127.0.0.1:4021`
-5. when running in fallback mode, create a temporary compatibility `AGENTPAY_HOME` that points the repo-local `agentpay` CLI at the real `wlfi-agent` daemon/binaries
+5. when running in fallback mode, create a temporary compatibility `AGENTPAY_HOME` that points the repo-local `agentpay` CLI at the installed `agentpay` daemon/binaries
 6. call `agentpay mpp` once with `--session-state-file` to open and persist a session
 7. call `agentpay mpp` a second time with the same session state file and `--close-session` to reuse and close the channel
 
@@ -108,4 +108,4 @@ node --import tsx src/cli.ts mpp http://127.0.0.1:4021/api/photo \
   --close-session
 ```
 
-If `wlfi-agent wallet --json` is not available on your machine yet, run `wlfi-agent admin setup` locally first and then rerun `pnpm example:mpp:demo`.
+If `agentpay wallet --json` is not available on your machine yet, run `agentpay admin setup` locally first and then rerun `pnpm example:mpp:demo`.

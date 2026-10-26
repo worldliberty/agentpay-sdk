@@ -1,8 +1,8 @@
 use time::{Duration, OffsetDateTime};
 use uuid::Uuid;
 use vault_domain::{
-    canonical_policy_chain_id, AgentAction, ApprovalType, EntityScope, PolicyAttachment,
-    PolicyType, SpendEvent, SpendingPolicy,
+    canonical_policy_chain_id, ActionKind, AgentAction, ApprovalType, EntityScope,
+    PolicyAttachment, PolicyType, SpendEvent, SpendingPolicy,
 };
 
 use crate::{PolicyDecision, PolicyError, PolicyEvaluation, PolicyExplanation};
@@ -67,9 +67,107 @@ fn network_scope_allows(scope: &EntityScope<u64>, chain_id: u64) -> bool {
     }
 }
 
-/// Stateless policy evaluator.
-#[derive(Debug, Default)]
-pub struct PolicyEngine;
+/// EIP-712 primary types that move funds or grant allowances when signed.
+///
+/// A blanket `Eip712Signing = Allow` policy must never sign these through the
+/// generic typed-data path: the engine cannot project them onto an
+/// amount/asset/recipient, so every spending scope would be bypassed. Callers
+/// must use the typed [`AgentAction::Permit2Permit`] /
+/// [`AgentAction::Eip3009TransferWithAuthorization`] /
+/// [`AgentAction::Eip3009ReceiveWithAuthorization`] variants (which the
+/// spending policies evaluate) or an eip712 manual-approval policy.
+const VALUE_BEARING_EIP712_PRIMARY_TYPES: &[&str] = &[
+    "PermitSingle",
+    "PermitBatch",
+    "PermitTransferFrom",
+    "PermitBatchTransferFrom",
+    "Permit",
+    "TransferWithAuthorization",
+    "ReceiveWithAuthorization",
+    "SafeTx",
+];
+
+/// Canonical Permit2 deployment address (identical on every EVM chain).
+const PERMIT2_CANONICAL_ADDRESS: &str = "0x000000000022d473030f116ddee9f6b43ac78ba3";
+
+/// Railgun's Proof of Innocence "unshield-only standby period" — the wallet
+/// must wait this long between a successful shield and any private-transfer
+/// or third-party unshield. Default matches the protocol spec; public Waku
+/// broadcasters refuse to relay transactions that skip it.
+pub const RAILGUN_POI_STANDBY: Duration = Duration::hours(1);
+
+/// Returns the most recent Shield spend event for `agent_key_id` whose
+/// timestamp falls within the standby window ending at `now`. Used by the
+/// PoI standby gate; pure function so tests can exercise it directly.
+fn most_recent_shield_within<'a>(
+    spend_history: &'a [SpendEvent],
+    agent_key_id: Uuid,
+    now: OffsetDateTime,
+    standby: Duration,
+) -> Option<&'a SpendEvent> {
+    let window_start = now - standby;
+    spend_history
+        .iter()
+        .filter(|event| {
+            event.agent_key_id == agent_key_id
+                && matches!(event.action_kind, ActionKind::Shield)
+                && event.at >= window_start
+                && event.at <= now
+        })
+        // Latest shield wins: a fresh shield resets the standby clock for the
+        // wallet, so we report time-remaining against the most recent one.
+        .max_by_key(|event| event.at)
+}
+
+/// Returns `Some(PolicyError::PoiStandbyActive)` when `action` is gated by
+/// the standby window and a qualifying shield is on the wallet's history.
+pub(crate) fn check_poi_standby(
+    action: &AgentAction,
+    spend_history: &[SpendEvent],
+    agent_key_id: Uuid,
+    now: OffsetDateTime,
+    standby: Duration,
+) -> Option<PolicyError> {
+    if !matches!(
+        action.action_kind(),
+        ActionKind::Unshield | ActionKind::PrivateTransfer
+    ) {
+        return None;
+    }
+    let recent = most_recent_shield_within(spend_history, agent_key_id, now, standby)?;
+    let elapsed = now - recent.at;
+    let remaining = standby - elapsed;
+    // `Duration::whole_seconds` returns i64; clamp to u64 for the wire shape.
+    let standby_required_seconds = standby.whole_seconds().max(0) as u64;
+    let standby_remaining_seconds = remaining.whole_seconds().max(0) as u64;
+    Some(PolicyError::PoiStandbyActive {
+        standby_remaining_seconds,
+        standby_required_seconds,
+    })
+}
+
+/// Stateless policy evaluator. Pass `poi_standby` to enforce the Railgun PoI
+/// unshield-only standby window — daemon callers should construct via
+/// [`PolicyEngine::with_poi_standby`]; tests use [`PolicyEngine::default`] to
+/// keep historical fixtures unaffected.
+#[derive(Debug, Default, Clone)]
+pub struct PolicyEngine {
+    poi_standby: Option<Duration>,
+}
+
+impl PolicyEngine {
+    /// Engine that enforces the Railgun PoI standby window on
+    /// [`AgentAction::Unshield`] and [`AgentAction::PrivateTransfer`]. Pass
+    /// [`RAILGUN_POI_STANDBY`] for the spec default (1 hour); a custom value
+    /// is useful for tests or for non-mainnet deployments with different
+    /// broadcaster policy.
+    #[must_use]
+    pub fn with_poi_standby(duration: Duration) -> Self {
+        Self {
+            poi_standby: Some(duration),
+        }
+    }
+}
 
 impl PolicyEngine {
     fn default_eip712_manual_approval() -> PolicyError {
@@ -132,14 +230,31 @@ impl PolicyEngine {
                 decision: PolicyDecision::Allow,
             };
         }
+
+        // PoI standby check fires before per-policy evaluation so a standby
+        // violation always wins regardless of which policies happen to be
+        // attached. Only Unshield + PrivateTransfer are gated — shielding
+        // back-to-back is fine; the constraint is about post-shield outflow.
+        if let Some(standby) = self.poi_standby {
+            if let Some(err) = check_poi_standby(action, spend_history, agent_key_id, now, standby)
+            {
+                return PolicyExplanation {
+                    attached_policy_ids,
+                    applicable_policy_ids: Vec::new(),
+                    evaluated_policy_ids: Vec::new(),
+                    decision: PolicyDecision::Deny(err),
+                };
+            }
+        }
         if attached.is_empty() {
+            // An agent with no enabled policies is never unrestricted, even
+            // under `AllPolicies`: typed-data requests fall back to manual
+            // approval and everything else is denied outright.
             return PolicyExplanation {
                 attached_policy_ids,
                 applicable_policy_ids: Vec::new(),
                 evaluated_policy_ids: Vec::new(),
-                decision: if matches!(attachment, PolicyAttachment::AllPolicies) {
-                    PolicyDecision::Allow
-                } else if action.requires_eip712_policy() {
+                decision: if action.requires_eip712_policy() {
                     PolicyDecision::Deny(Self::default_eip712_manual_approval())
                 } else {
                     PolicyDecision::Deny(PolicyError::NoAttachedPolicies)
@@ -166,26 +281,13 @@ impl PolicyEngine {
                 };
             }
 
-            let mut evaluated_policy_ids = Vec::with_capacity(applicable.len());
-            for policy in applicable {
-                evaluated_policy_ids.push(policy.id);
-                if let Err(err) =
-                    self.evaluate_single_policy(policy, action, spend_history, agent_key_id, now)
-                {
-                    return PolicyExplanation {
-                        attached_policy_ids,
-                        applicable_policy_ids,
-                        evaluated_policy_ids,
-                        decision: PolicyDecision::Deny(err),
-                    };
-                }
-            }
-
+            let (evaluated_policy_ids, decision) =
+                self.evaluate_applicable(&applicable, action, spend_history, agent_key_id, now);
             return PolicyExplanation {
                 attached_policy_ids,
                 applicable_policy_ids,
                 evaluated_policy_ids,
-                decision: PolicyDecision::Allow,
+                decision,
             };
         }
 
@@ -212,27 +314,87 @@ impl PolicyEngine {
             };
         }
 
-        let mut evaluated_policy_ids = Vec::with_capacity(applicable.len());
-        for policy in applicable {
-            evaluated_policy_ids.push(policy.id);
-            if let Err(err) =
-                self.evaluate_single_policy(policy, action, spend_history, agent_key_id, now)
-            {
-                return PolicyExplanation {
-                    attached_policy_ids,
-                    applicable_policy_ids,
-                    evaluated_policy_ids,
-                    decision: PolicyDecision::Deny(err),
-                };
-            }
-        }
-
+        let (evaluated_policy_ids, decision) =
+            self.evaluate_applicable(&applicable, action, spend_history, agent_key_id, now);
         PolicyExplanation {
             attached_policy_ids,
             applicable_policy_ids,
             evaluated_policy_ids,
-            decision: PolicyDecision::Allow,
+            decision,
         }
+    }
+
+    /// Evaluates every applicable policy in priority order and folds the
+    /// outcomes into one decision.
+    ///
+    /// Manual-approval outcomes are *soft* and never short-circuit: evaluation
+    /// continues so a later hard limit (daily cap, per-tx max, gas cap, deny
+    /// policy, ...) still rejects the request instead of being masked by the
+    /// approval prompt. The first hard denial returns immediately; otherwise
+    /// the first soft outcome is returned; otherwise the request is allowed.
+    ///
+    /// Exception: an allow eip712 policy refusing value-bearing typed data is
+    /// not final when an eip712 manual-approval policy also applies. That
+    /// denial exists to route such payloads to a human, so the request falls
+    /// through to the manual-approval outcome (an eip712 deny policy still
+    /// hard-denies).
+    fn evaluate_applicable(
+        &self,
+        applicable: &[&SpendingPolicy],
+        action: &AgentAction,
+        spend_history: &[SpendEvent],
+        agent_key_id: Uuid,
+        now: OffsetDateTime,
+    ) -> (Vec<Uuid>, PolicyDecision) {
+        let eip712_manual_approval_applies = applicable
+            .iter()
+            .any(|policy| policy.eip712_approval_type() == Some(ApprovalType::ManualApproval));
+        let mut evaluated_policy_ids = Vec::with_capacity(applicable.len());
+        let mut soft_denial: Option<PolicyError> = None;
+        for policy in applicable {
+            evaluated_policy_ids.push(policy.id);
+            match self.evaluate_single_policy(policy, action, spend_history, agent_key_id, now) {
+                Ok(()) => {}
+                Err(err) if err.is_manual_approval_required() => {
+                    if soft_denial.is_none() {
+                        soft_denial = Some(err);
+                    }
+                }
+                Err(PolicyError::Eip712ValueBearingTypeDenied { .. })
+                    if eip712_manual_approval_applies => {}
+                Err(err) => return (evaluated_policy_ids, PolicyDecision::Deny(err)),
+            }
+        }
+
+        let decision = match soft_denial {
+            Some(err) => PolicyDecision::Deny(err),
+            None => PolicyDecision::Allow,
+        };
+        (evaluated_policy_ids, decision)
+    }
+
+    /// Returns the primary type when `action` is a generic typed-data request
+    /// whose payload is value-bearing: either its `primaryType` is listed in
+    /// [`VALUE_BEARING_EIP712_PRIMARY_TYPES`] or its domain is bound to the
+    /// canonical Permit2 contract. Unparseable payloads are treated as
+    /// value-bearing so the check fails closed.
+    fn eip712_value_bearing_primary_type(action: &AgentAction) -> Option<String> {
+        if !action.requires_eip712_policy() {
+            return None;
+        }
+        let primary_type = match action.eip712_primary_type() {
+            Ok(Some(primary_type)) => primary_type,
+            _ => return Some("<unparseable>".to_string()),
+        };
+        let listed = VALUE_BEARING_EIP712_PRIMARY_TYPES
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(&primary_type));
+        let permit2_domain = match action.eip712_verifying_contract() {
+            Ok(Some(contract)) => contract.as_str() == PERMIT2_CANONICAL_ADDRESS,
+            Ok(None) => false,
+            Err(_) => true,
+        };
+        (listed || permit2_domain).then_some(primary_type)
     }
 
     fn evaluate_single_policy(
@@ -273,12 +435,20 @@ impl PolicyEngine {
             PolicyType::PerTxMaxCalldataBytes => {
                 enforce_calldata_bytes_limit(policy, action)?;
             }
+            // Escrow redistributions (Tempo vouchers) spend funds that were already
+            // counted against the windows when the escrow was funded, so window
+            // limits skip them. Per-tx caps and manual approval still apply. The
+            // daemon rejects vouchers for channels it did not open for the same
+            // agent key, or above that agent's deposits, before evaluation.
+            PolicyType::DailyMaxSpending
+            | PolicyType::WeeklyMaxSpending
+            | PolicyType::DailyMaxTxCount
+                if action.is_escrow_redistribution() => {}
             PolicyType::DailyMaxSpending => self.enforce_window_limit(
                 policy,
                 spend_history,
                 agent_key_id,
                 now - Duration::days(1),
-                now,
                 requested_amount_wei,
             )?,
             PolicyType::DailyMaxTxCount => {
@@ -287,7 +457,6 @@ impl PolicyEngine {
                     spend_history,
                     agent_key_id,
                     now - Duration::days(1),
-                    now,
                 )?;
             }
             PolicyType::WeeklyMaxSpending => self.enforce_window_limit(
@@ -295,7 +464,6 @@ impl PolicyEngine {
                 spend_history,
                 agent_key_id,
                 now - Duration::weeks(1),
-                now,
                 requested_amount_wei,
             )?,
             PolicyType::PerChainMaxGasSpend => {
@@ -330,7 +498,15 @@ impl PolicyEngine {
             }
             PolicyType::Eip712Signing => {
                 match policy.eip712_approval_type().unwrap_or(ApprovalType::Allow) {
-                    ApprovalType::Allow => {}
+                    ApprovalType::Allow => {
+                        if let Some(primary_type) = Self::eip712_value_bearing_primary_type(action)
+                        {
+                            return Err(PolicyError::Eip712ValueBearingTypeDenied {
+                                policy_id: policy.id,
+                                primary_type,
+                            });
+                        }
+                    }
                     ApprovalType::ManualApproval => {
                         return Err(PolicyError::Eip712ManualApprovalRequired {
                             policy_id: Some(policy.id),
@@ -344,6 +520,107 @@ impl PolicyEngine {
                     }
                 }
             }
+            PolicyType::PerTxMaxShieldAmount => {
+                if matches!(action.action_kind(), ActionKind::Shield)
+                    && requested_amount_wei > policy.max_amount_wei
+                {
+                    return Err(PolicyError::PerTxLimitExceeded {
+                        policy_id: policy.id,
+                        max_amount_wei: policy.max_amount_wei,
+                        requested_amount_wei,
+                    });
+                }
+            }
+            PolicyType::DailyMaxShieldAmount => {
+                if matches!(action.action_kind(), ActionKind::Shield) {
+                    self.enforce_window_limit_for_kinds(
+                        policy,
+                        spend_history,
+                        agent_key_id,
+                        now - Duration::days(1),
+                        requested_amount_wei,
+                        &[ActionKind::Shield],
+                    )?;
+                }
+            }
+            PolicyType::PerTxMaxUnshieldAmount => {
+                if matches!(
+                    action.action_kind(),
+                    ActionKind::Unshield | ActionKind::PrivateTransfer
+                ) && requested_amount_wei > policy.max_amount_wei
+                {
+                    return Err(PolicyError::PerTxLimitExceeded {
+                        policy_id: policy.id,
+                        max_amount_wei: policy.max_amount_wei,
+                        requested_amount_wei,
+                    });
+                }
+            }
+            PolicyType::DailyMaxUnshieldAmount => {
+                if matches!(
+                    action.action_kind(),
+                    ActionKind::Unshield | ActionKind::PrivateTransfer
+                ) {
+                    self.enforce_window_limit_for_kinds(
+                        policy,
+                        spend_history,
+                        agent_key_id,
+                        now - Duration::days(1),
+                        requested_amount_wei,
+                        &[ActionKind::Unshield, ActionKind::PrivateTransfer],
+                    )?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Same accumulation logic as [`Self::enforce_window_limit`] but restricts
+    /// the considered history to events recorded under one of the listed
+    /// [`ActionKind`]s. Used by shield/unshield-scoped daily caps so they do
+    /// not double-count generic transfer history.
+    fn enforce_window_limit_for_kinds(
+        &self,
+        policy: &SpendingPolicy,
+        spend_history: &[SpendEvent],
+        agent_key_id: Uuid,
+        window_start: OffsetDateTime,
+        requested_amount_wei: u128,
+        kinds: &[ActionKind],
+    ) -> Result<(), PolicyError> {
+        let mut used_amount_wei = 0u128;
+        let mut overflowed = false;
+        for event in spend_history.iter().filter(|event| {
+            event.agent_key_id == agent_key_id
+                && event.at >= window_start
+                && kinds.contains(&event.action_kind)
+                && policy.assets.allows(&event.asset)
+                && policy.recipients.allows(&event.recipient)
+                && network_scope_allows(&policy.networks, event.chain_id)
+        }) {
+            match used_amount_wei.checked_add(event.amount_wei) {
+                Some(next) => used_amount_wei = next,
+                None => {
+                    overflowed = true;
+                    used_amount_wei = u128::MAX;
+                    break;
+                }
+            }
+        }
+
+        let exceeds_window = overflowed
+            || used_amount_wei
+                .checked_add(requested_amount_wei)
+                .is_none_or(|total| total > policy.max_amount_wei);
+
+        if exceeds_window {
+            return Err(PolicyError::WindowLimitExceeded {
+                policy_id: policy.id,
+                used_amount_wei,
+                requested_amount_wei,
+                max_amount_wei: policy.max_amount_wei,
+            });
         }
 
         Ok(())
@@ -355,7 +632,6 @@ impl PolicyEngine {
         spend_history: &[SpendEvent],
         agent_key_id: Uuid,
         window_start: OffsetDateTime,
-        window_end: OffsetDateTime,
     ) -> Result<(), PolicyError> {
         let mut used_tx_count = 0u128;
         let overflowed = spend_history
@@ -363,7 +639,6 @@ impl PolicyEngine {
             .filter(|event| {
                 event.agent_key_id == agent_key_id
                     && event.at >= window_start
-                    && event.at <= window_end
                     && policy.assets.allows(&event.asset)
                     && policy.recipients.allows(&event.recipient)
                     && network_scope_allows(&policy.networks, event.chain_id)
@@ -385,13 +660,20 @@ impl PolicyEngine {
         Ok(())
     }
 
+    /// Sums in-scope spend since `window_start` and rejects when adding
+    /// `requested_amount_wei` would exceed the policy cap.
+    ///
+    /// The window deliberately has no upper bound: an event stamped after
+    /// `now` (the host clock stepped backwards, or a skewed persisted log) is
+    /// clamped to `now` and counted, so a clock step can never reset a
+    /// rolling budget. The same applies to the tx-count and kind-scoped
+    /// windows.
     fn enforce_window_limit(
         &self,
         policy: &SpendingPolicy,
         spend_history: &[SpendEvent],
         agent_key_id: Uuid,
         window_start: OffsetDateTime,
-        window_end: OffsetDateTime,
         requested_amount_wei: u128,
     ) -> Result<(), PolicyError> {
         let mut used_amount_wei = 0u128;
@@ -399,7 +681,6 @@ impl PolicyEngine {
         for event in spend_history.iter().filter(|event| {
             event.agent_key_id == agent_key_id
                 && event.at >= window_start
-                && event.at <= window_end
                 && policy.assets.allows(&event.asset)
                 && policy.recipients.allows(&event.recipient)
                 && network_scope_allows(&policy.networks, event.chain_id)

@@ -22,7 +22,7 @@ export default defineConfig({
   platform: 'node',
   target: 'node20',
   clean: true,
-  sourcemap: true,
+  sourcemap: false,
   dts: false,
   banner: {
     js: suppressBigintBufferWarningBanner,

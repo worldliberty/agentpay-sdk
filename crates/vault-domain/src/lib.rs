@@ -13,6 +13,7 @@ mod error;
 mod keys;
 mod nonce;
 mod policy;
+pub mod railgun;
 mod request;
 mod scope;
 pub mod serde_helpers;
@@ -21,25 +22,35 @@ mod signature;
 mod u128_as_decimal_string;
 
 pub use action::{
-    action_from_erc20_calldata, parse_erc20_call, AgentAction, BroadcastTx, Eip3009Transfer,
-    Eip712TypedData, Erc20Call, Permit2Permit, SolanaNonceAccountCreate, SolanaSolTransfer,
-    SolanaSplTransfer, SolanaTokenProgram, TempoSessionOpenTransaction,
-    TempoSessionTopUpTransaction, TempoSessionVoucher,
+    action_from_erc20_calldata, parse_erc20_call, tempo_escrow_contract, AgentAction, BroadcastTx,
+    Eip3009Transfer, Eip712TypedData, Erc20Call, Permit2Permit, SolanaNonceAccountCreate,
+    SolanaSolTransfer, SolanaSplTransfer, SolanaTokenProgram, TempoSessionOpenTransaction,
+    TempoSessionTopUpTransaction, TempoSessionVoucher, TempoTxParams,
 };
-pub use address::{EvmAddress, RecipientId, SolanaAddress};
+pub use address::{EvmAddress, RailgunAddress, RecipientId, SolanaAddress};
 pub use approval::{
     manual_approval_capability_hash, manual_approval_capability_token, ManualApprovalDecision,
     ManualApprovalRequest, ManualApprovalStatus, RelayConfig, RelayFeedbackStatus,
 };
 pub use constants::{
-    canonical_policy_chain_id, is_solana_chain_id, DEFAULT_MAX_GAS_SPEND_PER_CHAIN_WEI,
-    EIP7702_TX_TYPE, SOLANA_DEVNET_CHAIN_ID, SOLANA_MAINNET_CHAIN_ID, SOLANA_POLICY_CHAIN_ID,
-    SOLANA_TESTNET_CHAIN_ID,
+    canonical_policy_chain_id, is_solana_chain_id, is_tempo_chain_id,
+    DEFAULT_MAX_GAS_SPEND_PER_CHAIN_WEI, EIP7702_TX_TYPE, SOLANA_DEVNET_CHAIN_ID,
+    SOLANA_MAINNET_CHAIN_ID, SOLANA_NONCE_ACCOUNT_DATA_LEN_BYTES,
+    SOLANA_NONCE_ACCOUNT_MAX_RENT_LAMPORTS, SOLANA_NONCE_ACCOUNT_RENT_EXEMPT_MINIMUM_LAMPORTS,
+    SOLANA_POLICY_CHAIN_ID, SOLANA_TESTNET_CHAIN_ID, TEMPO_MAINNET_CHAIN_ID,
+    TEMPO_MAINNET_ESCROW_CONTRACT, TEMPO_TESTNET_CHAIN_ID, TEMPO_TESTNET_ESCROW_CONTRACT,
+    TEMPO_TX_TYPE,
 };
 pub use error::DomainError;
 pub use keys::{AgentCredentials, AgentKey, KeyAlgorithm, KeySource, VaultKey};
 pub use nonce::{NonceReleaseRequest, NonceReservation, NonceReservationRequest};
-pub use policy::{ApprovalType, AssetId, PolicyAttachment, PolicyType, SpendEvent, SpendingPolicy};
+pub use policy::{
+    ActionKind, ApprovalType, AssetId, PolicyAttachment, PolicyType, SpendEvent, SpendingPolicy,
+};
+pub use railgun::{
+    RailgunDecryptedNote, RailgunMerklePath, RailgunNoteCiphertext, RailgunNoteInput,
+    RailgunNullifier, RailgunTreeNumber, RailgunViewingPublicKeys, RailgunWitnessBundle,
+};
 pub use request::SignRequest;
 pub use scope::EntityScope;
 pub use session::{AdminSession, Lease};

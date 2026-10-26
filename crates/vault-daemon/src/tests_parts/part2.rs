@@ -9,7 +9,7 @@ async fn broadcast_without_nonce_reservation_is_rejected() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -73,7 +73,7 @@ async fn reserve_nonce_is_monotonic_for_same_agent_and_chain() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -131,7 +131,7 @@ async fn reserve_nonce_replay_recovers_original_reservation() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -182,7 +182,7 @@ async fn reserve_nonce_replay_is_rejected_after_release() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -244,7 +244,7 @@ async fn reserve_nonce_replay_is_rejected_after_signed_request_consumes_reservat
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -325,7 +325,7 @@ async fn reserve_nonce_replay_is_rejected_after_reservation_expiry() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -377,7 +377,7 @@ async fn reserve_nonce_reuse_with_different_scope_is_rejected() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -439,7 +439,7 @@ async fn release_nonce_reclaims_latest_unused_nonce() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -510,7 +510,7 @@ async fn reserve_nonce_with_higher_min_preserves_lower_reclaimed_and_skipped_non
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -639,7 +639,7 @@ async fn release_nonce_reclaims_out_of_order_gaps_before_head() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -753,7 +753,7 @@ async fn exact_nonce_reserve_consumes_reclaimed_gap() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -866,7 +866,7 @@ async fn exact_nonce_above_head_preserves_skipped_lower_nonces() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -883,6 +883,23 @@ async fn exact_nonce_above_head_preserves_skipped_lower_nonces() {
         .expect("agent");
 
     let now = time::OffsetDateTime::now_utc();
+    // Track a head first; an untracked chain is seeded at the requested nonce
+    // without gaps, so skipped nonces only exist relative to a tracked head.
+    let tracked = daemon
+        .reserve_nonce(NonceReservationRequest {
+            request_id: Uuid::new_v4(),
+            agent_key_id: agent_credentials.agent_key.id,
+            agent_auth_token: agent_credentials.auth_token.clone(),
+            chain_id: 56,
+            min_nonce: 0,
+            exact_nonce: false,
+            requested_at: now,
+            expires_at: now + time::Duration::minutes(2),
+        })
+        .await
+        .expect("reserve initial head");
+    assert_eq!(tracked.nonce, 0);
+
     let exact = daemon
         .reserve_nonce(NonceReservationRequest {
             request_id: Uuid::new_v4(),
@@ -911,7 +928,7 @@ async fn exact_nonce_above_head_preserves_skipped_lower_nonces() {
         })
         .await
         .expect("reserve first skipped lower nonce");
-    assert_eq!(first_lower.nonce, 0);
+    assert_eq!(first_lower.nonce, 1);
 
     let second_lower = daemon
         .reserve_nonce(NonceReservationRequest {
@@ -926,7 +943,7 @@ async fn exact_nonce_above_head_preserves_skipped_lower_nonces() {
         })
         .await
         .expect("reserve second skipped lower nonce");
-    assert_eq!(second_lower.nonce, 1);
+    assert_eq!(second_lower.nonce, 2);
 }
 
 #[tokio::test]
@@ -940,7 +957,7 @@ async fn exact_nonce_can_reuse_chain_nonce_after_signed_request_advances_head() 
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1028,7 +1045,7 @@ async fn future_issued_nonce_reservation_is_reclaimed_before_exact_reserve() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1097,7 +1114,7 @@ async fn expired_nonce_reservation_is_reclaimed_before_next_reserve() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1161,7 +1178,7 @@ async fn expired_nonce_reservations_reclaim_out_of_order_gaps_before_head() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1266,7 +1283,7 @@ async fn reserve_nonce_rejects_zero_chain_id() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1315,7 +1332,7 @@ async fn release_nonce_replay_returns_success() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1377,7 +1394,7 @@ async fn release_nonce_reuse_with_different_reservation_is_rejected() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1462,7 +1479,7 @@ async fn release_nonce_rejects_non_owner_agent() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1535,7 +1552,7 @@ async fn explain_for_agent_returns_denial_without_error() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     let policy = policy_all_per_tx(10);
@@ -1633,7 +1650,7 @@ async fn release_nonce_removes_reservation_from_snapshot() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1698,7 +1715,7 @@ async fn payload_action_mismatch_is_rejected() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1756,7 +1773,7 @@ async fn malformed_payload_is_rejected() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1809,7 +1826,7 @@ async fn payload_with_extra_fields_is_rejected() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1866,7 +1883,7 @@ async fn oversized_payload_is_rejected() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1922,7 +1939,7 @@ async fn spend_log_retention_prunes_out_of_window_entries() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1951,28 +1968,26 @@ async fn spend_log_retention_prunes_out_of_window_entries() {
     let future_recipient = "0xa400000000000000000000000000000000000000"
         .parse::<EvmAddress>()
         .expect("recipient");
-    daemon
-        .spend_log
-        .write()
-        .expect("log write")
-        .extend([
-            vault_domain::SpendEvent {
-                agent_key_id: agent_credentials.agent_key.id,
-                chain_id: 1,
-                asset: AssetId::Erc20(old_token),
-                recipient: old_recipient.into(),
-                amount_wei: 1,
-                at: time::OffsetDateTime::now_utc() - time::Duration::days(30),
-            },
-            vault_domain::SpendEvent {
-                agent_key_id: agent_credentials.agent_key.id,
-                chain_id: 1,
-                asset: AssetId::Erc20(future_token),
-                recipient: future_recipient.into(),
-                amount_wei: 1,
-                at: time::OffsetDateTime::now_utc() + time::Duration::days(30),
-            },
-        ]);
+    daemon.spend_log.write().expect("log write").extend([
+        vault_domain::SpendEvent {
+            agent_key_id: agent_credentials.agent_key.id,
+            chain_id: 1,
+            asset: AssetId::Erc20(old_token.clone()),
+            recipient: old_recipient.into(),
+            amount_wei: 1,
+            at: time::OffsetDateTime::now_utc() - time::Duration::days(30),
+            action_kind: vault_domain::ActionKind::Other,
+        },
+        vault_domain::SpendEvent {
+            agent_key_id: agent_credentials.agent_key.id,
+            chain_id: 1,
+            asset: AssetId::Erc20(future_token.clone()),
+            recipient: future_recipient.into(),
+            amount_wei: 1,
+            at: time::OffsetDateTime::now_utc() + time::Duration::days(30),
+            action_kind: vault_domain::ActionKind::Other,
+        },
+    ]);
 
     let token = "0x9300000000000000000000000000000000000000"
         .parse::<EvmAddress>()
@@ -1995,10 +2010,26 @@ async fn spend_log_retention_prunes_out_of_window_entries() {
 
     let log = daemon.spend_log.read().expect("log read");
     let now = time::OffsetDateTime::now_utc();
-    assert_eq!(log.len(), 1, "only the newly signed event should remain");
-    assert!(log.iter().all(|event| {
-        event.at >= now - time::Duration::days(8) && event.at <= now
-    }));
+    assert_eq!(
+        log.len(),
+        2,
+        "the expired event must be pruned; the newly signed and future-dated events remain"
+    );
+    assert!(
+        log.iter()
+            .all(|event| event.at >= now - time::Duration::days(8)),
+        "no retained event may be older than the retention window"
+    );
+    assert!(
+        log.iter()
+            .any(|event| event.asset == AssetId::Erc20(future_token.clone())),
+        "future-dated spends must survive pruning so a backward clock step cannot erase them"
+    );
+    assert!(
+        !log.iter()
+            .any(|event| event.asset == AssetId::Erc20(old_token.clone())),
+        "spends older than the retention window must be pruned"
+    );
 }
 
 #[tokio::test]
@@ -2016,7 +2047,7 @@ async fn manual_approval_retention_prunes_only_stale_terminal_entries() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -2150,7 +2181,7 @@ async fn nonce_head_tracking_limit_blocks_new_chains_until_old_heads_are_reclaim
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -2252,7 +2283,7 @@ async fn replay_id_tracking_limit_blocks_new_requests_until_expired_entries_are_
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -2339,7 +2370,7 @@ async fn active_nonce_reservation_limit_blocks_new_reservations_until_slots_are_
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -2431,7 +2462,7 @@ async fn concurrent_sign_requests_do_not_race_policy_windows() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 

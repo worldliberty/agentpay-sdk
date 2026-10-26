@@ -20,6 +20,8 @@ Options:
   --allow-admin-euid <uid>       Allowed admin client uid (required)
   --allow-agent-euid <uid>       Allowed agent client uid (required)
   --vault-password-stdin         Read vault password from stdin and store it in the managed password file
+  --relay-token-stdin            Read the relay daemon token from the second stdin line
+                                 (line 1: vault password, line 2: relay daemon token)
   --help                         Show this help
 EOF
 }
@@ -54,6 +56,26 @@ read_secret_from_stdin() {
   printf '%s' "$raw"
 }
 
+# Reads exactly one line of stdin into the named variable so several secrets can be passed on
+# consecutive lines without ever touching argv or the environment of this root process.
+read_secret_line_from_stdin() {
+  local label="$1"
+  local var_name="$2"
+  local line=""
+  if ! IFS= read -r line; then
+    if [[ -z "$line" ]]; then
+      echo "$label must not be empty or whitespace" >&2
+      exit 1
+    fi
+  fi
+  line="${line%$'\r'}"
+  if [[ -z "${line//[[:space:]]/}" ]]; then
+    echo "$label must not be empty or whitespace" >&2
+    exit 1
+  fi
+  printf -v "$var_name" '%s' "$line"
+}
+
 require_regular_executable() {
   local label="$1"
   local target="$2"
@@ -85,6 +107,20 @@ quote_systemd_env_assignment() {
   value="${value//\"/\\\"}"
   value="${value//%/%%}"
   printf '"%s=%s"' "$name" "$value"
+}
+
+quote_systemd_path() {
+  local value="$1"
+
+  if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    echo "systemd path value must not contain newlines: $value" >&2
+    exit 1
+  fi
+
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//%/%%}"
+  printf '"%s"' "$value"
 }
 
 install_private_file() {
@@ -134,6 +170,7 @@ signer_backend="software"
 allow_admin_euid=""
 allow_agent_euid=""
 vault_password_stdin=false
+relay_token_stdin=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -191,6 +228,10 @@ while [[ $# -gt 0 ]]; do
       vault_password_stdin=true
       shift
       ;;
+    --relay-token-stdin)
+      relay_token_stdin=true
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -222,9 +263,15 @@ require_regular_executable "runner" "$runner"
 require_regular_executable "daemon binary" "$daemon_bin"
 require_regular_executable "password helper" "$password_helper"
 
-vault_password="$(read_secret_from_stdin 'vault password')"
-trap 'unset vault_password' EXIT
-relay_daemon_token="${AGENTPAY_RELAY_DAEMON_TOKEN:-}"
+vault_password=""
+relay_daemon_token=""
+if [[ "$relay_token_stdin" == true ]]; then
+  read_secret_line_from_stdin 'vault password' vault_password
+  read_secret_line_from_stdin 'relay daemon token' relay_daemon_token
+else
+  vault_password="$(read_secret_from_stdin 'vault password')"
+fi
+trap 'unset vault_password relay_daemon_token' EXIT
 
 managed_bin_dir="/opt/agentpay/bin"
 managed_runner="${managed_bin_dir}/run-agentpay-daemon.sh"
@@ -261,6 +308,9 @@ env_signer_backend="$(quote_systemd_env_assignment AGENTPAY_SIGNER_BACKEND "$sig
 env_allow_admin_euid="$(quote_systemd_env_assignment AGENTPAY_ALLOW_ADMIN_EUID "$allow_admin_euid")"
 env_allow_agent_euid="$(quote_systemd_env_assignment AGENTPAY_ALLOW_AGENT_EUID "$allow_agent_euid")"
 env_relay_token_file="$(quote_systemd_env_assignment AGENTPAY_RELAY_DAEMON_TOKEN_FILE "$relay_token_file")"
+# The daemon only writes its encrypted state (plus the relay token/password files beside it)
+# and the unix socket; everything else stays read-only under ProtectSystem=strict.
+read_write_paths="$(quote_systemd_path "$state_dir") $(quote_systemd_path "$socket_dir")"
 
 cat >"$unit_path" <<EOF_UNIT
 [Unit]
@@ -284,6 +334,16 @@ Environment=$env_relay_token_file
 ExecStart=$managed_runner
 Restart=always
 RestartSec=2
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=$read_write_paths
+PrivateTmp=yes
+UMask=077
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
 
 [Install]
 WantedBy=multi-user.target

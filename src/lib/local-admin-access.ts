@@ -27,7 +27,7 @@ function currentProcessIsRoot(): boolean {
   return typeof process.geteuid === 'function' && process.geteuid() === 0;
 }
 
-function currentProcessIsSudoWrappedInvocation(): boolean {
+export function currentProcessIsSudoWrappedInvocation(): boolean {
   return (
     currentProcessIsRoot() &&
     typeof process.env.SUDO_UID === 'string' &&
@@ -35,9 +35,9 @@ function currentProcessIsSudoWrappedInvocation(): boolean {
   );
 }
 
-function assertNotInvokedViaSudo(
+export function assertNotInvokedViaSudo(
   commandLabel: string,
-  isSudoWrappedInvocation: () => boolean,
+  isSudoWrappedInvocation: () => boolean = currentProcessIsSudoWrappedInvocation,
 ): void {
   if (!isSudoWrappedInvocation()) {
     return;

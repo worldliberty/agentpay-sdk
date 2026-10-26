@@ -3,25 +3,34 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { privateKeyToAccount } from 'viem/accounts';
-import { ensureAgentPayHome } from '../../packages/config/src/index.js';
+import { resolveAgentPayHome } from '../../packages/config/src/index.js';
+import { TEMPORARY_WALLET_IMPORT_KEY_FILE_PATTERN } from './bootstrap-artifacts.js';
 import { promptHiddenTty } from './hidden-tty-prompt.js';
 
 const MAX_SECRET_BYTES = 16 * 1024;
 const MAX_BACKUP_FILE_BYTES = 256 * 1024;
 const PRIVATE_FILE_MODE = 0o600;
-const SCRYPT_N = 1 << 15;
+// Format v2 parameters: scrypt N=2^18 (r=8, p=1) needs 256 MiB during key derivation.
+const SCRYPT_N = 1 << 18;
 const SCRYPT_R = 8;
 const SCRYPT_P = 1;
-const SCRYPT_MAXMEM = 64 * 1024 * 1024;
+// Backups written by older CLIs (N=2^15) and stronger future settings stay readable within
+// this bounded range so a crafted file cannot request an unbounded amount of work.
+const SCRYPT_MIN_N = 1 << 15;
+const SCRYPT_MAX_N = 1 << 20;
+const SCRYPT_MAXMEM = 512 * 1024 * 1024;
 const SCRYPT_KEYLEN = 32;
 const GCM_IV_BYTES = 12;
 const SCRYPT_SALT_BYTES = 16;
 const BACKUP_KIND = 'agentpay-wallet-backup';
-const BACKUP_VERSION = 1;
+const BACKUP_VERSION = 2;
+const LEGACY_BACKUP_VERSION = 1;
+
+export type WalletBackupVersion = 1 | 2;
 
 export interface WalletBackupFile {
   kind: 'agentpay-wallet-backup';
-  version: 1;
+  version: WalletBackupVersion;
   createdAt: string;
   wallet: {
     address: string;
@@ -112,6 +121,38 @@ function resolveMaterialFromPrivateKey(
   };
 }
 
+function isPowerOfTwo(value: number): boolean {
+  return Number.isInteger(value) && value > 0 && (value & (value - 1)) === 0;
+}
+
+function assertSupportedScryptParams(
+  n: unknown,
+  r: unknown,
+  p: unknown,
+): {
+  n: number;
+  r: number;
+  p: number;
+} {
+  if (
+    typeof n !== 'number' ||
+    !isPowerOfTwo(n) ||
+    n < SCRYPT_MIN_N ||
+    n > SCRYPT_MAX_N ||
+    r !== SCRYPT_R ||
+    p !== SCRYPT_P
+  ) {
+    throw new Error('wallet backup encryption parameters are unsupported');
+  }
+  return { n, r, p };
+}
+
+function resolveScryptMaxMem(params: { n: number; r: number }): number {
+  // scrypt needs 128 * N * r bytes; keep the configured ceiling but never below what the
+  // (already range-checked) parameters require.
+  return Math.max(SCRYPT_MAXMEM, 128 * params.n * params.r + 1024 * 1024);
+}
+
 function deriveKey(
   password: string,
   salt: Buffer,
@@ -121,8 +162,43 @@ function deriveKey(
     N: params.n,
     r: params.r,
     p: params.p,
-    maxmem: SCRYPT_MAXMEM,
+    maxmem: resolveScryptMaxMem(params),
   });
+}
+
+interface WalletBackupAadInput {
+  version: WalletBackupVersion;
+  createdAt: string;
+  wallet: WalletBackupFile['wallet'];
+  encryption: Omit<WalletBackupFile['encryption'], 'authTagHex'>;
+}
+
+/**
+ * Format v2 binds the plaintext metadata (wallet address, KDF parameters, timestamps) to the
+ * ciphertext as GCM additional authenticated data, so editing any header field invalidates the
+ * authentication tag instead of silently restoring against altered metadata.
+ */
+function walletBackupAdditionalAuthenticatedData(input: WalletBackupAadInput): Buffer {
+  const header = {
+    kind: BACKUP_KIND,
+    version: input.version,
+    createdAt: input.createdAt,
+    wallet: {
+      address: input.wallet.address,
+      vaultPublicKey: input.wallet.vaultPublicKey,
+      ...(input.wallet.sourceVaultKeyId ? { sourceVaultKeyId: input.wallet.sourceVaultKeyId } : {}),
+    },
+    encryption: {
+      algorithm: input.encryption.algorithm,
+      kdf: input.encryption.kdf,
+      saltHex: input.encryption.saltHex,
+      ivHex: input.encryption.ivHex,
+      n: input.encryption.n,
+      r: input.encryption.r,
+      p: input.encryption.p,
+    },
+  };
+  return Buffer.from(JSON.stringify(header), 'utf8');
 }
 
 function readHexField(
@@ -172,9 +248,10 @@ function parseWalletBackupFileContents(raw: string, sourcePath?: string): Wallet
   if (payload.kind !== BACKUP_KIND) {
     throw new Error('wallet backup kind is invalid');
   }
-  if (payload.version !== BACKUP_VERSION) {
-    throw new Error(`wallet backup version must be ${BACKUP_VERSION}`);
+  if (payload.version !== BACKUP_VERSION && payload.version !== LEGACY_BACKUP_VERSION) {
+    throw new Error(`wallet backup version must be ${LEGACY_BACKUP_VERSION} or ${BACKUP_VERSION}`);
   }
+  const version: WalletBackupVersion = payload.version === BACKUP_VERSION ? 2 : 1;
   if (typeof payload.createdAt !== 'string' || Number.isNaN(Date.parse(payload.createdAt))) {
     throw new Error('wallet backup createdAt must be a valid ISO-8601 string');
   }
@@ -197,16 +274,11 @@ function parseWalletBackupFileContents(raw: string, sourcePath?: string): Wallet
     throw new Error('wallet backup encryption.kdf must be scrypt');
   }
 
-  const n = encryption.n;
-  const r = encryption.r;
-  const p = encryption.p;
-  if (n !== SCRYPT_N || r !== SCRYPT_R || p !== SCRYPT_P) {
-    throw new Error('wallet backup encryption parameters are unsupported');
-  }
+  const scryptParams = assertSupportedScryptParams(encryption.n, encryption.r, encryption.p);
 
   const backup: WalletBackupFile = {
     kind: BACKUP_KIND,
-    version: BACKUP_VERSION,
+    version,
     createdAt: payload.createdAt,
     wallet: {
       address,
@@ -224,9 +296,9 @@ function parseWalletBackupFileContents(raw: string, sourcePath?: string): Wallet
       ),
       ivHex: readHexField(encryption, 'ivHex', 'wallet backup encryption.ivHex', GCM_IV_BYTES),
       authTagHex: readHexField(encryption, 'authTagHex', 'wallet backup encryption.authTagHex', 16),
-      n: SCRYPT_N,
-      r: SCRYPT_R,
-      p: SCRYPT_P,
+      n: scryptParams.n,
+      r: scryptParams.r,
+      p: scryptParams.p,
     },
     ciphertextHex: readHexField(payload, 'ciphertextHex', 'wallet backup ciphertextHex'),
   };
@@ -372,7 +444,29 @@ export function createEncryptedWalletBackup(input: {
     r: SCRYPT_R,
     p: SCRYPT_P,
   });
+  const wallet: WalletBackupFile['wallet'] = {
+    address: material.address,
+    vaultPublicKey: material.vaultPublicKey,
+    ...(material.sourceVaultKeyId ? { sourceVaultKeyId: material.sourceVaultKeyId } : {}),
+  };
+  const encryptionHeader: Omit<WalletBackupFile['encryption'], 'authTagHex'> = {
+    algorithm: 'aes-256-gcm',
+    kdf: 'scrypt',
+    saltHex: salt.toString('hex'),
+    ivHex: iv.toString('hex'),
+    n: SCRYPT_N,
+    r: SCRYPT_R,
+    p: SCRYPT_P,
+  };
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  cipher.setAAD(
+    walletBackupAdditionalAuthenticatedData({
+      version: BACKUP_VERSION,
+      createdAt,
+      wallet,
+      encryption: encryptionHeader,
+    }),
+  );
   const plaintext = JSON.stringify({
     createdAt,
     privateKeyHex: material.privateKeyHex,
@@ -387,20 +481,10 @@ export function createEncryptedWalletBackup(input: {
     kind: BACKUP_KIND,
     version: BACKUP_VERSION,
     createdAt,
-    wallet: {
-      address: material.address,
-      vaultPublicKey: material.vaultPublicKey,
-      ...(material.sourceVaultKeyId ? { sourceVaultKeyId: material.sourceVaultKeyId } : {}),
-    },
+    wallet,
     encryption: {
-      algorithm: 'aes-256-gcm',
-      kdf: 'scrypt',
-      saltHex: salt.toString('hex'),
-      ivHex: iv.toString('hex'),
+      ...encryptionHeader,
       authTagHex: authTag.toString('hex'),
-      n: SCRYPT_N,
-      r: SCRYPT_R,
-      p: SCRYPT_P,
     },
     ciphertextHex: ciphertext.toString('hex'),
   };
@@ -425,6 +509,16 @@ export function decryptWalletBackup(
       key,
       Buffer.from(backup.encryption.ivHex, 'hex'),
     );
+    if (backup.version >= 2) {
+      decipher.setAAD(
+        walletBackupAdditionalAuthenticatedData({
+          version: backup.version,
+          createdAt: backup.createdAt,
+          wallet: backup.wallet,
+          encryption: backup.encryption,
+        }),
+      );
+    }
     decipher.setAuthTag(Buffer.from(backup.encryption.authTagHex, 'hex'));
     const plaintext = Buffer.concat([
       decipher.update(Buffer.from(backup.ciphertextHex, 'hex')),
@@ -549,25 +643,62 @@ export async function resolveWalletBackupPassword(
   return first;
 }
 
-export function writeTemporaryWalletImportKeyFile(privateKeyHex: string): string {
-  const agentpayHome = ensureAgentPayHome();
-  const resolvedPath = path.join(
-    agentpayHome,
-    `wallet-import-key-${process.pid}-${Date.now()}.key`,
-  );
-  fs.writeFileSync(
-    resolvedPath,
-    `${resolveMaterialFromPrivateKey(privateKeyHex).privateKeyHex}\n`,
-    {
-      encoding: 'utf8',
-      mode: PRIVATE_FILE_MODE,
-      flag: 'wx',
-    },
-  );
+function processIsAlive(pid: number): boolean {
   try {
-    fs.chmodSync(resolvedPath, PRIVATE_FILE_MODE);
-  } catch {}
-  return resolvedPath;
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+export interface SweepStaleTemporaryWalletImportKeyFilesDeps {
+  resolveAgentPayHome?: () => string;
+  isProcessAlive?: (pid: number) => boolean;
+  currentPid?: number;
+}
+
+/**
+ * Deletes `wallet-import-key-<pid>-<timestamp>.key` files left behind by earlier setup runs
+ * that crashed or were killed. Files owned by a still-running process are kept so a concurrent
+ * setup is not sabotaged.
+ */
+export function sweepStaleTemporaryWalletImportKeyFiles(
+  deps: SweepStaleTemporaryWalletImportKeyFilesDeps = {},
+): TemporaryWalletImportKeyCleanupResult[] {
+  const agentpayHome = path.resolve((deps.resolveAgentPayHome ?? resolveAgentPayHome)());
+  const isProcessAlive = deps.isProcessAlive ?? processIsAlive;
+  const currentPid = deps.currentPid ?? process.pid;
+
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(agentpayHome, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+
+  const results: TemporaryWalletImportKeyCleanupResult[] = [];
+  for (const entry of entries) {
+    if (!TEMPORARY_WALLET_IMPORT_KEY_FILE_PATTERN.test(entry.name)) {
+      continue;
+    }
+    const targetPath = path.join(agentpayHome, entry.name);
+    const ownerPid = Number.parseInt(entry.name.split('-')[3] ?? '', 10);
+    if (Number.isInteger(ownerPid) && (ownerPid === currentPid || isProcessAlive(ownerPid))) {
+      results.push({ path: targetPath, action: 'skipped' });
+      continue;
+    }
+    const stats = safeLstat(targetPath);
+    if (!stats || stats.isSymbolicLink() || !stats.isFile()) {
+      results.push({ path: targetPath, action: 'skipped' });
+      continue;
+    }
+    results.push(cleanupTemporaryWalletImportKeyFile(targetPath));
+  }
+  return results;
 }
 
 export function cleanupTemporaryWalletImportKeyFile(

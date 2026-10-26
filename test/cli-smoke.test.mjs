@@ -11,16 +11,25 @@ function makeIsolatedHome() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'agentpay-cli-home-'));
 }
 
-function runCli(args, homeDir) {
+function runCli(args, homeDir, extraEnv = {}) {
   const agentpayHome = path.join(homeDir, '.agentpay');
+  const env = {
+    ...process.env,
+    HOME: homeDir,
+    AGENTPAY_HOME: agentpayHome,
+    // A smoke run must never phone home, even when this file is run outside the test harness.
+    AGENTPAY_TELEMETRY: '0',
+    ...extraEnv,
+  };
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) {
+      delete env[key];
+    }
+  }
   return spawnSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', ...args], {
     cwd: repoRoot,
     encoding: 'utf8',
-    env: {
-      ...process.env,
-      HOME: homeDir,
-      AGENTPAY_HOME: agentpayHome,
-    },
+    env,
   });
 }
 
@@ -213,6 +222,81 @@ test('destructive admin commands fail closed in non-interactive sessions without
         /`agentpay admin uninstall` is currently supported only on macOS and Linux/u,
       );
     }
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test('telemetry status, enable, and disable manage the stored opt-in', () => {
+  const homeDir = makeIsolatedHome();
+  const telemetryPath = path.join(homeDir, '.agentpay', 'telemetry.json');
+  // With the env opt-out lifted, nothing may still reach a real endpoint.
+  const liftedOptOut = {
+    AGENTPAY_TELEMETRY: undefined,
+    DO_NOT_TRACK: undefined,
+    AGENTPAY_MIXPANEL_URL: 'http://127.0.0.1:9/track',
+    AGENTPAY_SENTRY_DSN: '',
+  };
+
+  try {
+    const status = runCli(['telemetry', 'status', '--json'], homeDir);
+    assert.equal(status.status, 0);
+    assert.deepEqual(JSON.parse(status.stdout), {
+      command: 'telemetry status',
+      enabled: false,
+      disabledReason: 'env-opt-out',
+    });
+
+    const disable = runCli(['telemetry', 'disable', '--json'], homeDir);
+    assert.equal(disable.status, 0);
+    assert.deepEqual(JSON.parse(disable.stdout), { command: 'telemetry disable', enabled: false });
+    const disabledState = JSON.parse(fs.readFileSync(telemetryPath, 'utf8'));
+    assert.equal(disabledState.enabled, false);
+    assert.equal((fs.statSync(telemetryPath).mode & 0o777).toString(8), '600');
+
+    const storedOptOut = runCli(['telemetry', 'status', '--json'], homeDir, liftedOptOut);
+    assert.equal(storedOptOut.status, 0);
+    assert.equal(JSON.parse(storedOptOut.stdout).disabledReason, 'stored-opt-out');
+    assert.doesNotMatch(storedOptOut.stderr, /anonymous usage analytics/u);
+
+    // The env opt-out still wins over a stored opt-in, and the command says so.
+    const enable = runCli(['telemetry', 'enable', '--json'], homeDir);
+    assert.equal(enable.status, 0);
+    assert.deepEqual(JSON.parse(enable.stdout), {
+      command: 'telemetry enable',
+      enabled: false,
+      disabledReason: 'env-opt-out',
+    });
+    const enabledState = JSON.parse(fs.readFileSync(telemetryPath, 'utf8'));
+    assert.equal(enabledState.enabled, true);
+    assert.equal(enabledState.installId, disabledState.installId, 'the install id is kept');
+
+    const doNotTrack = runCli(['telemetry', 'status', '--json'], homeDir, {
+      ...liftedOptOut,
+      DO_NOT_TRACK: '1',
+    });
+    assert.equal(JSON.parse(doNotTrack.stdout).disabledReason, 'do-not-track');
+  } finally {
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test('version and usage errors exit cleanly and print the error once', () => {
+  const homeDir = makeIsolatedHome();
+
+  try {
+    const version = runCli(['telemetry', '--version'], homeDir);
+    assert.equal(version.status, 0);
+    assert.match(version.stdout, /^\d+\.\d+\.\d+/u);
+
+    const unknown = runCli(['definitely-not-a-command'], homeDir);
+    assert.equal(unknown.status, 1);
+    const output = combinedOutput(unknown);
+    assert.equal(output.match(/unknown command/gu)?.length, 1, output);
+
+    const missingArgument = runCli(['config', 'set'], homeDir);
+    assert.equal(missingArgument.status, 1);
+    assert.equal(combinedOutput(missingArgument).match(/missing required argument/gu)?.length, 1);
   } finally {
     fs.rmSync(homeDir, { recursive: true, force: true });
   }

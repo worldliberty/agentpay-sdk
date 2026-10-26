@@ -64,6 +64,65 @@ impl<'de> Deserialize<'de> for EvmAddress {
     }
 }
 
+/// Bech32 data-part alphabet (BIP-173); Railgun `0zk` addresses are bech32m.
+const BECH32_CHARSET: &str = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+/// Railgun human-readable part `0zk` followed by the bech32 separator `1`.
+const RAILGUN_ADDRESS_PREFIX: &str = "0zk1";
+
+/// Canonical lower-case Railgun shielded-pool address (`0zk1...` bech32m).
+///
+/// Railgun encodes the spending + viewing public keys into a single address
+/// prefixed with `0zk1`. Full bech32m decoding and key parsing happens inside
+/// the Railgun-aware signer backend; the domain layer normalizes case (bech32
+/// is case-insensitive) and enforces the prefix, length, and data-part
+/// alphabet so policy scope matching compares one canonical spelling.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct RailgunAddress(String);
+
+impl RailgunAddress {
+    /// Returns the normalized address string.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Display for RailgunAddress {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for RailgunAddress {
+    type Err = DomainError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let normalized = s.trim().to_ascii_lowercase();
+        let data_part = normalized
+            .strip_prefix(RAILGUN_ADDRESS_PREFIX)
+            .ok_or(DomainError::InvalidRailgunAddress)?;
+        // Railgun addresses are ~127 chars; keep the bound loose to allow
+        // protocol evolution while rejecting obviously malformed input.
+        if normalized.len() < 32 || normalized.len() > 256 {
+            return Err(DomainError::InvalidRailgunAddress);
+        }
+        if data_part.is_empty() || !data_part.chars().all(|c| BECH32_CHARSET.contains(c)) {
+            return Err(DomainError::InvalidRailgunAddress);
+        }
+        Ok(Self(normalized))
+    }
+}
+
+impl<'de> Deserialize<'de> for RailgunAddress {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::from_str(&value).map_err(serde::de::Error::custom)
+    }
+}
+
 /// Canonical Solana address as base58-encoded 32-byte pubkey.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct SolanaAddress(String);
@@ -124,6 +183,7 @@ impl<'de> Deserialize<'de> for SolanaAddress {
 pub enum RecipientId {
     Evm(EvmAddress),
     Solana(SolanaAddress),
+    Railgun(RailgunAddress),
 }
 
 #[derive(Deserialize)]
@@ -131,6 +191,7 @@ pub enum RecipientId {
 enum RecipientIdTagged {
     Evm(EvmAddress),
     Solana(SolanaAddress),
+    Railgun(RailgunAddress),
 }
 
 impl<'de> Deserialize<'de> for RecipientId {
@@ -171,6 +232,7 @@ impl<'de> Deserialize<'de> for RecipientId {
                 Ok(match tagged {
                     RecipientIdTagged::Evm(address) => RecipientId::Evm(address),
                     RecipientIdTagged::Solana(address) => RecipientId::Solana(address),
+                    RecipientIdTagged::Railgun(address) => RecipientId::Railgun(address),
                 })
             }
         }
@@ -184,6 +246,7 @@ impl Display for RecipientId {
         match self {
             Self::Evm(address) => Display::fmt(address, f),
             Self::Solana(address) => Display::fmt(address, f),
+            Self::Railgun(address) => Display::fmt(address, f),
         }
     }
 }
@@ -200,12 +263,21 @@ impl From<SolanaAddress> for RecipientId {
     }
 }
 
+impl From<RailgunAddress> for RecipientId {
+    fn from(value: RailgunAddress) -> Self {
+        Self::Railgun(value)
+    }
+}
+
 impl FromStr for RecipientId {
     type Err = DomainError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Ok(address) = EvmAddress::from_str(s) {
             return Ok(Self::Evm(address));
+        }
+        if let Ok(address) = RailgunAddress::from_str(s) {
+            return Ok(Self::Railgun(address));
         }
         Ok(Self::Solana(SolanaAddress::from_str(s)?))
     }
@@ -230,6 +302,18 @@ impl PartialEq<SolanaAddress> for RecipientId {
 }
 
 impl PartialEq<RecipientId> for SolanaAddress {
+    fn eq(&self, other: &RecipientId) -> bool {
+        other == self
+    }
+}
+
+impl PartialEq<RailgunAddress> for RecipientId {
+    fn eq(&self, other: &RailgunAddress) -> bool {
+        matches!(self, Self::Railgun(address) if address == other)
+    }
+}
+
+impl PartialEq<RecipientId> for RailgunAddress {
     fn eq(&self, other: &RecipientId) -> bool {
         other == self
     }

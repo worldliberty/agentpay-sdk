@@ -1,20 +1,17 @@
 import { cacheErrorCodes } from '@worldlibertyfinancial/agent-cache/errors';
+import { rethrowCacheErrorAsTrpc } from '@/lib/cache-errors';
 import { adminProcedure, TRPCError, t } from '@/lib/core/trpc';
-import { listApprovalRequestsInputSchema, submitEncryptedUpdateInputSchema } from '@/lib/schemas';
+import {
+  listApprovalRequestsInputSchema,
+  rekeyDaemonInputSchema,
+  submitEncryptedUpdateInputSchema,
+} from '@/lib/schemas';
 
-function adminApprovalFrontendBaseUrl(env: {
-  RELAY_BASE_URL: string;
-  RELAY_FRONTEND_BASE_URL?: string | undefined;
-}): string | null {
-  const candidate = env.RELAY_FRONTEND_BASE_URL?.trim() || env.RELAY_BASE_URL.trim();
-  return candidate ? candidate.replace(/\/$/u, '') : null;
-}
-
-function approvalCapabilityToken(metadata: Record<string, string> | undefined): string | null {
-  const candidate = metadata?.approvalCapabilityToken?.trim();
-  return candidate ? candidate : null;
-}
-
+/**
+ * Approval metadata only ever carries the capability hash, but legacy records
+ * may still hold a plaintext token; strip both so admin listings never expose
+ * material that could be used to mint or verify a secure approval link.
+ */
 function sanitizedApprovalMetadata(
   metadata: Record<string, string> | undefined,
 ): Record<string, string> | undefined {
@@ -22,28 +19,8 @@ function sanitizedApprovalMetadata(
     return undefined;
   }
 
-  const { approvalCapabilityToken: _token, ...rest } = metadata;
+  const { approvalCapabilityHash: _hash, approvalCapabilityToken: _token, ...rest } = metadata;
   return Object.keys(rest).length > 0 ? rest : undefined;
-}
-
-function secureApprovalUrl(input: {
-  approvalRequestId: string;
-  daemonId: string;
-  metadata?: Record<string, string>;
-  status: string;
-  env: { RELAY_BASE_URL: string; RELAY_FRONTEND_BASE_URL?: string | undefined };
-}): string | null {
-  if (input.status !== 'pending') {
-    return null;
-  }
-
-  const baseUrl = adminApprovalFrontendBaseUrl(input.env);
-  const capability = approvalCapabilityToken(input.metadata);
-  if (!baseUrl || !capability) {
-    return null;
-  }
-
-  return `${baseUrl}/approvals/${input.approvalRequestId}?daemonId=${input.daemonId}&approvalCapability=${capability}`;
 }
 
 function isMalformedEncryptedUpdatePayload(message: string | undefined): boolean {
@@ -59,17 +36,12 @@ export const adminRouter = t.router({
     .input(listApprovalRequestsInputSchema.optional())
     .query(async ({ ctx, input }) => {
       const requests = await ctx.cache.listApprovalRequests(input ?? {});
+      // Secure approval URLs are returned exactly once, by the secure-link
+      // endpoint that mints them; listings never carry capability-bearing URLs.
       return {
         items: requests.map((request) => ({
           ...request,
           metadata: sanitizedApprovalMetadata(request.metadata),
-          approvalUrl: secureApprovalUrl({
-            approvalRequestId: request.approvalRequestId,
-            daemonId: request.daemonId,
-            metadata: request.metadata,
-            status: request.status,
-            env: ctx.env,
-          }),
         })),
       };
     }),
@@ -77,10 +49,18 @@ export const adminRouter = t.router({
     const daemons = await ctx.cache.listDaemons();
     return { items: daemons };
   }),
+  rekeyDaemon: adminProcedure.input(rekeyDaemonInputSchema).mutation(async ({ ctx, input }) => {
+    const daemon = await ctx.cache.rekeyDaemon(input).catch(rethrowCacheErrorAsTrpc);
+    return {
+      daemonId: daemon.daemonId,
+      daemonPublicKey: daemon.daemonPublicKey,
+      updatedAt: daemon.updatedAt,
+    };
+  }),
   submitEncryptedUpdate: adminProcedure
     .input(submitEncryptedUpdateInputSchema)
     .mutation(async ({ ctx, input }) => {
-      let update;
+      let update: Awaited<ReturnType<typeof ctx.cache.createEncryptedUpdate>>;
       try {
         update = await ctx.cache.createEncryptedUpdate(input);
       } catch (error) {
@@ -92,7 +72,10 @@ export const adminRouter = t.router({
           });
         }
 
-        if (cacheError?.code === cacheErrorCodes.invalidPayload) {
+        if (
+          cacheError?.code === cacheErrorCodes.invalidPayload ||
+          cacheError?.code === cacheErrorCodes.conflict
+        ) {
           throw new TRPCError({
             code: isMalformedEncryptedUpdatePayload(cacheError.message)
               ? 'BAD_REQUEST'

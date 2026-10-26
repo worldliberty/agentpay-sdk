@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use vault_domain::EvmAddress;
 
+/// Upper bound for each metadata RPC call so an unresponsive endpoint cannot hang the TUI.
+const TOKEN_RPC_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const TOKEN_RPC_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FetchedTokenMetadata {
     pub(super) chain_id: u64,
@@ -41,7 +45,11 @@ pub(super) async fn fetch_token_metadata(
     is_native: bool,
     address: Option<&EvmAddress>,
 ) -> Result<FetchedTokenMetadata> {
-    let client = Client::new();
+    let client = Client::builder()
+        .timeout(TOKEN_RPC_TIMEOUT)
+        .connect_timeout(TOKEN_RPC_CONNECT_TIMEOUT)
+        .build()
+        .context("failed to initialize token metadata rpc client")?;
     let chain_id = fetch_chain_id(&client, rpc_url).await?;
     if chain_id != expected_chain_id {
         bail!(
@@ -212,16 +220,15 @@ fn decode_abi_string(value: &str) -> Result<String> {
     }
 
     let offset = decode_abi_usize(&bytes[0..32]).context("invalid abi string offset")?;
-    if offset + 32 > bytes.len() {
-        bail!("abi string offset points past the payload");
-    }
-    let length =
-        decode_abi_usize(&bytes[offset..offset + 32]).context("invalid abi string length")?;
-    let start = offset + 32;
-    let end = start + length;
-    if end > bytes.len() {
-        bail!("abi string length points past the payload");
-    }
+    let start = offset
+        .checked_add(32)
+        .filter(|start| *start <= bytes.len())
+        .context("abi string offset points past the payload")?;
+    let length = decode_abi_usize(&bytes[offset..start]).context("invalid abi string length")?;
+    let end = start
+        .checked_add(length)
+        .filter(|end| *end <= bytes.len())
+        .context("abi string length points past the payload")?;
 
     String::from_utf8(bytes[start..end].to_vec()).context("abi string is not valid utf-8")
 }
@@ -333,6 +340,22 @@ mod tests {
             "ffff000000000000000000000000000000000000000000000000000000000000"
         );
         assert!(decode_abi_string(bad_utf8).is_err());
+        let huge_length = concat!(
+            "0x",
+            "0000000000000000000000000000000000000000000000000000000000000020",
+            "000000000000000000000000000000000000000000000000ffffffffffffffff",
+            "5553443100000000000000000000000000000000000000000000000000000000"
+        );
+        let err = decode_abi_string(huge_length).expect_err("overflowing length");
+        assert!(err.to_string().contains("points past the payload"));
+        let huge_offset = concat!(
+            "0x",
+            "000000000000000000000000000000000000000000000000ffffffffffffffff",
+            "0000000000000000000000000000000000000000000000000000000000000004",
+            "5553443100000000000000000000000000000000000000000000000000000000"
+        );
+        let err = decode_abi_string(huge_offset).expect_err("overflowing offset");
+        assert!(err.to_string().contains("points past the payload"));
     }
 
     #[test]

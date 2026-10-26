@@ -4,10 +4,14 @@ import type { NextConfig } from 'next';
 
 const workspaceRoot = fileURLToPath(new URL('../..', import.meta.url));
 
+/**
+ * Static security headers. The Content-Security-Policy is not set here: it is
+ * nonce-based and therefore issued per request by `src/proxy.ts`.
+ */
 export const approvalConsoleSecurityHeaders = [
   {
-    key: 'Content-Security-Policy',
-    value: "base-uri 'self'; frame-ancestors 'none'; object-src 'none';",
+    key: 'Strict-Transport-Security',
+    value: 'max-age=63072000; includeSubDomains; preload',
   },
   {
     key: 'Referrer-Policy',

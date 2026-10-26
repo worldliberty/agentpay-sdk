@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { defaultRustBinDir, type WlfiConfig } from '../../packages/config/src/index.js';
+import { developmentHelperScriptsEnabled } from './launchd-assets.js';
 
 export const SYSTEMD_RUNNER_SCRIPT_NAME = 'run-agentpay-daemon.sh';
 export const SYSTEMD_INSTALL_SCRIPT_NAME = 'install-system-daemon.sh';
@@ -12,10 +13,10 @@ function resolveRustBinDir(config?: WlfiConfig): string {
 }
 
 export function resolveSystemdHelperScriptPath(scriptName: string, config?: WlfiConfig): string {
-  const candidates = [
-    path.join(resolveRustBinDir(config), scriptName),
-    path.resolve(process.cwd(), 'scripts/systemd', scriptName),
-  ];
+  const candidates = [path.join(resolveRustBinDir(config), scriptName)];
+  if (developmentHelperScriptsEnabled()) {
+    candidates.push(path.resolve(process.cwd(), 'scripts/systemd', scriptName));
+  }
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) {

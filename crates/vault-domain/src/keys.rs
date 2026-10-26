@@ -22,6 +22,13 @@ pub enum KeySource {
 pub enum KeyAlgorithm {
     Secp256k1,
     Ed25519,
+    /// Baby Jubjub EdDSA spending key used inside Railgun zk circuits to
+    /// authorize spends. Material is non-extractable to the TS engine; only
+    /// nullifier outputs and zk witness elements cross the daemon boundary.
+    RailgunSpending,
+    /// Railgun viewing key (X25519-style) used to trial-decrypt shielded
+    /// commitments during balance sync. Cannot sign EVM transactions.
+    RailgunViewing,
 }
 
 fn default_key_algorithm() -> KeyAlgorithm {

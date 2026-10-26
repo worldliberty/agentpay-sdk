@@ -4,6 +4,6 @@ import { cn } from '../utils/cn';
 export function Separator({
   className,
   ...props
-}: React.HTMLAttributes<HTMLDivElement>): React.JSX.Element {
-  return <div className={cn('h-px w-full bg-border', className)} role="separator" {...props} />;
+}: React.HTMLAttributes<HTMLHRElement>): React.JSX.Element {
+  return <hr className={cn('h-px w-full border-0 bg-border', className)} {...props} />;
 }

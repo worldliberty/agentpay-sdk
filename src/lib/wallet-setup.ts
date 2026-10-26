@@ -68,7 +68,11 @@ export interface WalletSetupAdminArgsInput {
   fromSharedConfig?: boolean;
   existingVaultKeyId?: string;
   existingVaultPublicKey?: string;
-  importVaultPrivateKeyFile?: string;
+  /**
+   * Inherited file descriptor (an input pipe set up by the caller, normally fd 3) that carries the
+   * software-wallet private key to import. The key never touches disk or argv.
+   */
+  importVaultPrivateKeyFd?: number;
   bootstrapOutputPath: string;
 }
 
@@ -420,10 +424,11 @@ function ensurePrivateOutputDirectory(targetPath: string, label: string): string
   }
 
   if (stats) {
+    // Pre-existing directories (including ancestors such as $HOME or a shared exports folder)
+    // keep their modes: only directories created by this run are forced to 0700.
     if (!stats.isDirectory()) {
       throw new Error(`${label} '${resolvedPath}' must be a directory`);
     }
-    tryChmod(resolvedPath, PRIVATE_DIR_MODE);
     assertTrustedDirectoryPath(resolvedPath, label);
     assertWritableDirectoryAccess(resolvedPath, label);
     return resolvedPath;
@@ -672,9 +677,14 @@ function resolveValidatedExistingVaultReuse(input: {
   };
 }
 
-function resolveValidatedWalletImportKeyFile(inputPath: string | undefined): string | undefined {
-  const normalized = presentString(inputPath);
-  return normalized || undefined;
+function resolveValidatedWalletImportKeyFd(fd: number | undefined): number | undefined {
+  if (fd === undefined) {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(fd) || fd < 3) {
+    throw new Error('importVaultPrivateKeyFd must be an integer file descriptor of 3 or greater');
+  }
+  return fd;
 }
 
 function previewBootstrapOutputPath(inputPath?: string): WalletSetupBootstrapOutput {
@@ -1070,7 +1080,6 @@ function assertWalletSetupSummaryMatchesRequest(
 
 function previewWalletSetupRustArgs(
   input: Omit<WalletSetupAdminArgsInput, 'bootstrapOutputPath'> & { bootstrapOutputPath?: string },
-  _adminAccessMode: AdminAccessMode,
   bootstrapOutputPath: string,
 ): string[] {
   return buildWalletSetupAdminArgs({
@@ -1122,7 +1131,7 @@ export function createWalletSetupPlan(
     bootstrapOutput.path,
     trustDaemonSocketPath,
   );
-  const rustArgs = previewWalletSetupRustArgs(input, 'blocked', bootstrapOutput.path);
+  const rustArgs = previewWalletSetupRustArgs(input, bootstrapOutput.path);
   const adminAccess = resolveAdminAccess('agentpay-admin', rustArgs, deps);
 
   const storageMetadata = resolveAgentAuthStorageMetadata();
@@ -1160,6 +1169,11 @@ export function createWalletSetupPlan(
       'This environment would not be allowed to run wallet setup until a vault password source is provided or a local tty prompt is available.',
     );
   }
+  if (input.importVaultPrivateKeyFd !== undefined) {
+    notes.push(
+      `The imported wallet private key is passed to Rust over an inherited pipe (fd ${input.importVaultPrivateKeyFd}) and never written to disk.`,
+    );
+  }
   if (!preflight.daemonSocketTrusted) {
     notes.push(
       'The daemon socket is not currently trusted or reachable, so wallet setup would fail until it is fixed.',
@@ -1187,7 +1201,7 @@ export function createWalletSetupPlan(
     },
     rustCommand: {
       binary: 'agentpay-admin',
-      args: previewWalletSetupRustArgs(input, adminAccess.mode, bootstrapOutput.path),
+      args: rustArgs,
     },
     bootstrapOutput: {
       path: bootstrapOutput.path,
@@ -1393,9 +1407,7 @@ export function buildWalletSetupAdminArgs(input: WalletSetupAdminArgsInput): str
   const policyIds = resolveValidatedWalletSetupPolicyIds(input.attachPolicyId);
   const fromSharedConfig = shouldBootstrapFromSharedConfig(input);
   const existingVaultReuse = resolveValidatedExistingVaultReuse(input);
-  const importVaultPrivateKeyFile = resolveValidatedWalletImportKeyFile(
-    input.importVaultPrivateKeyFile,
-  );
+  const importVaultPrivateKeyFd = resolveValidatedWalletImportKeyFd(input.importVaultPrivateKeyFd);
 
   if (input.vaultPassword) {
     throw new Error(
@@ -1424,13 +1436,13 @@ export function buildWalletSetupAdminArgs(input: WalletSetupAdminArgsInput): str
       existingVaultReuse.publicKey,
     );
   }
-  if (importVaultPrivateKeyFile) {
+  if (importVaultPrivateKeyFd !== undefined) {
     if (existingVaultReuse.keyId || existingVaultReuse.publicKey) {
       throw new Error(
-        'importVaultPrivateKeyFile conflicts with existingVaultKeyId/existingVaultPublicKey',
+        'importVaultPrivateKeyFd conflicts with existingVaultKeyId/existingVaultPublicKey',
       );
     }
-    args.push('--import-vault-private-key-file', importVaultPrivateKeyFile);
+    args.push('--import-vault-private-key-fd', String(importVaultPrivateKeyFd));
   }
 
   const appendValue = (flag: string, value: string | undefined) => {

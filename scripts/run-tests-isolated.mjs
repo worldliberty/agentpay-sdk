@@ -17,10 +17,37 @@ if (commandArgs.length === 0) {
   fail('usage: node ./scripts/run-tests-isolated.mjs -- <command> [args...]');
 }
 
+// Unix domain socket paths are limited to 104 bytes (including the NUL) on macOS, and the
+// TypeScript tests bind daemon sockets below the sandboxed TMPDIR. Keep the sandbox under the
+// system temp directory, but fall back to /tmp when os.tmpdir() (typically
+// /var/folders/xx/<30 chars>/T on macOS) would push the longest test socket path past that
+// limit. See makeIsolatedHome() in test/cli-mocked-e2e.test.mjs for the longest layout.
+const MAX_UNIX_SOCKET_PATH_LENGTH = 103;
+const LONGEST_TEST_SOCKET_PATH = path.join(
+  't-XXXXXX',
+  't',
+  'agentpay-cli-mocked-home-XXXXXX',
+  '.agentpay',
+  'daemon.sock',
+);
+
+function resolveSandboxBaseDir() {
+  const candidates = [os.tmpdir()];
+  if (process.platform !== 'win32') {
+    candidates.push('/tmp');
+  }
+  for (const candidate of candidates) {
+    if (path.join(candidate, LONGEST_TEST_SOCKET_PATH).length <= MAX_UNIX_SOCKET_PATH_LENGTH) {
+      return candidate;
+    }
+  }
+  return candidates[0];
+}
+
 const hostHome = process.env.HOME;
-const sandboxBaseDir = hostHome ? path.join(hostHome, '.wt') : os.tmpdir();
-fs.mkdirSync(sandboxBaseDir, { recursive: true, mode: 0o700 });
+const sandboxBaseDir = resolveSandboxBaseDir();
 const sandboxRoot = fs.mkdtempSync(path.join(sandboxBaseDir, 't-'));
+fs.chmodSync(sandboxRoot, 0o700);
 const homeDir = path.join(sandboxRoot, 'h');
 const agentpayHome = path.join(sandboxRoot, 'w');
 const tmpDir = path.join(sandboxRoot, 't');
@@ -124,7 +151,7 @@ switch (command) {
 `,
 );
 
-for (const commandName of ['sudo', 'launchctl']) {
+for (const commandName of ['sudo', 'launchctl', 'systemctl']) {
   writeExecutable(
     path.join(binDir, commandName),
     `#!/bin/sh
@@ -166,16 +193,6 @@ function cleanup() {
   }
 
   fs.rmSync(sandboxRoot, { recursive: true, force: true });
-  try {
-    fs.rmdirSync(sandboxBaseDir);
-  } catch (error) {
-    if (!error || typeof error !== 'object') {
-      throw error;
-    }
-    if (!('code' in error) || (error.code !== 'ENOENT' && error.code !== 'ENOTEMPTY')) {
-      throw error;
-    }
-  }
 }
 
 function signalExitCode(signal) {

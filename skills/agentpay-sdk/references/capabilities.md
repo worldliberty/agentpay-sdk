@@ -17,7 +17,7 @@
 - Open policy TUI on macOS or Linux: `agentpay admin tui`
 - Check native balance: `agentpay rpc balance --address <ADDRESS> --rpc-url <RPC_URL> --json`
 - Check ERC-20 balance: `agentpay rpc balance --address <ADDRESS> --token <TOKEN> --rpc-url <RPC_URL> --json`
-- Generate funding QR payload: `node scripts/prepare-funding-request.mjs --address <ADDRESS> --chain-id <CHAIN_ID> --network-name <NAME> --json`
+- Generate funding QR payload: `node scripts/prepare-funding-request.mjs --address <ADDRESS> --chain-id <CHAIN_ID> --network-name <NAME> [--qr-url] --json` (the gas token symbol is derived from the chain id; `--qr-url` adds a third-party hosted QR link)
 - Set default token policy and sync the live daemon attachment when wallet metadata exists: `agentpay admin token set-chain <tokenKey> <chainKey> --per-tx <amount> --daily <amount> --weekly <amount> [--vault-password-stdin] [--non-interactive]`
 - Add manual approval policy: `agentpay admin add-manual-approval-policy --network <id> --min-amount-wei <wei> --max-amount-wei <wei> ...`
 - List manual approval requests: `agentpay admin list-manual-approval-requests`

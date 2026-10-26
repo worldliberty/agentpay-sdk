@@ -11,6 +11,11 @@ pub enum DomainError {
     /// Provided Solana address was malformed.
     #[error("solana address must be a valid base58-encoded 32-byte public key")]
     InvalidSolanaAddress,
+    /// Provided Railgun shielded-pool address was malformed.
+    #[error(
+        "railgun address must start with `0zk1` and use only bech32 data characters (qpzry9x8gf2tvdw0s3jn54khce6mua7l)"
+    )]
+    InvalidRailgunAddress,
     /// Spending amount was zero.
     #[error("amount must be greater than zero")]
     InvalidAmount,
@@ -38,6 +43,11 @@ pub enum DomainError {
     /// ERC-20 approve/transfer calldata must not include native value.
     #[error("erc20 approve/transfer transactions must set value_wei to 0")]
     Erc20CallWithNativeValue,
+    /// Broadcast calldata selector is not one the policy engine can scope.
+    #[error(
+        "unrecognized transaction calldata: only empty calldata or erc20 approve/transfer, permit2 permit, and eip3009 transferWithAuthorization/receiveWithAuthorization calls can be broadcast"
+    )]
+    UnrecognizedCalldata,
     /// A policy attachment set was empty.
     #[error("policy set cannot be empty")]
     EmptyPolicySet,
@@ -77,6 +87,9 @@ pub enum DomainError {
     /// Solana durable nonce seed was invalid.
     #[error("solana nonce account seed must be non-empty ASCII and at most 32 bytes")]
     InvalidSolanaNonceSeed,
+    /// Solana durable nonce account rent exceeded the wallet-maintenance cap.
+    #[error("solana nonce account rent must not exceed {max_lamports} lamports")]
+    SolanaNonceRentTooHigh { max_lamports: u128 },
     /// Action requested a signer algorithm that does not match the wallet key.
     #[error("signer key algorithm does not support this action")]
     InvalidKeyAlgorithmForAction,
@@ -86,4 +99,18 @@ pub enum DomainError {
     /// Relay capability token was missing or malformed.
     #[error("invalid relay approval capability token")]
     InvalidRelayCapabilityToken,
+    /// Tempo session action named a chain without a pinned escrow contract.
+    #[error("unsupported tempo chain id {0}; expected 4217 (mainnet) or 42431 (testnet)")]
+    UnsupportedTempoChain(u64),
+    /// Tempo session action named an escrow contract other than the pinned one.
+    #[error(
+        "tempo escrow contract does not match the pinned stream-channel escrow for this chain"
+    )]
+    InvalidTempoEscrowContract,
+    /// Claimed Tempo channel id does not match the id recomputed from the channel fields.
+    #[error("tempo channel id does not match the id derived from the channel fields")]
+    TempoChannelIdMismatch,
+    /// Tempo transaction envelope parameters were malformed.
+    #[error("invalid tempo transaction parameters: {0}")]
+    InvalidTempoTransactionParams(String),
 }

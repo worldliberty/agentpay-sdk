@@ -5,13 +5,11 @@ import type { ApprovalRequestRecord, RelayDaemonRecord } from '../src/lib/types'
 
 const {
   routerRefreshMock,
-  searchParamsGetAllMock,
   encryptApprovalUpdateMock,
   getApprovalRequestMock,
   requestSecureApprovalLinkMock,
 } = vi.hoisted(() => ({
   routerRefreshMock: vi.fn(),
-  searchParamsGetAllMock: vi.fn<() => string[]>(),
   encryptApprovalUpdateMock: vi.fn(),
   getApprovalRequestMock: vi.fn(),
   requestSecureApprovalLinkMock: vi.fn(),
@@ -20,9 +18,6 @@ const {
 vi.mock('next/navigation', () => ({
   usePathname: () => '/approvals/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
   useRouter: () => ({ refresh: routerRefreshMock }),
-  useSearchParams: () => ({
-    getAll: searchParamsGetAllMock,
-  }),
 }));
 
 vi.mock('@worldlibertyfinancial/agent-ui/badge', () => ({
@@ -60,8 +55,10 @@ vi.mock('@worldlibertyfinancial/agent-ui/input', () => ({
 }));
 
 vi.mock('@worldlibertyfinancial/agent-ui/label', () => ({
-  Label: ({ children, ...props }: React.LabelHTMLAttributes<HTMLLabelElement>) => (
-    <label {...props}>{children}</label>
+  Label: ({ children, htmlFor, ...props }: React.LabelHTMLAttributes<HTMLLabelElement>) => (
+    <label htmlFor={htmlFor} {...props}>
+      {children}
+    </label>
   ),
 }));
 
@@ -116,6 +113,32 @@ function buildApproval(overrides: Partial<ApprovalRequestRecord> = {}): Approval
   };
 }
 
+const approvalPath = '/approvals/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+function openSecureLink(
+  capability: string,
+  overrides: { daemonId?: string; daemonKey?: string } = {},
+): void {
+  const fragment = new URLSearchParams({
+    approvalCapability: capability,
+    daemonId: overrides.daemonId ?? '11'.repeat(32),
+    daemonKey: overrides.daemonKey ?? '22'.repeat(32),
+  });
+  window.history.pushState({}, '', `${approvalPath}#${fragment.toString()}`);
+}
+
+async function fillAndSubmitApproval(): Promise<void> {
+  fireEvent.change(screen.getByLabelText('Vault password'), {
+    target: { value: 'vault-password' },
+  });
+  fireEvent.click(screen.getByLabelText(/I verified this pending request/i));
+  const submitForm = screen.getByRole('button', { name: 'Send encrypted update' }).closest('form');
+  if (!submitForm) {
+    throw new Error('approval form is missing');
+  }
+  fireEvent.submit(submitForm);
+}
+
 function buildDaemon(overrides: Partial<RelayDaemonRecord> = {}): RelayDaemonRecord {
   return {
     daemonId: '11'.repeat(32),
@@ -130,9 +153,8 @@ function buildDaemon(overrides: Partial<RelayDaemonRecord> = {}): RelayDaemonRec
 describe('ApprovalForm duplicate submit guards', () => {
   beforeEach(() => {
     routerRefreshMock.mockReset();
-    searchParamsGetAllMock.mockReset();
     encryptApprovalUpdateMock.mockReset().mockReturnValue({
-      algorithm: 'x25519-xchacha20poly1305-v1',
+      algorithm: 'x25519-hkdf-xchacha20poly1305-v2',
       ephemeralPublicKey: '33'.repeat(32),
       nonce: '44'.repeat(24),
       ciphertext: '55',
@@ -156,7 +178,7 @@ describe('ApprovalForm duplicate submit guards', () => {
   });
 
   it('only submits one encrypted approval update while the first submit is still in flight', async () => {
-    searchParamsGetAllMock.mockReturnValue(['aa'.repeat(32)]);
+    openSecureLink('aa'.repeat(32));
     const submission = deferred<Response>();
     const fetchMock = vi.fn(() => submission.promise);
     vi.stubGlobal('fetch', fetchMock);
@@ -177,6 +199,7 @@ describe('ApprovalForm duplicate submit guards', () => {
     fireEvent.submit(submitForm!);
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(encryptApprovalUpdateMock).toHaveBeenCalledWith('22'.repeat(32), expect.anything());
 
     submission.resolve(new Response(null, { status: 200 }));
 
@@ -186,12 +209,12 @@ describe('ApprovalForm duplicate submit guards', () => {
   });
 
   it('only issues one fresh secure link while the first recovery request is still in flight', async () => {
-    searchParamsGetAllMock.mockReturnValue([]);
     const recovery = deferred<{
       approvalCapability: string;
       approvalId: string;
       approvalUrl: string;
       daemonId: string;
+      daemonPublicKey: string;
     }>();
     requestSecureApprovalLinkMock.mockImplementation(() => recovery.promise);
     vi.stubGlobal('fetch', vi.fn());
@@ -216,8 +239,9 @@ describe('ApprovalForm duplicate submit guards', () => {
       approvalCapability: 'bb'.repeat(32),
       approvalId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       approvalUrl:
-        'https://relay.example/approvals/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa?approvalCapability=bb',
+        'https://relay.example/approvals/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa#approvalCapability=bb',
       daemonId: '11'.repeat(32),
+      daemonPublicKey: '22'.repeat(32),
     });
 
     await waitFor(() => {
@@ -227,5 +251,87 @@ describe('ApprovalForm duplicate submit guards', () => {
         ),
       ).toBeTruthy();
     });
+  });
+
+  it('reads the secure link from the URL fragment and scrubs it from the address bar', async () => {
+    openSecureLink('aa'.repeat(32));
+    vi.stubGlobal('fetch', vi.fn());
+
+    render(<ApprovalForm approval={buildApproval()} daemon={buildDaemon()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Secure link loaded')).toBeTruthy();
+    });
+    expect(window.location.hash).toBe('');
+    expect(window.location.pathname).toBe(approvalPath);
+  });
+
+  it('refuses to encrypt when the relay advertises a different daemon key than the link', async () => {
+    openSecureLink('aa'.repeat(32), { daemonKey: '99'.repeat(32) });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ApprovalForm approval={buildApproval()} daemon={buildDaemon()} />);
+    await fillAndSubmitApproval();
+
+    expect(screen.getByText(/relay advertises a different daemon encryption key/i)).toBeTruthy();
+    expect(encryptApprovalUpdateMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(
+      (screen.getByRole('button', { name: 'Send encrypted update' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
+
+  it('treats a link that names another daemon as invalid', async () => {
+    openSecureLink('aa'.repeat(32), { daemonId: '33'.repeat(32) });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ApprovalForm approval={buildApproval()} daemon={buildDaemon()} />);
+    await fillAndSubmitApproval();
+
+    expect(screen.getByText('Invalid secure link')).toBeTruthy();
+    expect(encryptApprovalUpdateMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores legacy query-string capabilities that carry no daemon key', async () => {
+    window.history.pushState({}, '', `${approvalPath}?approvalCapability=${'aa'.repeat(32)}`);
+    vi.stubGlobal('fetch', vi.fn());
+
+    render(<ApprovalForm approval={buildApproval()} daemon={buildDaemon()} />);
+
+    await waitFor(() => {
+      expect(window.location.search).toBe('');
+    });
+    expect(screen.getByText('View only')).toBeTruthy();
+  });
+
+  it('rejects an admin-issued secure link whose daemon key differs from the relay record', async () => {
+    requestSecureApprovalLinkMock.mockResolvedValue({
+      approvalCapability: 'bb'.repeat(32),
+      approvalId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      approvalUrl: 'https://relay.example/approvals/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      daemonId: '11'.repeat(32),
+      daemonPublicKey: '99'.repeat(32),
+    });
+    vi.stubGlobal('fetch', vi.fn());
+
+    render(<ApprovalForm approval={buildApproval()} daemon={buildDaemon()} />);
+    fireEvent.change(screen.getByLabelText('Relay admin token'), {
+      target: { value: 'relay-admin-token-1234567890abcd' },
+    });
+    const recoveryForm = screen
+      .getByRole('button', { name: 'Issue fresh secure link' })
+      .closest('form');
+    if (!recoveryForm) {
+      throw new Error('recovery form is missing');
+    }
+    fireEvent.submit(recoveryForm);
+
+    await waitFor(() => {
+      expect(screen.getByText(/relay advertises a different daemon encryption key/i)).toBeTruthy();
+    });
+    expect(screen.getByText('View only')).toBeTruthy();
   });
 });

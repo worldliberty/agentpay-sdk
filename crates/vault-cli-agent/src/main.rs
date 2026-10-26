@@ -2,14 +2,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use uuid::Uuid;
 use vault_daemon::{DaemonError, KeyManagerDaemonApi};
 use vault_domain::{
-    AgentAction, BroadcastTx, Eip3009Transfer, Eip712TypedData, EvmAddress, Signature,
-    SolanaAddress, SolanaTokenProgram, TempoSessionOpenTransaction, TempoSessionTopUpTransaction,
-    TempoSessionVoucher,
+    AgentAction, BroadcastTx, Eip3009Transfer, Eip712TypedData, EvmAddress, RailgunAddress,
+    Signature, SolanaAddress, SolanaTokenProgram, TempoSessionOpenTransaction,
+    TempoSessionTopUpTransaction, TempoSessionVoucher, TempoTxParams,
 };
 use vault_sdk_agent::{AgentOperations, AgentSdk, AgentSdkError};
 use vault_transport_unix::{assert_root_owned_daemon_socket_path, UnixDaemonClient};
@@ -22,6 +22,8 @@ use io_utils::*;
 enum CommandRunOutcome {
     Completed,
     ManualApprovalRequired,
+    /// The command is recognized but its backend is not available in this build (exit code 3).
+    Unavailable,
 }
 
 #[derive(Debug, Parser)]
@@ -41,13 +43,6 @@ struct Cli {
         help = "Provisioned agent key id"
     )]
     agent_key_id: Uuid,
-    #[arg(
-        long,
-        value_name = "TOKEN",
-        conflicts_with = "agent_auth_token_stdin",
-        help = "Legacy insecure agent auth token flag (disabled by default); use --agent-auth-token-stdin or AGENTPAY_AGENT_AUTH_TOKEN"
-    )]
-    agent_auth_token: Option<String>,
     #[arg(
         long,
         default_value_t = false,
@@ -111,6 +106,66 @@ enum OutputFormat {
 enum OutputTarget {
     Stdout,
     File { path: PathBuf, overwrite: bool },
+}
+
+/// Fields identifying a Tempo stream channel. The daemon recomputes the channel
+/// id from these and pins the escrow contract per chain.
+#[derive(Debug, Clone, Args)]
+struct TempoChannelArgs {
+    #[arg(long, value_parser = parse_positive_u64)]
+    network: u64,
+    #[arg(long)]
+    escrow_contract: EvmAddress,
+    #[arg(long)]
+    token: EvmAddress,
+    #[arg(long)]
+    recipient: EvmAddress,
+    #[arg(long)]
+    payer: EvmAddress,
+    #[arg(long)]
+    authorized_signer: EvmAddress,
+    #[arg(long)]
+    salt_hex: String,
+}
+
+/// Tempo transaction envelope parameters. The daemon encodes the calls itself
+/// and rebuilds the signing digest from these values.
+#[derive(Debug, Clone, Args)]
+struct TempoTxArgs {
+    #[arg(long, value_parser = parse_non_negative_u64)]
+    nonce: u64,
+    #[arg(long)]
+    nonce_key: Option<String>,
+    #[arg(long, value_parser = parse_positive_u64)]
+    gas_limit: u64,
+    #[arg(long, value_parser = parse_positive_u128)]
+    max_fee_per_gas_wei: u128,
+    #[arg(long, value_parser = parse_non_negative_u128)]
+    max_priority_fee_per_gas_wei: u128,
+    #[arg(long, value_parser = parse_positive_u64)]
+    valid_before: Option<u64>,
+    #[arg(long, value_parser = parse_positive_u64)]
+    valid_after: Option<u64>,
+    #[arg(long, conflicts_with = "fee_payer")]
+    fee_token: Option<EvmAddress>,
+    #[arg(long, default_value_t = false)]
+    fee_payer: bool,
+}
+
+impl From<TempoTxArgs> for TempoTxParams {
+    fn from(args: TempoTxArgs) -> Self {
+        Self {
+            nonce: args.nonce,
+            nonce_key: args.nonce_key,
+            gas_limit: args.gas_limit,
+            max_fee_per_gas_wei: args.max_fee_per_gas_wei,
+            max_priority_fee_per_gas_wei: args.max_priority_fee_per_gas_wei,
+            valid_before: args.valid_before,
+            valid_after: args.valid_after,
+            fee_token: args.fee_token,
+            fee_payer: args.fee_payer,
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -260,57 +315,37 @@ enum Commands {
         nonce_hex: String,
     },
     #[command(
-        about = "Request a Tempo session open-transaction digest signature through policy checks"
+        about = "Request a Tempo session open-transaction signature (approve + escrow.open) through policy checks"
     )]
     TempoSessionOpenTransaction {
-        #[arg(long, value_parser = parse_positive_u64)]
-        network: u64,
-        #[arg(long)]
-        token: EvmAddress,
-        #[arg(long)]
-        recipient: EvmAddress,
+        #[command(flatten)]
+        channel: TempoChannelArgs,
         #[arg(long, value_parser = parse_positive_u128)]
         deposit_wei: u128,
-        #[arg(long, value_parser = parse_positive_u128)]
-        initial_amount_wei: u128,
-        #[arg(long)]
-        signing_hash_hex: String,
+        #[command(flatten)]
+        tx: TempoTxArgs,
     },
     #[command(
-        about = "Request a Tempo session top-up transaction digest signature through policy checks"
+        about = "Request a Tempo session top-up transaction signature (approve + escrow.topUp) through policy checks"
     )]
     TempoSessionTopUpTransaction {
-        #[arg(long, value_parser = parse_positive_u64)]
-        network: u64,
-        #[arg(long)]
-        token: EvmAddress,
-        #[arg(long)]
-        recipient: EvmAddress,
+        #[command(flatten)]
+        channel: TempoChannelArgs,
         #[arg(long)]
         channel_id_hex: String,
         #[arg(long, value_parser = parse_positive_u128)]
         additional_deposit_wei: u128,
-        #[arg(long)]
-        signing_hash_hex: String,
+        #[command(flatten)]
+        tx: TempoTxArgs,
     },
-    #[command(about = "Request a Tempo session voucher digest signature through policy checks")]
+    #[command(about = "Request a Tempo session voucher signature through policy checks")]
     TempoSessionVoucher {
-        #[arg(long, value_parser = parse_positive_u64)]
-        network: u64,
-        #[arg(long)]
-        escrow_contract: EvmAddress,
-        #[arg(long)]
-        token: EvmAddress,
-        #[arg(long)]
-        recipient: EvmAddress,
+        #[command(flatten)]
+        channel: TempoChannelArgs,
         #[arg(long)]
         channel_id_hex: String,
         #[arg(long, value_parser = parse_positive_u128)]
-        amount_wei: u128,
-        #[arg(long, value_parser = parse_positive_u128)]
         cumulative_amount_wei: u128,
-        #[arg(long)]
-        signing_hash_hex: String,
     },
     #[command(about = "Request an arbitrary EIP-712 typed-data signature through policy checks")]
     Eip712TypedData {
@@ -345,6 +380,65 @@ enum Commands {
         tx_type: u8,
         #[arg(long, default_value_t = false)]
         delegation_enabled: bool,
+    },
+    #[command(
+        about = "Authorize a Railgun shield (public ERC-20 → shielded pool) through policy checks"
+    )]
+    Shield {
+        #[arg(long, value_parser = parse_positive_u64)]
+        network: u64,
+        #[arg(long)]
+        token: EvmAddress,
+        #[arg(long)]
+        to_railgun_address: RailgunAddress,
+        #[arg(long, value_parser = parse_positive_u128)]
+        amount_wei: u128,
+    },
+    #[command(
+        about = "Authorize a Railgun unshield (shielded pool → public address) through policy checks"
+    )]
+    Unshield {
+        #[arg(long, value_parser = parse_positive_u64)]
+        network: u64,
+        #[arg(long)]
+        token: EvmAddress,
+        #[arg(long)]
+        to: EvmAddress,
+        #[arg(long, value_parser = parse_positive_u128)]
+        amount_wei: u128,
+        #[arg(long, default_value_t = false)]
+        via_broadcaster: bool,
+    },
+    #[command(
+        about = "Authorize a Railgun shielded-to-shielded private transfer through policy checks"
+    )]
+    PrivateTransfer {
+        #[arg(long, value_parser = parse_positive_u64)]
+        network: u64,
+        #[arg(long)]
+        token: EvmAddress,
+        #[arg(long)]
+        to_railgun_address: RailgunAddress,
+        #[arg(long, value_parser = parse_positive_u128)]
+        amount_wei: u128,
+        /// Self-broadcast the outer tx (leaks gas-payer link). When absent the
+        /// outer tx is relayed through a Waku broadcaster for sender privacy.
+        ///
+        /// Modelled as a SetTrue switch rather than a `--via-broadcaster
+        /// <bool>` value flag because clap interprets `bool` fields as
+        /// presence switches — passing a value would fail with "unexpected
+        /// argument".
+        #[arg(long, default_value_t = false)]
+        self_broadcast: bool,
+    },
+    #[command(
+        about = "Report Railgun shielded balance state (requires Track 4 railgun-prover sidecar)"
+    )]
+    PrivateBalance {
+        #[arg(long, value_parser = parse_positive_u64)]
+        network: u64,
+        #[arg(long)]
+        token: Option<EvmAddress>,
     },
 }
 
@@ -387,6 +481,20 @@ struct ManualApprovalRequiredOutput {
     cli_approval_command: String,
 }
 
+/// Structured output for [`Commands::PrivateBalance`] when the Track 4 prover
+/// sidecar that owns shielded UTXO scanning is not yet wired up. The CLI
+/// exits non-zero so callers cannot mistake the empty result for a real
+/// zero-balance reading.
+#[derive(Debug, Serialize)]
+struct PrivateBalanceUnavailableOutput {
+    command: String,
+    network: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
+    status: String,
+    reason: String,
+}
+
 fn compact_recoverable_signature_hex(signature: &Signature) -> Option<String> {
     let r_hex = signature.r_hex.as_deref()?.strip_prefix("0x")?;
     let s_hex = signature.s_hex.as_deref()?.strip_prefix("0x")?;
@@ -421,6 +529,7 @@ async fn main() {
     match run_main().await {
         Ok(CommandRunOutcome::Completed) => {}
         Ok(CommandRunOutcome::ManualApprovalRequired) => std::process::exit(2),
+        Ok(CommandRunOutcome::Unavailable) => std::process::exit(3),
         Err(err) => {
             eprintln!("{}", render_cli_error(&err));
             std::process::exit(1);
@@ -434,7 +543,6 @@ async fn run_main() -> Result<CommandRunOutcome> {
     let output_target = resolve_output_target(cli.output, cli.overwrite)?;
     let daemon_socket = resolve_daemon_socket_path(cli.daemon_socket)?;
     let agent_auth_token = resolve_agent_auth_token(
-        cli.agent_auth_token,
         std::env::var("AGENTPAY_AGENT_AUTH_TOKEN").ok(),
         cli.agent_auth_token_stdin,
         cli.non_interactive,
@@ -461,7 +569,20 @@ async fn run_main() -> Result<CommandRunOutcome> {
 }
 
 fn render_cli_error(error: &anyhow::Error) -> String {
-    error.to_string()
+    // Same shape as `{error:#}` (every context layer on one line), but a cause whose text is
+    // already embedded by its wrapper's `Display` (thiserror `{0}` + `#[source]`) is not repeated.
+    let mut rendered = String::new();
+    for cause in error.chain() {
+        let message = cause.to_string();
+        if rendered.contains(&message) {
+            continue;
+        }
+        if !rendered.is_empty() {
+            rendered.push_str(": ");
+        }
+        rendered.push_str(&message);
+    }
+    rendered
 }
 
 async fn run_command<A>(
@@ -919,22 +1040,23 @@ where
             print_agent_output(&output, output_format, output_target)?;
         }
         Commands::TempoSessionOpenTransaction {
-            network,
-            token,
-            recipient,
+            channel,
             deposit_wei,
-            initial_amount_wei,
-            signing_hash_hex,
+            tx,
         } => {
-            let token_str = token.to_string();
-            let recipient_str = recipient.to_string();
+            let network = channel.network;
+            let token_str = channel.token.to_string();
+            let recipient_str = channel.recipient.to_string();
             let authorization = TempoSessionOpenTransaction {
-                chain_id: network,
-                token,
-                recipient,
+                chain_id: channel.network,
+                escrow_contract: channel.escrow_contract,
+                token: channel.token,
+                recipient: channel.recipient,
+                payer: channel.payer,
+                authorized_signer: channel.authorized_signer,
+                salt_hex: channel.salt_hex,
                 deposit_wei,
-                initial_amount_wei,
-                signing_hash_hex,
+                tx: tx.into(),
             };
             print_status(
                 "submitting tempo session open transaction signature request",
@@ -981,22 +1103,25 @@ where
             print_agent_output(&output, output_format, output_target)?;
         }
         Commands::TempoSessionTopUpTransaction {
-            network,
-            token,
-            recipient,
+            channel,
             channel_id_hex,
             additional_deposit_wei,
-            signing_hash_hex,
+            tx,
         } => {
-            let token_str = token.to_string();
-            let recipient_str = recipient.to_string();
+            let network = channel.network;
+            let token_str = channel.token.to_string();
+            let recipient_str = channel.recipient.to_string();
             let authorization = TempoSessionTopUpTransaction {
-                chain_id: network,
-                token,
-                recipient,
+                chain_id: channel.network,
+                escrow_contract: channel.escrow_contract,
+                token: channel.token,
+                recipient: channel.recipient,
+                payer: channel.payer,
+                authorized_signer: channel.authorized_signer,
+                salt_hex: channel.salt_hex,
                 channel_id_hex,
                 additional_deposit_wei,
-                signing_hash_hex,
+                tx: tx.into(),
             };
             print_status(
                 "submitting tempo session topUp transaction signature request",
@@ -1043,26 +1168,23 @@ where
             print_agent_output(&output, output_format, output_target)?;
         }
         Commands::TempoSessionVoucher {
-            network,
-            escrow_contract,
-            token,
-            recipient,
+            channel,
             channel_id_hex,
-            amount_wei,
             cumulative_amount_wei,
-            signing_hash_hex,
         } => {
-            let token_str = token.to_string();
-            let recipient_str = recipient.to_string();
+            let network = channel.network;
+            let token_str = channel.token.to_string();
+            let recipient_str = channel.recipient.to_string();
             let authorization = TempoSessionVoucher {
-                chain_id: network,
-                escrow_contract,
-                token,
-                recipient,
+                chain_id: channel.network,
+                escrow_contract: channel.escrow_contract,
+                token: channel.token,
+                recipient: channel.recipient,
+                payer: channel.payer,
+                authorized_signer: channel.authorized_signer,
+                salt_hex: channel.salt_hex,
                 channel_id_hex,
-                amount_wei,
                 cumulative_amount_wei,
-                signing_hash_hex,
             };
             print_status(
                 "submitting tempo session voucher signature request",
@@ -1087,7 +1209,7 @@ where
                 network: network.to_string(),
                 asset: format!("erc20:{token_str}"),
                 counterparty: recipient_str,
-                amount_wei: amount_wei.to_string(),
+                amount_wei: cumulative_amount_wei.to_string(),
                 estimated_max_gas_spend_wei: None,
                 tx_type: None,
                 delegation_enabled: None,
@@ -1233,6 +1355,170 @@ where
             print_status("broadcast request signed", output_format, quiet);
             print_agent_output(&output, output_format, output_target)?;
         }
+        Commands::Shield {
+            network,
+            token,
+            to_railgun_address,
+            amount_wei,
+        } => {
+            let token_str = token.to_string();
+            let recipient_str = to_railgun_address.to_string();
+            print_status("submitting railgun shield request", output_format, quiet);
+            let signature = match await_signature_or_handle_manual_approval(
+                "shield",
+                daemon_socket,
+                output_format,
+                output_target,
+                sdk.shield(network, token, to_railgun_address, amount_wei),
+            )
+            .await?
+            {
+                Some(signature) => signature,
+                None => return Ok(CommandRunOutcome::ManualApprovalRequired),
+            };
+            let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);
+            let output = AgentCommandOutput {
+                command: "shield".to_string(),
+                network: network.to_string(),
+                asset: format!("erc20:{token_str}"),
+                counterparty: recipient_str,
+                amount_wei: amount_wei.to_string(),
+                estimated_max_gas_spend_wei: None,
+                tx_type: None,
+                delegation_enabled: None,
+                signature_hex,
+                signature_base58: None,
+                r_hex,
+                s_hex,
+                v,
+                raw_tx_hex: None,
+                tx_hash_hex: None,
+                raw_tx_base64: None,
+                tx_id: None,
+            };
+            print_status("railgun shield request signed", output_format, quiet);
+            print_agent_output(&output, output_format, output_target)?;
+        }
+        Commands::Unshield {
+            network,
+            token,
+            to,
+            amount_wei,
+            via_broadcaster,
+        } => {
+            let token_str = token.to_string();
+            let to_str = to.to_string();
+            print_status("submitting railgun unshield request", output_format, quiet);
+            let signature = match await_signature_or_handle_manual_approval(
+                "unshield",
+                daemon_socket,
+                output_format,
+                output_target,
+                sdk.unshield(network, token, to, amount_wei, via_broadcaster),
+            )
+            .await?
+            {
+                Some(signature) => signature,
+                None => return Ok(CommandRunOutcome::ManualApprovalRequired),
+            };
+            let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);
+            let output = AgentCommandOutput {
+                command: "unshield".to_string(),
+                network: network.to_string(),
+                asset: format!("erc20:{token_str}"),
+                counterparty: to_str,
+                amount_wei: amount_wei.to_string(),
+                estimated_max_gas_spend_wei: None,
+                tx_type: None,
+                delegation_enabled: None,
+                signature_hex,
+                signature_base58: None,
+                r_hex,
+                s_hex,
+                v,
+                raw_tx_hex: None,
+                tx_hash_hex: None,
+                raw_tx_base64: None,
+                tx_id: None,
+            };
+            print_status("railgun unshield request signed", output_format, quiet);
+            print_agent_output(&output, output_format, output_target)?;
+        }
+        Commands::PrivateTransfer {
+            network,
+            token,
+            to_railgun_address,
+            amount_wei,
+            self_broadcast,
+        } => {
+            let token_str = token.to_string();
+            let recipient_str = to_railgun_address.to_string();
+            // Broadcaster relay is the privacy-preserving default; --self-broadcast
+            // opts out and accepts the gas-payer linkability tradeoff.
+            let via_broadcaster = !self_broadcast;
+            print_status(
+                "submitting railgun private-transfer request",
+                output_format,
+                quiet,
+            );
+            let signature = match await_signature_or_handle_manual_approval(
+                "private-transfer",
+                daemon_socket,
+                output_format,
+                output_target,
+                sdk.private_transfer(
+                    network,
+                    token,
+                    to_railgun_address,
+                    amount_wei,
+                    via_broadcaster,
+                ),
+            )
+            .await?
+            {
+                Some(signature) => signature,
+                None => return Ok(CommandRunOutcome::ManualApprovalRequired),
+            };
+            let (signature_hex, r_hex, s_hex, v) = signature_output_parts(&signature);
+            let output = AgentCommandOutput {
+                command: "private-transfer".to_string(),
+                network: network.to_string(),
+                asset: format!("erc20:{token_str}"),
+                counterparty: recipient_str,
+                amount_wei: amount_wei.to_string(),
+                estimated_max_gas_spend_wei: None,
+                tx_type: None,
+                delegation_enabled: None,
+                signature_hex,
+                signature_base58: None,
+                r_hex,
+                s_hex,
+                v,
+                raw_tx_hex: None,
+                tx_hash_hex: None,
+                raw_tx_base64: None,
+                tx_id: None,
+            };
+            print_status(
+                "railgun private-transfer request signed",
+                output_format,
+                quiet,
+            );
+            print_agent_output(&output, output_format, output_target)?;
+        }
+        Commands::PrivateBalance { network, token } => {
+            let output = PrivateBalanceUnavailableOutput {
+                command: "private-balance".to_string(),
+                network: network.to_string(),
+                token: token.as_ref().map(EvmAddress::to_string),
+                status: "unavailable".to_string(),
+                reason:
+                    "private balance scan requires the railgun-prover sidecar (Track 4 not yet implemented)"
+                        .to_string(),
+            };
+            print_private_balance_unavailable_output(&output, output_format, output_target)?;
+            return Ok(CommandRunOutcome::Unavailable);
+        }
     }
 
     Ok(CommandRunOutcome::Completed)
@@ -1285,6 +1571,34 @@ fn print_manual_approval_required_output(
                 "CLI Approval Command: {}",
                 output.cli_approval_command
             ));
+            lines.join(
+                "
+",
+            )
+        }
+    };
+    emit_output(&rendered, target)
+}
+
+fn print_private_balance_unavailable_output(
+    output: &PrivateBalanceUnavailableOutput,
+    format: OutputFormat,
+    target: &OutputTarget,
+) -> Result<()> {
+    let rendered = match format {
+        OutputFormat::Json => {
+            serde_json::to_string_pretty(output).context("failed to serialize output")?
+        }
+        OutputFormat::Text => {
+            let mut lines = vec![
+                format!("Command: {}", output.command),
+                format!("Network: {}", output.network),
+            ];
+            if let Some(token) = output.token.as_ref() {
+                lines.push(format!("Token: {token}"));
+            }
+            lines.push(format!("Status: {}", output.status));
+            lines.push(format!("Reason: {}", output.reason));
             lines.join(
                 "
 ",
@@ -1407,7 +1721,7 @@ mod tests {
         print_manual_approval_required_output, render_cli_error, resolve_agent_auth_token,
         resolve_output_format, resolve_output_target, run_command, should_print_status,
         signature_output_parts, write_output_file, Cli, CommandRunOutcome, Commands,
-        ManualApprovalRequiredOutput, OutputFormat, OutputTarget,
+        ManualApprovalRequiredOutput, OutputFormat, OutputTarget, TempoChannelArgs, TempoTxArgs,
     };
     use async_trait::async_trait;
     use clap::Parser;
@@ -1419,8 +1733,9 @@ mod tests {
     use uuid::Uuid;
     use vault_daemon::DaemonError;
     use vault_domain::{
-        BroadcastTx, Eip712TypedData, EvmAddress, Signature, SolanaAddress, SolanaTokenProgram,
-        TempoSessionOpenTransaction, TempoSessionTopUpTransaction, TempoSessionVoucher,
+        BroadcastTx, Eip712TypedData, EvmAddress, RailgunAddress, Signature, SolanaAddress,
+        SolanaTokenProgram, TempoSessionOpenTransaction, TempoSessionTopUpTransaction,
+        TempoSessionVoucher, TempoTxParams,
     };
     use vault_policy::PolicyError;
     use vault_sdk_agent::{AgentOperations, AgentSdkError};
@@ -1686,6 +2001,38 @@ mod tests {
             self.result()
         }
 
+        async fn shield(
+            &self,
+            _chain_id: u64,
+            _token: EvmAddress,
+            _to_railgun_address: RailgunAddress,
+            _amount_wei: u128,
+        ) -> Result<Signature, AgentSdkError> {
+            panic!("unused in test");
+        }
+
+        async fn unshield(
+            &self,
+            _chain_id: u64,
+            _token: EvmAddress,
+            _to: EvmAddress,
+            _amount_wei: u128,
+            _via_broadcaster: bool,
+        ) -> Result<Signature, AgentSdkError> {
+            panic!("unused in test");
+        }
+
+        async fn private_transfer(
+            &self,
+            _chain_id: u64,
+            _token: EvmAddress,
+            _to_railgun_address: RailgunAddress,
+            _amount_wei: u128,
+            _via_broadcaster: bool,
+        ) -> Result<Signature, AgentSdkError> {
+            panic!("unused in test");
+        }
+
         async fn reserve_broadcast_nonce(
             &self,
             _chain_id: u64,
@@ -1793,23 +2140,14 @@ mod tests {
 
     #[test]
     fn resolve_agent_auth_token_rejects_whitespace_only() {
-        let err = resolve_agent_auth_token(Some(" \t ".to_string()), None, false, false)
+        let err = resolve_agent_auth_token(Some(" \t ".to_string()), false, false)
             .expect_err("must fail");
         assert!(err.to_string().contains("must not be empty or whitespace"));
     }
 
     #[test]
-    fn resolve_agent_auth_token_rejects_cli_argument_source() {
-        let err = resolve_agent_auth_token(Some("secret".to_string()), None, false, false)
-            .expect_err("must fail");
-        assert!(err
-            .to_string()
-            .contains("--agent-auth-token is disabled for security"));
-    }
-
-    #[test]
     fn resolve_agent_auth_token_accepts_environment_source() {
-        let token = resolve_agent_auth_token(None, Some("secret".to_string()), false, false)
+        let token = resolve_agent_auth_token(Some("secret".to_string()), false, false)
             .expect("environment token");
         assert_eq!(token.as_str(), "secret");
     }
@@ -1902,6 +2240,14 @@ mod tests {
             "daemon call failed: policy check failed: policy 00000000-0000-0000-0000-000000000000 rejected request: per transaction max 1 < requested 2"
         );
         assert!(!rendered.contains('\n'));
+
+        let contextual = anyhow::anyhow!("permission denied")
+            .context("failed to read output file")
+            .context("broadcast run");
+        assert_eq!(
+            render_cli_error(&contextual),
+            "broadcast run: failed to read output file: permission denied"
+        );
     }
 
     #[test]
@@ -1933,8 +2279,7 @@ mod tests {
             "agentpay-agent",
             "--agent-key-id",
             TEST_AGENT_KEY_ID,
-            "--agent-auth-token",
-            "test-auth-token",
+            "--agent-auth-token-stdin",
             "--daemon-socket",
             "/tmp/agentpay.sock",
             "transfer",
@@ -1957,8 +2302,7 @@ mod tests {
             "agentpay-agent",
             "--agent-key-id",
             TEST_AGENT_KEY_ID,
-            "--agent-auth-token",
-            "test-auth-token",
+            "--agent-auth-token-stdin",
             "--daemon-socket",
             "/tmp/agentpay.sock",
             "transfer-native",
@@ -1979,8 +2323,7 @@ mod tests {
             "agentpay-agent",
             "--agent-key-id",
             TEST_AGENT_KEY_ID,
-            "--agent-auth-token",
-            "test-auth-token",
+            "--agent-auth-token-stdin",
             "--daemon-socket",
             "/tmp/agentpay.sock",
             "approve",
@@ -2003,8 +2346,7 @@ mod tests {
             "agentpay-agent",
             "--agent-key-id",
             TEST_AGENT_KEY_ID,
-            "--agent-auth-token",
-            "test-auth-token",
+            "--agent-auth-token-stdin",
             "--daemon-socket",
             "/tmp/agentpay.sock",
             "eip3009-transfer-with-authorization",
@@ -2042,8 +2384,7 @@ mod tests {
             "agentpay-agent",
             "--agent-key-id",
             TEST_AGENT_KEY_ID,
-            "--agent-auth-token",
-            "test-auth-token",
+            "--agent-auth-token-stdin",
             "--daemon-socket",
             "/tmp/agentpay.sock",
             "eip3009-receive-with-authorization",
@@ -2073,98 +2414,122 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn canonical_tempo_session_open_transaction_command_is_accepted() {
-        let cli = Cli::try_parse_from([
+    const TEMPO_TX_ARGS: [&str; 16] = [
+        "--nonce",
+        "0",
+        "--nonce-key",
+        "12",
+        "--gas-limit",
+        "400000",
+        "--max-fee-per-gas-wei",
+        "20000000000",
+        "--max-priority-fee-per-gas-wei",
+        "1",
+        "--valid-before",
+        "1900000000",
+        "--valid-after",
+        "1800000000",
+        "--fee-token",
+        "0x1000000000000000000000000000000000000000",
+    ];
+
+    fn tempo_cli_prefix(command: &'static str) -> Vec<&'static str> {
+        vec![
             "agentpay-agent",
             "--agent-key-id",
             TEST_AGENT_KEY_ID,
-            "--agent-auth-token",
-            "test-auth-token",
+            "--agent-auth-token-stdin",
             "--daemon-socket",
             "/tmp/agentpay.sock",
-            "tempo-session-open-transaction",
+            command,
             "--network",
             "4217",
+            "--escrow-contract",
+            "0x33b901018174DDabE4841042ab76ba85D4e24f25",
             "--token",
             "0x1000000000000000000000000000000000000000",
             "--recipient",
             "0x2000000000000000000000000000000000000000",
-            "--deposit-wei",
-            "1000000",
-            "--initial-amount-wei",
-            "1000000",
-            "--signing-hash-hex",
-            "0x1111111111111111111111111111111111111111111111111111111111111111",
-        ])
-        .expect("parse");
-        assert!(matches!(
-            cli.command,
-            Commands::TempoSessionOpenTransaction { .. }
-        ));
+            "--payer",
+            "0x4000000000000000000000000000000000000000",
+            "--authorized-signer",
+            "0x4000000000000000000000000000000000000000",
+            "--salt-hex",
+            "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        ]
+    }
+
+    #[test]
+    fn canonical_tempo_session_open_transaction_command_is_accepted() {
+        let mut args = tempo_cli_prefix("tempo-session-open-transaction");
+        args.extend(["--deposit-wei", "1000000"]);
+        args.extend(TEMPO_TX_ARGS);
+        let cli = Cli::try_parse_from(args).expect("parse");
+        let Commands::TempoSessionOpenTransaction {
+            channel,
+            deposit_wei,
+            tx,
+        } = cli.command
+        else {
+            panic!("expected tempo-session-open-transaction");
+        };
+        assert_eq!(channel.network, 4217);
+        assert_eq!(deposit_wei, 1_000_000);
+        let params = TempoTxParams::from(tx);
+        assert_eq!(params.nonce_key.as_deref(), Some("12"));
+        assert_eq!(params.valid_before, Some(1_900_000_000));
+        assert!(!params.fee_payer);
     }
 
     #[test]
     fn canonical_tempo_session_voucher_command_is_accepted() {
-        let cli = Cli::try_parse_from([
-            "agentpay-agent",
-            "--agent-key-id",
-            TEST_AGENT_KEY_ID,
-            "--agent-auth-token",
-            "test-auth-token",
-            "--daemon-socket",
-            "/tmp/agentpay.sock",
-            "tempo-session-voucher",
-            "--network",
-            "4217",
-            "--escrow-contract",
-            "0x3000000000000000000000000000000000000000",
-            "--token",
-            "0x1000000000000000000000000000000000000000",
-            "--recipient",
-            "0x2000000000000000000000000000000000000000",
+        let mut args = tempo_cli_prefix("tempo-session-voucher");
+        args.extend([
             "--channel-id-hex",
             "0x2222222222222222222222222222222222222222222222222222222222222222",
-            "--amount-wei",
-            "1000000",
             "--cumulative-amount-wei",
             "1000000",
-            "--signing-hash-hex",
-            "0x3333333333333333333333333333333333333333333333333333333333333333",
-        ])
-        .expect("parse");
+        ]);
+        let cli = Cli::try_parse_from(args).expect("parse");
         assert!(matches!(cli.command, Commands::TempoSessionVoucher { .. }));
     }
 
     #[test]
     fn canonical_tempo_session_top_up_transaction_command_is_accepted() {
-        let cli = Cli::try_parse_from([
-            "agentpay-agent",
-            "--agent-key-id",
-            TEST_AGENT_KEY_ID,
-            "--agent-auth-token",
-            "test-auth-token",
-            "--daemon-socket",
-            "/tmp/agentpay.sock",
-            "tempo-session-top-up-transaction",
-            "--network",
-            "4217",
-            "--token",
-            "0x1000000000000000000000000000000000000000",
-            "--recipient",
-            "0x2000000000000000000000000000000000000000",
+        let mut args = tempo_cli_prefix("tempo-session-top-up-transaction");
+        args.extend([
             "--channel-id-hex",
             "0x2222222222222222222222222222222222222222222222222222222222222222",
             "--additional-deposit-wei",
             "1000000",
+            "--fee-payer",
+        ]);
+        args.extend(&TEMPO_TX_ARGS[..TEMPO_TX_ARGS.len() - 2]);
+        let cli = Cli::try_parse_from(args).expect("parse");
+        let Commands::TempoSessionTopUpTransaction { tx, .. } = cli.command else {
+            panic!("expected tempo-session-top-up-transaction");
+        };
+        assert!(tx.fee_payer);
+        assert!(tx.fee_token.is_none());
+    }
+
+    #[test]
+    fn tempo_session_commands_reject_legacy_digest_and_sponsored_fee_token() {
+        let mut legacy = tempo_cli_prefix("tempo-session-voucher");
+        legacy.extend([
+            "--channel-id-hex",
+            "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "--cumulative-amount-wei",
+            "1000000",
             "--signing-hash-hex",
             "0x3333333333333333333333333333333333333333333333333333333333333333",
-        ])
-        .expect("parse");
-        assert!(matches!(
-            cli.command,
-            Commands::TempoSessionTopUpTransaction { .. }
-        ));
+        ]);
+        assert!(Cli::try_parse_from(legacy).is_err());
+
+        let mut sponsored_with_fee_token = tempo_cli_prefix("tempo-session-open-transaction");
+        sponsored_with_fee_token.extend(["--deposit-wei", "1", "--fee-payer"]);
+        sponsored_with_fee_token.extend(TEMPO_TX_ARGS);
+        assert!(Cli::try_parse_from(sponsored_with_fee_token).is_err());
     }
 
     #[test]
@@ -2173,8 +2538,7 @@ mod tests {
             "agentpay-agent",
             "--agent-key-id",
             TEST_AGENT_KEY_ID,
-            "--agent-auth-token",
-            "test-auth-token",
+            "--agent-auth-token-stdin",
             "--daemon-socket",
             "/tmp/agentpay.sock",
             "eip712-typed-data",
@@ -2191,8 +2555,7 @@ mod tests {
             "agentpay-agent",
             "--agent-key-id",
             TEST_AGENT_KEY_ID,
-            "--agent-auth-token",
-            "test-auth-token",
+            "--agent-auth-token-stdin",
             "--daemon-socket",
             "/tmp/agentpay.sock",
             "broadcast",
@@ -2215,8 +2578,205 @@ mod tests {
         assert!(matches!(cli.command, Commands::Broadcast { .. }));
     }
 
+    const TEST_RAILGUN_ADDRESS: &str =
+        "0zk1qyqqqqqdl645pcpreh6dga7xa0dfwx5ehmkmrkpaczj9cyqr0e0vchcaxfsa6au6f93dvr64skspz";
+
     #[test]
-    fn agent_auth_token_flag_conflicts_with_stdin_flag() {
+    fn canonical_shield_command_is_accepted() {
+        let cli = Cli::try_parse_from([
+            "agentpay-agent",
+            "--agent-key-id",
+            TEST_AGENT_KEY_ID,
+            "--agent-auth-token-stdin",
+            "--daemon-socket",
+            "/tmp/agentpay.sock",
+            "shield",
+            "--network",
+            "1",
+            "--token",
+            "0x1000000000000000000000000000000000000000",
+            "--to-railgun-address",
+            TEST_RAILGUN_ADDRESS,
+            "--amount-wei",
+            "1",
+        ])
+        .expect("parse");
+        assert!(matches!(cli.command, Commands::Shield { .. }));
+    }
+
+    #[test]
+    fn canonical_unshield_command_is_accepted() {
+        let cli = Cli::try_parse_from([
+            "agentpay-agent",
+            "--agent-key-id",
+            TEST_AGENT_KEY_ID,
+            "--agent-auth-token-stdin",
+            "--daemon-socket",
+            "/tmp/agentpay.sock",
+            "unshield",
+            "--network",
+            "1",
+            "--token",
+            "0x1000000000000000000000000000000000000000",
+            "--to",
+            "0x2000000000000000000000000000000000000000",
+            "--amount-wei",
+            "1",
+        ])
+        .expect("parse");
+        match cli.command {
+            Commands::Unshield {
+                via_broadcaster, ..
+            } => assert!(
+                !via_broadcaster,
+                "via_broadcaster defaults to false on unshield"
+            ),
+            other => panic!("expected Unshield, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unshield_with_via_broadcaster_switch_sets_field_true() {
+        let cli = Cli::try_parse_from([
+            "agentpay-agent",
+            "--agent-key-id",
+            TEST_AGENT_KEY_ID,
+            "--agent-auth-token-stdin",
+            "--daemon-socket",
+            "/tmp/agentpay.sock",
+            "unshield",
+            "--network",
+            "1",
+            "--token",
+            "0x1000000000000000000000000000000000000000",
+            "--to",
+            "0x2000000000000000000000000000000000000000",
+            "--amount-wei",
+            "1",
+            "--via-broadcaster",
+        ])
+        .expect("parse");
+        match cli.command {
+            Commands::Unshield {
+                via_broadcaster, ..
+            } => assert!(via_broadcaster, "--via-broadcaster must toggle the flag on"),
+            other => panic!("expected Unshield, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn canonical_private_transfer_command_defaults_to_broadcaster_relay() {
+        // Regression: the previous declaration was `--via-broadcaster <bool>`,
+        // which clap rejected with "unexpected argument". The contract now is
+        // `--self-broadcast` as a SetTrue switch with broadcaster relay as the
+        // privacy-preserving default.
+        let cli = Cli::try_parse_from([
+            "agentpay-agent",
+            "--agent-key-id",
+            TEST_AGENT_KEY_ID,
+            "--agent-auth-token-stdin",
+            "--daemon-socket",
+            "/tmp/agentpay.sock",
+            "private-transfer",
+            "--network",
+            "1",
+            "--token",
+            "0x1000000000000000000000000000000000000000",
+            "--to-railgun-address",
+            TEST_RAILGUN_ADDRESS,
+            "--amount-wei",
+            "1",
+        ])
+        .expect("parse");
+        match cli.command {
+            Commands::PrivateTransfer { self_broadcast, .. } => {
+                assert!(
+                    !self_broadcast,
+                    "default must be broadcaster relay (self_broadcast=false)"
+                );
+            }
+            other => panic!("expected PrivateTransfer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn private_transfer_self_broadcast_switch_opts_out_of_relay() {
+        let cli = Cli::try_parse_from([
+            "agentpay-agent",
+            "--agent-key-id",
+            TEST_AGENT_KEY_ID,
+            "--agent-auth-token-stdin",
+            "--daemon-socket",
+            "/tmp/agentpay.sock",
+            "private-transfer",
+            "--network",
+            "1",
+            "--token",
+            "0x1000000000000000000000000000000000000000",
+            "--to-railgun-address",
+            TEST_RAILGUN_ADDRESS,
+            "--amount-wei",
+            "1",
+            "--self-broadcast",
+        ])
+        .expect("parse");
+        match cli.command {
+            Commands::PrivateTransfer { self_broadcast, .. } => {
+                assert!(self_broadcast, "--self-broadcast must toggle the flag on");
+            }
+            other => panic!("expected PrivateTransfer, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn private_transfer_rejects_legacy_via_broadcaster_value_form() {
+        // Regression guard for the bug shipped during Track 5: the TS handler
+        // was pushing `--via-broadcaster <bool>` which the Rust subcommand
+        // never accepted. Make sure that exact invocation continues to fail
+        // so a future revert does not silently re-introduce the broken flag.
+        let err = Cli::try_parse_from([
+            "agentpay-agent",
+            "--agent-key-id",
+            TEST_AGENT_KEY_ID,
+            "--agent-auth-token-stdin",
+            "--daemon-socket",
+            "/tmp/agentpay.sock",
+            "private-transfer",
+            "--network",
+            "1",
+            "--token",
+            "0x1000000000000000000000000000000000000000",
+            "--to-railgun-address",
+            TEST_RAILGUN_ADDRESS,
+            "--amount-wei",
+            "1",
+            "--via-broadcaster",
+            "true",
+        ])
+        .expect_err("--via-broadcaster <value> must fail");
+        let rendered = err.to_string();
+        assert!(rendered.contains("unexpected argument") || rendered.contains("unrecognized"));
+    }
+
+    #[test]
+    fn canonical_private_balance_command_is_accepted() {
+        let cli = Cli::try_parse_from([
+            "agentpay-agent",
+            "--agent-key-id",
+            TEST_AGENT_KEY_ID,
+            "--agent-auth-token-stdin",
+            "--daemon-socket",
+            "/tmp/agentpay.sock",
+            "private-balance",
+            "--network",
+            "1",
+        ])
+        .expect("parse");
+        assert!(matches!(cli.command, Commands::PrivateBalance { .. }));
+    }
+
+    #[test]
+    fn legacy_agent_auth_token_argv_flag_is_rejected() {
         let err = Cli::try_parse_from([
             "agentpay-agent",
             "--agent-key-id",
@@ -2225,7 +2785,6 @@ mod tests {
             "/tmp/agentpay.sock",
             "--agent-auth-token",
             "test-auth-token",
-            "--agent-auth-token-stdin",
             "transfer-native",
             "--network",
             "1",
@@ -2234,10 +2793,9 @@ mod tests {
             "--amount-wei",
             "1",
         ])
-        .expect_err("must fail");
-        let rendered = err.to_string();
-        assert!(rendered.contains("--agent-auth-token"));
-        assert!(rendered.contains("--agent-auth-token-stdin"));
+        .expect_err("argv secrets must not be accepted");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+        assert!(err.to_string().contains("--agent-auth-token"));
     }
 
     #[test]
@@ -2345,6 +2903,38 @@ mod tests {
         assert!(err.to_string().contains("daemon call failed"));
 
         fs::remove_file(&output_path).expect("cleanup");
+    }
+
+    #[test]
+    fn run_command_reports_private_balance_as_unavailable() {
+        let runtime = test_runtime();
+        let daemon_socket = socket_path();
+        let output = temp_path("private-balance-output", "json");
+        let ops = FakeAgentOps {
+            calls: Mutex::new(Vec::new()),
+            outcome: FakeOutcome::Signature(sample_signature()),
+        };
+        let outcome = runtime
+            .block_on(run_command(
+                Commands::PrivateBalance {
+                    network: 1,
+                    token: None,
+                },
+                true,
+                &daemon_socket,
+                OutputFormat::Json,
+                &OutputTarget::File {
+                    path: output.clone(),
+                    overwrite: false,
+                },
+                &ops,
+            ))
+            .expect("private balance run");
+        // Distinct from ManualApprovalRequired (exit 2): callers must not wait for an approval.
+        assert_eq!(outcome, CommandRunOutcome::Unavailable);
+        assert!(ops.calls.lock().expect("lock").is_empty());
+        assert!(read_file(&output).contains("\"status\": \"unavailable\""));
+        fs::remove_file(&output).expect("cleanup private balance output");
     }
 
     #[test]
@@ -2594,24 +3184,53 @@ mod tests {
             calls: Mutex::new(Vec::new()),
             outcome: FakeOutcome::Signature(sample_signature()),
         };
-        let tempo_open_authorization = TempoSessionOpenTransaction {
-            chain_id: 4217,
+        let tempo_channel = TempoChannelArgs {
+            network: 4217,
+            escrow_contract: "0x33b901018174ddabe4841042ab76ba85d4e24f25"
+                .parse()
+                .expect("escrow"),
             token: token.clone(),
             recipient: to.clone(),
-            deposit_wei: 1_000_000,
-            initial_amount_wei: 1_000_000,
-            signing_hash_hex: "0x1111111111111111111111111111111111111111111111111111111111111111"
+            payer: "0x4000000000000000000000000000000000000000"
+                .parse()
+                .expect("payer"),
+            authorized_signer: "0x4000000000000000000000000000000000000000"
+                .parse()
+                .expect("signer"),
+            salt_hex: "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"
                 .to_string(),
+        };
+        let tempo_tx = TempoTxArgs {
+            nonce: 0,
+            nonce_key: Some(
+                "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+                    .to_string(),
+            ),
+            gas_limit: 400_000,
+            max_fee_per_gas_wei: 20_000_000_000,
+            max_priority_fee_per_gas_wei: 1,
+            valid_before: Some(1_900_000_000),
+            valid_after: None,
+            fee_token: None,
+            fee_payer: true,
+        };
+        let tempo_open_authorization = TempoSessionOpenTransaction {
+            chain_id: 4217,
+            escrow_contract: tempo_channel.escrow_contract.clone(),
+            token: token.clone(),
+            recipient: to.clone(),
+            payer: tempo_channel.payer.clone(),
+            authorized_signer: tempo_channel.authorized_signer.clone(),
+            salt_hex: tempo_channel.salt_hex.clone(),
+            deposit_wei: 1_000_000,
+            tx: tempo_tx.clone().into(),
         };
         let outcome = runtime
             .block_on(run_command(
                 Commands::TempoSessionOpenTransaction {
-                    network: tempo_open_authorization.chain_id,
-                    token: tempo_open_authorization.token.clone(),
-                    recipient: tempo_open_authorization.recipient.clone(),
+                    channel: tempo_channel.clone(),
                     deposit_wei: tempo_open_authorization.deposit_wei,
-                    initial_amount_wei: tempo_open_authorization.initial_amount_wei,
-                    signing_hash_hex: tempo_open_authorization.signing_hash_hex.clone(),
+                    tx: tempo_tx.clone(),
                 },
                 true,
                 &daemon_socket,
@@ -2641,23 +3260,24 @@ mod tests {
         };
         let tempo_top_up_authorization = TempoSessionTopUpTransaction {
             chain_id: 4217,
+            escrow_contract: tempo_channel.escrow_contract.clone(),
             token: token.clone(),
             recipient: to.clone(),
+            payer: tempo_channel.payer.clone(),
+            authorized_signer: tempo_channel.authorized_signer.clone(),
+            salt_hex: tempo_channel.salt_hex.clone(),
             channel_id_hex: "0x2222222222222222222222222222222222222222222222222222222222222222"
                 .to_string(),
             additional_deposit_wei: 1_000_000,
-            signing_hash_hex: "0x3333333333333333333333333333333333333333333333333333333333333333"
-                .to_string(),
+            tx: tempo_tx.clone().into(),
         };
         let outcome = runtime
             .block_on(run_command(
                 Commands::TempoSessionTopUpTransaction {
-                    network: tempo_top_up_authorization.chain_id,
-                    token: tempo_top_up_authorization.token.clone(),
-                    recipient: tempo_top_up_authorization.recipient.clone(),
+                    channel: tempo_channel.clone(),
                     channel_id_hex: tempo_top_up_authorization.channel_id_hex.clone(),
                     additional_deposit_wei: tempo_top_up_authorization.additional_deposit_wei,
-                    signing_hash_hex: tempo_top_up_authorization.signing_hash_hex.clone(),
+                    tx: tempo_tx.clone(),
                 },
                 true,
                 &daemon_socket,
@@ -2687,29 +3307,22 @@ mod tests {
         };
         let tempo_voucher_authorization = TempoSessionVoucher {
             chain_id: 4217,
-            escrow_contract: "0x3300000000000000000000000000000000000000"
-                .parse()
-                .expect("escrow"),
+            escrow_contract: tempo_channel.escrow_contract.clone(),
             token: token.clone(),
             recipient: to.clone(),
+            payer: tempo_channel.payer.clone(),
+            authorized_signer: tempo_channel.authorized_signer.clone(),
+            salt_hex: tempo_channel.salt_hex.clone(),
             channel_id_hex: "0x2222222222222222222222222222222222222222222222222222222222222222"
                 .to_string(),
-            amount_wei: 1_000_000,
             cumulative_amount_wei: 1_000_000,
-            signing_hash_hex: "0x3333333333333333333333333333333333333333333333333333333333333333"
-                .to_string(),
         };
         let outcome = runtime
             .block_on(run_command(
                 Commands::TempoSessionVoucher {
-                    network: tempo_voucher_authorization.chain_id,
-                    escrow_contract: tempo_voucher_authorization.escrow_contract.clone(),
-                    token: tempo_voucher_authorization.token.clone(),
-                    recipient: tempo_voucher_authorization.recipient.clone(),
+                    channel: tempo_channel.clone(),
                     channel_id_hex: tempo_voucher_authorization.channel_id_hex.clone(),
-                    amount_wei: tempo_voucher_authorization.amount_wei,
                     cumulative_amount_wei: tempo_voucher_authorization.cumulative_amount_wei,
-                    signing_hash_hex: tempo_voucher_authorization.signing_hash_hex.clone(),
                 },
                 true,
                 &daemon_socket,
@@ -2801,7 +3414,8 @@ mod tests {
             nonce: 2,
             to: to.clone(),
             value_wei: 13,
-            data_hex: "0xdeadbeef".to_string(),
+            // Plain value transfer: unknown calldata selectors are denied by validation.
+            data_hex: "0x".to_string(),
             gas_limit: 21000,
             max_fee_per_gas_wei: 100,
             max_priority_fee_per_gas_wei: 3,

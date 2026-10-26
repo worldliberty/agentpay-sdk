@@ -237,12 +237,17 @@ enum WireDaemonError {
     TooManyActiveNonceReservations {
         max_active: usize,
     },
+    NonceSkipTooLarge {
+        requested_skip: u64,
+        max_skip: u64,
+    },
     UnknownNonceReservation(Uuid),
     MissingNonceReservation {
         chain_id: u64,
         nonce: u64,
     },
     InvalidPolicy(String),
+    InvalidAction(String),
     InvalidRelayConfig(String),
     ManualApprovalRequired {
         approval_request_id: Uuid,
@@ -255,6 +260,10 @@ enum WireDaemonError {
     ManualApprovalRequestNotPending {
         approval_request_id: Uuid,
         status: ManualApprovalStatus,
+    },
+    TooManyPendingManualApprovalRequests {
+        agent_key_id: Uuid,
+        max_pending: usize,
     },
     Policy(PolicyError),
     Signer(SignerError),
@@ -290,11 +299,19 @@ impl From<DaemonError> for WireDaemonError {
             DaemonError::TooManyActiveNonceReservations { max_active } => {
                 Self::TooManyActiveNonceReservations { max_active }
             }
+            DaemonError::NonceSkipTooLarge {
+                requested_skip,
+                max_skip,
+            } => Self::NonceSkipTooLarge {
+                requested_skip,
+                max_skip,
+            },
             DaemonError::UnknownNonceReservation(id) => Self::UnknownNonceReservation(id),
             DaemonError::MissingNonceReservation { chain_id, nonce } => {
                 Self::MissingNonceReservation { chain_id, nonce }
             }
             DaemonError::InvalidPolicy(msg) => Self::InvalidPolicy(msg),
+            DaemonError::InvalidAction(msg) => Self::InvalidAction(msg),
             DaemonError::InvalidRelayConfig(msg) => Self::InvalidRelayConfig(msg),
             DaemonError::ManualApprovalRequired {
                 approval_request_id,
@@ -316,6 +333,13 @@ impl From<DaemonError> for WireDaemonError {
             } => Self::ManualApprovalRequestNotPending {
                 approval_request_id,
                 status,
+            },
+            DaemonError::TooManyPendingManualApprovalRequests {
+                agent_key_id,
+                max_pending,
+            } => Self::TooManyPendingManualApprovalRequests {
+                agent_key_id,
+                max_pending,
             },
             DaemonError::Policy(err) => Self::Policy(err),
             DaemonError::Signer(err) => Self::Signer(err),
@@ -361,6 +385,13 @@ impl WireDaemonError {
             WireDaemonError::TooManyActiveNonceReservations { max_active } => {
                 DaemonError::TooManyActiveNonceReservations { max_active }
             }
+            WireDaemonError::NonceSkipTooLarge {
+                requested_skip,
+                max_skip,
+            } => DaemonError::NonceSkipTooLarge {
+                requested_skip,
+                max_skip,
+            },
             WireDaemonError::UnknownNonceReservation(id) => {
                 DaemonError::UnknownNonceReservation(id)
             }
@@ -368,6 +399,7 @@ impl WireDaemonError {
                 DaemonError::MissingNonceReservation { chain_id, nonce }
             }
             WireDaemonError::InvalidPolicy(msg) => DaemonError::InvalidPolicy(msg),
+            WireDaemonError::InvalidAction(msg) => DaemonError::InvalidAction(msg),
             WireDaemonError::InvalidRelayConfig(msg) => DaemonError::InvalidRelayConfig(msg),
             WireDaemonError::ManualApprovalRequired {
                 approval_request_id,
@@ -389,6 +421,13 @@ impl WireDaemonError {
             } => DaemonError::ManualApprovalRequestNotPending {
                 approval_request_id,
                 status,
+            },
+            WireDaemonError::TooManyPendingManualApprovalRequests {
+                agent_key_id,
+                max_pending,
+            } => DaemonError::TooManyPendingManualApprovalRequests {
+                agent_key_id,
+                max_pending,
             },
             WireDaemonError::Policy(err) => DaemonError::Policy(err),
             WireDaemonError::Signer(err) => DaemonError::Signer(err),
@@ -652,10 +691,18 @@ impl XpcDaemonServer {
                                         },
                                     }
                                 }
+                                // Requests that fail to decode (including wire-level policy
+                                // validation) still answer with a structured daemon error so
+                                // the client can surface the reason.
                                 Err(err) => WireResponse {
                                     request_id: request.request_id,
                                     ok: false,
-                                    body_json: err.to_string().into(),
+                                    body_json: serialize_wire_daemon_error(
+                                        DaemonError::Transport(format!(
+                                            "invalid daemon request: {err}"
+                                        )),
+                                    )
+                                    .into(),
                                 },
                             }
                         }

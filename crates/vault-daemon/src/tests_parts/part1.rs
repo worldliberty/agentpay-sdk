@@ -9,7 +9,7 @@ async fn daemon_enforces_per_tx_limit() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -60,7 +60,7 @@ async fn wrong_password_is_rejected() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let bad_session = AdminSession {
-        vault_password: "wrong".to_string(),
+        vault_password: "wrong".to_string().into(),
         lease,
     };
 
@@ -177,7 +177,7 @@ async fn create_agent_key_validates_policy_set() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -208,7 +208,7 @@ async fn create_agent_key_rejects_disabled_policy_set_member() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -250,7 +250,7 @@ async fn create_agent_key_accepts_enabled_policy_set_member() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -287,7 +287,7 @@ async fn create_agent_key_rejects_empty_policy_set() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -316,7 +316,7 @@ async fn disable_policy_prunes_policy_set_attachments() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -364,7 +364,7 @@ async fn daemon_backfills_default_relay_url() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -393,7 +393,7 @@ async fn set_relay_config_allows_loopback_http_and_remote_https() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -427,7 +427,7 @@ async fn set_relay_config_rejects_remote_http() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -452,7 +452,7 @@ async fn set_relay_config_rejects_userinfo_query_or_fragment() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -528,7 +528,7 @@ async fn list_policies_requires_authenticated_session() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let bad_session = AdminSession {
-        vault_password: "wrong".to_string(),
+        vault_password: "wrong".to_string().into(),
         lease,
     };
 
@@ -550,7 +550,7 @@ async fn add_policy_rejects_invalid_policy_payloads() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -635,7 +635,7 @@ async fn add_policy_rejects_duplicate_policy_ids() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -679,7 +679,7 @@ async fn list_policies_is_deterministic_for_equal_priority() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -913,7 +913,7 @@ async fn client_requested_at_cannot_bypass_window_limits() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
 
@@ -989,7 +989,7 @@ async fn wrong_agent_auth_token_is_rejected() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1041,7 +1041,7 @@ async fn oversized_agent_auth_token_is_rejected() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1093,7 +1093,7 @@ async fn successful_sign_request_is_idempotent_for_same_request_id() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1146,7 +1146,7 @@ async fn sign_request_reuse_with_different_payload_is_rejected() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1217,7 +1217,7 @@ async fn signer_failure_does_not_consume_request_id() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1282,7 +1282,7 @@ async fn expired_request_is_rejected() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1332,7 +1332,7 @@ async fn future_requested_at_beyond_allowed_clock_skew_is_rejected() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1384,7 +1384,7 @@ async fn request_ttl_longer_than_max_is_rejected() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease,
     };
     daemon
@@ -1503,11 +1503,11 @@ async fn privileged_admin_mutators_require_authenticated_session() {
 
     let lease = daemon.issue_lease("vault-password").await.expect("lease");
     let session = AdminSession {
-        vault_password: "vault-password".to_string(),
+        vault_password: "vault-password".to_string().into(),
         lease: lease.clone(),
     };
     let bad_session = AdminSession {
-        vault_password: "wrong".to_string(),
+        vault_password: "wrong".to_string().into(),
         lease,
     };
 

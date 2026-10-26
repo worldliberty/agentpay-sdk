@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -30,20 +30,6 @@ function writeExecutable(filePath, body) {
 
 function writeConfig(agentpayHome, config) {
   fs.writeFileSync(path.join(agentpayHome, 'config.json'), `${JSON.stringify(config, null, 2)}\n`);
-}
-
-function runCli(args, { homeDir, env = {} }) {
-  const agentpayHome = path.join(homeDir, '.agentpay');
-  return spawnSync(process.execPath, ['--import', 'tsx', 'src/cli.ts', ...args], {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      HOME: homeDir,
-      AGENTPAY_HOME: agentpayHome,
-      ...env,
-    },
-    encoding: 'utf8',
-  });
 }
 
 function runCliAsync(args, { homeDir, env = {} }) {
@@ -1243,5 +1229,100 @@ test('bitrefill challenge_required is surfaced with a dedicated exit code', asyn
   } finally {
     await closeServer(bitrefillServer);
     fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+async function withBitrefillHome(fn) {
+  const { homeDir, agentpayHome } = makeIsolatedHome();
+  const previous = process.env.AGENTPAY_HOME;
+  process.env.AGENTPAY_HOME = agentpayHome;
+  try {
+    const bitrefill = await import(
+      `${bitrefillModulePath.href}?case=${Date.now()}-${Math.random()}`
+    );
+    return await fn({ bitrefill, agentpayHome });
+  } finally {
+    if (previous === undefined) {
+      delete process.env.AGENTPAY_HOME;
+    } else {
+      process.env.AGENTPAY_HOME = previous;
+    }
+    fs.rmSync(homeDir, { recursive: true, force: true });
+  }
+}
+
+test('bitrefill invoice access token store writes atomically with 0600 permissions', async () => {
+  await withBitrefillHome(async ({ bitrefill }) => {
+    const storePath = bitrefill.resolveBitrefillInvoiceAccessTokenStorePath();
+    assert.equal(fs.existsSync(storePath), false);
+    assert.equal(bitrefill.findBitrefillInvoiceAccessToken('inv-1'), null);
+
+    bitrefill.rememberBitrefillInvoiceAccessToken({ invoiceId: 'inv-1', accessToken: 'tok-1' });
+    bitrefill.rememberBitrefillInvoiceAccessToken({ invoiceId: 'inv-2', accessToken: 'tok-2' });
+
+    assert.equal(fs.statSync(storePath).mode & 0o777, 0o600);
+    assert.equal(bitrefill.findBitrefillInvoiceAccessToken('inv-1'), 'tok-1');
+    assert.equal(bitrefill.findBitrefillInvoiceAccessToken('inv-2'), 'tok-2');
+    const leftovers = fs
+      .readdirSync(path.dirname(storePath))
+      .filter((name) => name.endsWith('.tmp'));
+    assert.deepEqual(leftovers, []);
+  });
+});
+
+test('bitrefill invoice access token store surfaces corrupt or untrusted files instead of discarding them', async () => {
+  await withBitrefillHome(async ({ bitrefill }) => {
+    const storePath = bitrefill.resolveBitrefillInvoiceAccessTokenStorePath();
+
+    fs.writeFileSync(storePath, '{not json', { mode: 0o600 });
+    assert.throws(
+      () => bitrefill.findBitrefillInvoiceAccessToken('inv-1'),
+      /Bitrefill invoice access token store .* is not valid JSON/,
+    );
+    assert.throws(
+      () => bitrefill.rememberBitrefillInvoiceAccessToken({ invoiceId: 'inv-1', accessToken: 't' }),
+      /is not valid JSON/,
+    );
+    assert.equal(fs.readFileSync(storePath, 'utf8'), '{not json');
+
+    fs.writeFileSync(storePath, '{}\n', { mode: 0o600 });
+    fs.chmodSync(storePath, 0o644);
+    assert.throws(() => bitrefill.findBitrefillInvoiceAccessToken('inv-1'));
+    assert.equal(fs.statSync(storePath).mode & 0o777, 0o644);
+
+    fs.rmSync(storePath);
+    const target = path.join(path.dirname(storePath), 'elsewhere.json');
+    fs.writeFileSync(target, '{}\n', { mode: 0o600 });
+    fs.symlinkSync(target, storePath);
+    assert.throws(
+      () => bitrefill.findBitrefillInvoiceAccessToken('inv-1'),
+      /must not be a symlink/,
+    );
+  });
+});
+
+test('createFetchBitrefillTransport aborts requests that exceed the request timeout', async () => {
+  const sockets = new Set();
+  const server = http.createServer(() => {
+    // Never respond.
+  });
+  server.on('connection', (socket) => sockets.add(socket));
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  try {
+    const bitrefill = await import(`${bitrefillModulePath.href}?case=${Date.now()}-fetch-timeout`);
+    const transport = bitrefill.createFetchBitrefillTransport({
+      baseUrl: `http://127.0.0.1:${port}`,
+      requestTimeoutMs: 100,
+    });
+    const startedAt = Date.now();
+    await assert.rejects(
+      () => transport.request({ method: 'GET', pathname: '/api/stall' }),
+      (error) => error?.name === 'TimeoutError' || /timeout|aborted/i.test(String(error)),
+    );
+    assert.ok(Date.now() - startedAt < 5_000);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await new Promise((resolve) => server.close(resolve));
   }
 });

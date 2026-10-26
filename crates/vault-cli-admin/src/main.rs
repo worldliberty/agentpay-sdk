@@ -201,6 +201,19 @@ struct BootstrapCommandArgs {
         help = "Import an existing software-wallet private key from a private file"
     )]
     import_vault_private_key_file: Option<PathBuf>,
+    #[arg(
+        long,
+        value_name = "FD",
+        value_parser = clap::value_parser!(i32).range(3..),
+        conflicts_with_all = [
+            "existing_vault_key_id",
+            "existing_vault_public_key",
+            "print_vault_private_key",
+            "import_vault_private_key_file"
+        ],
+        help = "Import an existing software-wallet private key from an inherited file descriptor (pipe), e.g. 3"
+    )]
+    import_vault_private_key_fd: Option<i32>,
     #[arg(long, default_value_t = false)]
     print_agent_auth_token: bool,
     #[arg(
@@ -229,6 +242,22 @@ struct RevokeAgentKeyCommandArgs {
 struct ExportVaultPrivateKeyCommandArgs {
     #[arg(long, value_name = "UUID", help = "Vault key id to export")]
     vault_key_id: Uuid,
+}
+
+#[derive(Debug, Args)]
+struct RailgunPublicKeyCommandArgs {
+    #[arg(
+        long,
+        value_name = "UUID",
+        help = "Vault key id to derive the Railgun shielded address for"
+    )]
+    vault_key_id: Uuid,
+    #[arg(
+        long,
+        default_value_t = false,
+        help = "Also include the viewing pubkey + master pubkey (for sidecar bootstrap)"
+    )]
+    include_keys: bool,
 }
 
 #[derive(Debug, Args)]
@@ -263,6 +292,13 @@ struct AddEip712SigningPolicyCommandArgs {
 struct ApproveManualApprovalRequestCommandArgs {
     #[arg(long, value_name = "UUID")]
     approval_request_id: Uuid,
+    #[arg(
+        long,
+        short = 'y',
+        default_value_t = false,
+        help = "Approve without the interactive confirmation prompt (required when stdin is not a TTY)"
+    )]
+    yes: bool,
 }
 
 #[derive(Debug, Args)]
@@ -271,6 +307,13 @@ struct RejectManualApprovalRequestCommandArgs {
     approval_request_id: Uuid,
     #[arg(long)]
     rejection_reason: Option<String>,
+    #[arg(
+        long,
+        short = 'y',
+        default_value_t = false,
+        help = "Reject without the interactive confirmation prompt (required when stdin is not a TTY)"
+    )]
+    yes: bool,
 }
 
 #[derive(Debug, Args)]
@@ -325,6 +368,8 @@ enum Commands {
     Bootstrap(Box<BootstrapCommandArgs>),
     #[command(about = "Export the private key for an existing software-backed vault key")]
     ExportVaultPrivateKey(ExportVaultPrivateKeyCommandArgs),
+    #[command(about = "Derive the Railgun shielded address (`0zk1...`) for an existing vault key")]
+    RailgunPublicKey(RailgunPublicKeyCommandArgs),
     #[command(about = "Rotate the bearer token for an existing agent key")]
     RotateAgentAuthToken(RotateAgentAuthTokenCommandArgs),
     #[command(about = "Revoke an existing agent key and invalidate its bearer token")]
@@ -426,6 +471,27 @@ struct BootstrapOutput {
 struct ExportVaultPrivateKeyOutput {
     vault_key_id: String,
     vault_private_key: String,
+}
+
+#[derive(Debug, Serialize)]
+struct RailgunPublicKeyOutput {
+    #[serde(rename = "railgunAddress")]
+    railgun_address: String,
+    /// X25519 viewing public key (32-byte hex). Populated only when the
+    /// caller passes `--include-keys`; sidecar uses this to trial-decrypt
+    /// incoming commitments during balance scans.
+    #[serde(rename = "viewingPubkeyHex", skip_serializing_if = "Option::is_none")]
+    viewing_pubkey_hex: Option<String>,
+    /// Baby Jubjub spending master pubkey (32-byte hex). Populated only
+    /// when the caller passes `--include-keys`; sidecar uses this to pin
+    /// the spend authority field element in zk witnesses.
+    #[serde(rename = "masterPubkeyHex", skip_serializing_if = "Option::is_none")]
+    master_pubkey_hex: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RailgunPublicKeyErrorOutput {
+    error: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -707,7 +773,7 @@ pub(crate) struct TokenManualApprovalPolicyConfig {
     max_amount_wei: u128,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct BootstrapParams {
     per_tx_max_wei: u128,
     daily_max_wei: u128,
@@ -734,7 +800,7 @@ pub(crate) struct BootstrapParams {
     existing_agent_key_id: Option<Uuid>,
     existing_vault_key_id: Option<Uuid>,
     existing_vault_public_key: Option<String>,
-    import_vault_private_key: Option<String>,
+    import_vault_private_key: Option<zeroize::Zeroizing<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -751,6 +817,12 @@ struct RevokeAgentKeyParams {
 #[derive(Debug, Clone)]
 struct ExportVaultPrivateKeyParams {
     vault_key_id: Uuid,
+}
+
+#[derive(Debug, Clone)]
+struct RailgunPublicKeyParams {
+    vault_key_id: Uuid,
+    include_keys: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -801,6 +873,12 @@ async fn main() -> Result<()> {
     let output_format = resolve_output_format(cli.format, cli.json)?;
     let output_target = resolve_output_target(cli.output, cli.overwrite)?;
     let daemon_socket = resolve_daemon_socket_path(cli.daemon_socket)?;
+    ensure_manual_approval_decision_can_confirm(
+        &cli.command,
+        cli.vault_password_stdin,
+        cli.non_interactive,
+        std::io::IsTerminal::is_terminal(&std::io::stdin()),
+    )?;
     let mut vault_password = resolve_vault_password(cli.vault_password_stdin, cli.non_interactive)?;
 
     let socket_client = Arc::new(UnixDaemonClient::new_with_expected_server_euid(
@@ -832,13 +910,18 @@ async fn main() -> Result<()> {
                 existing_vault_key_id,
                 existing_vault_public_key,
                 import_vault_private_key_file,
+                import_vault_private_key_fd,
                 print_agent_auth_token,
                 print_vault_private_key,
             } = *args;
-            let import_vault_private_key = import_vault_private_key_file
-                .as_ref()
-                .map(|path| read_secret_from_file(path, "imported vault private key"))
-                .transpose()?;
+            let import_vault_private_key =
+                match (import_vault_private_key_fd, import_vault_private_key_file) {
+                    (Some(fd), _) => Some(read_secret_from_fd(fd, "imported vault private key")?),
+                    (None, Some(path)) => {
+                        Some(read_secret_from_file(&path, "imported vault private key")?)
+                    }
+                    (None, None) => None,
+                };
             let params = if from_shared_config {
                 let shared_config = shared_config::LoadedConfig::load_default()?;
                 build_shared_config_bootstrap_params(
@@ -852,6 +935,13 @@ async fn main() -> Result<()> {
                     import_vault_private_key,
                 )?
             } else {
+                let existing_agent_key_id =
+                    if existing_vault_key_id.is_some() || existing_vault_public_key.is_some() {
+                        let shared_config = shared_config::LoadedConfig::load_default()?;
+                        tui::resolve_shared_config_agent_key_id(&shared_config.config)?
+                    } else {
+                        None
+                    };
                 BootstrapParams {
                     per_tx_max_wei,
                     daily_max_wei,
@@ -875,7 +965,7 @@ async fn main() -> Result<()> {
                     attach_policy_ids: attach_policy_id,
                     print_agent_auth_token,
                     print_vault_private_key,
-                    existing_agent_key_id: None,
+                    existing_agent_key_id,
                     existing_vault_key_id,
                     existing_vault_public_key,
                     import_vault_private_key,
@@ -905,6 +995,33 @@ async fn main() -> Result<()> {
             .await?;
             print_status("vault private key exported", output_format, cli.quiet);
             print_export_vault_private_key_output(&output, output_format, &output_target)
+        }
+        Commands::RailgunPublicKey(args) => {
+            let params = RailgunPublicKeyParams {
+                vault_key_id: args.vault_key_id,
+                include_keys: args.include_keys,
+            };
+            match execute_railgun_public_key(
+                daemon_api.clone(),
+                &vault_password,
+                params,
+                |message| print_status(message, output_format, cli.quiet),
+            )
+            .await?
+            {
+                Ok(output) => {
+                    print_status("railgun public key derived", output_format, cli.quiet);
+                    print_railgun_public_key_output(&output, output_format, &output_target)
+                }
+                Err(error_output) => {
+                    print_railgun_public_key_error_output(
+                        &error_output,
+                        output_format,
+                        &output_target,
+                    )?;
+                    std::process::exit(1);
+                }
+            }
         }
         Commands::RotateAgentAuthToken(args) => {
             let params = RotateAgentAuthTokenParams {
@@ -989,6 +1106,15 @@ async fn main() -> Result<()> {
             print_manual_approval_requests_output(&output, output_format, &output_target)
         }
         Commands::ApproveManualApprovalRequest(args) => {
+            confirm_manual_approval_decision(
+                daemon_api.clone(),
+                &vault_password,
+                args.approval_request_id,
+                ManualApprovalDecision::Approve,
+                args.yes,
+                cli.quiet,
+            )
+            .await?;
             let output = execute_decide_manual_approval_request(
                 daemon_api.clone(),
                 &vault_password,
@@ -1004,6 +1130,15 @@ async fn main() -> Result<()> {
             print_manual_approval_request_output(&output, output_format, &output_target)
         }
         Commands::RejectManualApprovalRequest(args) => {
+            confirm_manual_approval_decision(
+                daemon_api.clone(),
+                &vault_password,
+                args.approval_request_id,
+                ManualApprovalDecision::Reject,
+                args.yes,
+                cli.quiet,
+            )
+            .await?;
             let output = execute_decide_manual_approval_request(
                 daemon_api.clone(),
                 &vault_password,
@@ -1045,12 +1180,20 @@ async fn main() -> Result<()> {
             })
             .await?;
             let shared_config = shared_config::LoadedConfig::load_default()?;
+            // Bundles attached to the wallet before each apply; anything the apply replaced is
+            // disabled so stale limits never linger as enabled policies.
+            let mut previous_attached_policy_ids = shared_config
+                .config
+                .wallet
+                .as_ref()
+                .map(|wallet| wallet.attached_policy_ids.clone())
+                .unwrap_or_default();
             if let Some(output) = tui::run_bootstrap_tui(
                 &shared_config.config,
                 args.print_agent_auth_token,
                 |params, on_status| {
                     let mut status_error = None;
-                    tokio::task::block_in_place(|| {
+                    let output = tokio::task::block_in_place(|| {
                         tokio::runtime::Handle::current().block_on(execute_bootstrap(
                             daemon_api.clone(),
                             &vault_password,
@@ -1063,10 +1206,28 @@ async fn main() -> Result<()> {
                             },
                         ))
                     })
-                    .and_then(|output| match status_error {
+                    .and_then(|output| match status_error.take() {
                         Some(err) => Err(err),
                         None => Ok(output),
-                    })
+                    })?;
+                    tokio::task::block_in_place(|| {
+                        tokio::runtime::Handle::current().block_on(disable_superseded_policies(
+                            daemon_api.clone(),
+                            &vault_password,
+                            &previous_attached_policy_ids,
+                            &output.attached_policy_ids,
+                            |message| {
+                                if status_error.is_none() {
+                                    status_error = on_status(message).err();
+                                }
+                            },
+                        ))
+                    })?;
+                    previous_attached_policy_ids = output.attached_policy_ids.clone();
+                    match status_error {
+                        Some(err) => Err(err),
+                        None => Ok(output),
+                    }
                 },
             )? {
                 print_status("bootstrap complete", output_format, cli.quiet);
@@ -1080,6 +1241,51 @@ async fn main() -> Result<()> {
     };
 
     vault_password.zeroize();
+    result
+}
+
+/// Disables policies that were attached to the wallet before a re-apply but are no longer part
+/// of the new attachment. Policies that no longer exist are skipped.
+async fn disable_superseded_policies(
+    daemon: Arc<dyn KeyManagerDaemonApi>,
+    vault_password: &str,
+    previous_policy_ids: &[String],
+    current_policy_ids: &[String],
+    mut on_status: impl FnMut(&str),
+) -> Result<Vec<Uuid>> {
+    let current = current_policy_ids
+        .iter()
+        .filter_map(|value| Uuid::parse_str(value.trim()).ok())
+        .collect::<BTreeSet<_>>();
+    let superseded = previous_policy_ids
+        .iter()
+        .filter_map(|value| Uuid::parse_str(value.trim()).ok())
+        .filter(|policy_id| !current.contains(policy_id))
+        .collect::<BTreeSet<_>>();
+    if superseded.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    on_status("disabling superseded policies");
+    let lease = daemon.issue_lease(vault_password).await?;
+    let mut session = AdminSession {
+        vault_password: zeroize::Zeroizing::new(vault_password.to_string()),
+        lease,
+    };
+    let result = async {
+        let mut disabled = Vec::new();
+        for policy_id in superseded {
+            match daemon.disable_policy(&session, policy_id).await {
+                Ok(()) => disabled.push(policy_id),
+                Err(DaemonError::UnknownPolicy(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(disabled)
+    }
+    .await;
+
+    session.vault_password.zeroize();
     result
 }
 
@@ -1122,7 +1328,7 @@ async fn execute_bootstrap(
     on_status("issuing admin lease");
     let lease = daemon.issue_lease(vault_password).await?;
     let mut session = AdminSession {
-        vault_password: vault_password.to_string(),
+        vault_password: zeroize::Zeroizing::new(vault_password.to_string()),
         lease: lease.clone(),
     };
     let result = async {
@@ -1358,7 +1564,7 @@ async fn execute_per_token_bootstrap(
     on_status("issuing admin lease");
     let lease = daemon.issue_lease(vault_password).await?;
     let mut session = AdminSession {
-        vault_password: vault_password.to_string(),
+        vault_password: zeroize::Zeroizing::new(vault_password.to_string()),
         lease: lease.clone(),
     };
 
@@ -1520,7 +1726,7 @@ async fn execute_per_token_bootstrap(
             && token_manual_approval_policies.is_empty()
         {
             policy_note.push_str(
-                "; shared-config bootstrap created no token policies, so the agent remains unrestricted until policies are added",
+                "; shared-config bootstrap created no token policies, so the agent cannot sign anything until policies are added",
             );
         }
 
@@ -1746,7 +1952,7 @@ fn build_shared_config_bootstrap_params(
     attach_bootstrap_policies: bool,
     existing_vault_key_id: Option<Uuid>,
     existing_vault_public_key: Option<String>,
-    import_vault_private_key: Option<String>,
+    import_vault_private_key: Option<zeroize::Zeroizing<String>>,
 ) -> Result<BootstrapParams> {
     let reuse_existing_wallet =
         existing_vault_key_id.is_some() || existing_vault_public_key.is_some();
@@ -1780,21 +1986,16 @@ async fn resolve_bootstrap_vault_material(
     &'static str,
 )> {
     let wallet_key_algorithm = KeyAlgorithm::Secp256k1;
-    if let Some(mut private_key_hex) = params.import_vault_private_key.take() {
+    if let Some(private_key_hex) = params.import_vault_private_key.take() {
         if params.existing_vault_key_id.is_some() || params.existing_vault_public_key.is_some() {
-            private_key_hex.zeroize();
+            drop(private_key_hex);
             bail!("imported private key conflicts with existing wallet reuse metadata");
         }
 
+        // Moved into the request so the only copy is zeroized when the request is dropped.
         let vault_key = daemon
-            .create_vault_key(
-                session,
-                KeyCreateRequest::Import {
-                    private_key_hex: private_key_hex.clone(),
-                },
-            )
+            .create_vault_key(session, KeyCreateRequest::Import { private_key_hex })
             .await?;
-        private_key_hex.zeroize();
         let solana_public_key = daemon.solana_public_key_hex(session, vault_key.id).await?;
         policy_note.push_str("; restored the wallet from an imported private key");
         return Ok((
@@ -1862,7 +2063,7 @@ async fn execute_export_vault_private_key(
     on_status("issuing admin lease");
     let lease = daemon.issue_lease(vault_password).await?;
     let mut session = AdminSession {
-        vault_password: vault_password.to_string(),
+        vault_password: zeroize::Zeroizing::new(vault_password.to_string()),
         lease,
     };
 
@@ -1881,6 +2082,70 @@ async fn execute_export_vault_private_key(
             vault_key_id: params.vault_key_id.to_string(),
             vault_private_key,
         })
+    }
+    .await;
+
+    session.vault_password.zeroize();
+    result
+}
+
+/// Executes the Railgun shielded-address derivation request against the
+/// daemon. Returns `Ok(Ok(_))` on success and `Ok(Err(_))` when the daemon
+/// reported a structured failure that should be surfaced to the caller as
+/// JSON (so the TypeScript admin setup wrapper can detect "Track 2 Phase B
+/// pending" and degrade gracefully). Unexpected errors (transport, lease
+/// failures, unknown vault key) still propagate as `Err`.
+async fn execute_railgun_public_key(
+    daemon: Arc<dyn KeyManagerDaemonApi>,
+    vault_password: &str,
+    params: RailgunPublicKeyParams,
+    mut on_status: impl FnMut(&str),
+) -> Result<std::result::Result<RailgunPublicKeyOutput, RailgunPublicKeyErrorOutput>> {
+    on_status("issuing admin lease");
+    let lease = daemon.issue_lease(vault_password).await?;
+    let mut session = AdminSession {
+        vault_password: zeroize::Zeroizing::new(vault_password.to_string()),
+        lease,
+    };
+
+    let result = async {
+        on_status("deriving railgun public key");
+        let railgun_address = match daemon
+            .railgun_master_public_key(&session, params.vault_key_id)
+            .await
+        {
+            Ok(addr) => addr,
+            Err(DaemonError::Signer(err)) => {
+                return Ok(Err(RailgunPublicKeyErrorOutput {
+                    error: err.to_string(),
+                }));
+            }
+            Err(other) => return Err(anyhow::Error::from(other)),
+        };
+
+        let (viewing_pubkey_hex, master_pubkey_hex) = if params.include_keys {
+            on_status("deriving railgun viewing keys");
+            match daemon
+                .railgun_viewing_public_key(&session, params.vault_key_id)
+                .await
+            {
+                Ok(keys) => (Some(keys.viewing_pubkey_hex), Some(keys.master_pubkey_hex)),
+                Err(DaemonError::Signer(err)) => {
+                    return Ok(Err(RailgunPublicKeyErrorOutput {
+                        error: err.to_string(),
+                    }));
+                }
+                Err(other) => return Err(anyhow::Error::from(other)),
+            }
+        } else {
+            (None, None)
+        };
+
+        Ok(Ok(RailgunPublicKeyOutput {
+            railgun_address,
+            viewing_pubkey_hex,
+            master_pubkey_hex,
+        }))
     }
     .await;
 
@@ -2553,7 +2818,7 @@ async fn execute_rotate_agent_auth_token(
     on_status("issuing admin lease");
     let lease = daemon.issue_lease(vault_password).await?;
     let mut session = AdminSession {
-        vault_password: vault_password.to_string(),
+        vault_password: zeroize::Zeroizing::new(vault_password.to_string()),
         lease,
     };
 
@@ -2593,7 +2858,7 @@ async fn execute_revoke_agent_key(
     on_status("issuing admin lease");
     let lease = daemon.issue_lease(vault_password).await?;
     let mut session = AdminSession {
-        vault_password: vault_password.to_string(),
+        vault_password: zeroize::Zeroizing::new(vault_password.to_string()),
         lease,
     };
 
@@ -2626,7 +2891,7 @@ async fn execute_add_manual_approval_policy(
     on_status("issuing admin lease");
     let lease = daemon.issue_lease(vault_password).await?;
     let mut session = AdminSession {
-        vault_password: vault_password.to_string(),
+        vault_password: zeroize::Zeroizing::new(vault_password.to_string()),
         lease,
     };
 
@@ -2674,7 +2939,7 @@ async fn execute_add_eip712_signing_policy(
     on_status("issuing admin lease");
     let lease = daemon.issue_lease(vault_password).await?;
     let mut session = AdminSession {
-        vault_password: vault_password.to_string(),
+        vault_password: zeroize::Zeroizing::new(vault_password.to_string()),
         lease,
     };
 
@@ -2710,7 +2975,7 @@ async fn execute_list_manual_approval_requests(
     on_status("issuing admin lease");
     let lease = daemon.issue_lease(vault_password).await?;
     let mut session = AdminSession {
-        vault_password: vault_password.to_string(),
+        vault_password: zeroize::Zeroizing::new(vault_password.to_string()),
         lease,
     };
 
@@ -2733,7 +2998,7 @@ async fn execute_list_policies(
     on_status("issuing admin lease");
     let lease = daemon.issue_lease(vault_password).await?;
     let mut session = AdminSession {
-        vault_password: vault_password.to_string(),
+        vault_password: zeroize::Zeroizing::new(vault_password.to_string()),
         lease,
     };
 
@@ -2768,6 +3033,110 @@ async fn execute_list_policies(
     result
 }
 
+/// Refuses approve/reject before any secret is read when the decision could not be confirmed
+/// interactively and `--yes` was not passed.
+fn ensure_manual_approval_decision_can_confirm(
+    command: &Commands,
+    vault_password_stdin: bool,
+    non_interactive: bool,
+    stdin_is_terminal: bool,
+) -> Result<()> {
+    let (yes, verb) = match command {
+        Commands::ApproveManualApprovalRequest(args) => (args.yes, "approve"),
+        Commands::RejectManualApprovalRequest(args) => (args.yes, "reject"),
+        _ => return Ok(()),
+    };
+    if yes {
+        return Ok(());
+    }
+    if vault_password_stdin || non_interactive || !stdin_is_terminal {
+        bail!(
+            "refusing to {verb} a manual approval request without confirmation: stdin is not an interactive terminal; \
+             review the request with `list-manual-approval-requests` and rerun with --yes to {verb} non-interactively"
+        );
+    }
+    Ok(())
+}
+
+/// Fetches and shows the pending request, then requires an interactive `y` unless `--yes` was
+/// passed. With `--yes` the request is still shown on stderr unless `--quiet` is set.
+async fn confirm_manual_approval_decision(
+    daemon: Arc<dyn KeyManagerDaemonApi>,
+    vault_password: &str,
+    approval_request_id: Uuid,
+    decision: ManualApprovalDecision,
+    yes: bool,
+    quiet: bool,
+) -> Result<()> {
+    let requests = execute_list_manual_approval_requests(daemon, vault_password, |_| {}).await?;
+    let request = requests
+        .iter()
+        .find(|request| request.id == approval_request_id)
+        .with_context(|| format!("manual approval request {approval_request_id} was not found"))?;
+    if yes && quiet {
+        return Ok(());
+    }
+    let stderr = std::io::stderr();
+    let mut writer = stderr.lock();
+    if yes {
+        write_manual_approval_decision_summary(&mut writer, request, decision)?;
+        return Ok(());
+    }
+    let stdin = std::io::stdin();
+    let mut reader = stdin.lock();
+    if !prompt_manual_approval_decision(&mut reader, &mut writer, request, decision)? {
+        bail!("manual approval request {approval_request_id} was left unchanged");
+    }
+    Ok(())
+}
+
+fn manual_approval_decision_verb(decision: ManualApprovalDecision) -> &'static str {
+    match decision {
+        ManualApprovalDecision::Approve => "Approve",
+        ManualApprovalDecision::Reject => "Reject",
+    }
+}
+
+fn write_manual_approval_decision_summary(
+    writer: &mut impl std::io::Write,
+    request: &ManualApprovalRequest,
+    decision: ManualApprovalDecision,
+) -> Result<()> {
+    writeln!(
+        writer,
+        "{} manual approval request:\n{}",
+        manual_approval_decision_verb(decision),
+        render_manual_approval_request_text(request)
+    )
+    .context("failed to write manual approval request summary")
+}
+
+fn prompt_manual_approval_decision(
+    reader: &mut impl std::io::BufRead,
+    writer: &mut impl std::io::Write,
+    request: &ManualApprovalRequest,
+    decision: ManualApprovalDecision,
+) -> Result<bool> {
+    write_manual_approval_decision_summary(writer, request, decision)?;
+    write!(
+        writer,
+        "{} this request? [y/N] ",
+        manual_approval_decision_verb(decision)
+    )
+    .context("failed to write confirmation prompt")?;
+    writer
+        .flush()
+        .context("failed to flush confirmation prompt")?;
+    let mut answer = String::new();
+    reader
+        .read_line(&mut answer)
+        .context("failed to read confirmation answer")?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
 async fn execute_decide_manual_approval_request(
     daemon: Arc<dyn KeyManagerDaemonApi>,
     vault_password: &str,
@@ -2777,7 +3146,7 @@ async fn execute_decide_manual_approval_request(
     on_status("issuing admin lease");
     let lease = daemon.issue_lease(vault_password).await?;
     let mut session = AdminSession {
-        vault_password: vault_password.to_string(),
+        vault_password: zeroize::Zeroizing::new(vault_password.to_string()),
         lease,
     };
 
@@ -2822,7 +3191,7 @@ async fn execute_get_relay_config(
     on_status("issuing admin lease");
     let lease = daemon.issue_lease(vault_password).await?;
     let mut session = AdminSession {
-        vault_password: vault_password.to_string(),
+        vault_password: zeroize::Zeroizing::new(vault_password.to_string()),
         lease,
     };
 
@@ -3079,6 +3448,10 @@ fn describe_policy_type(policy_type: PolicyType) -> &'static str {
         PolicyType::PerChainMaxGasSpend => "per_chain_max_gas_spend",
         PolicyType::ManualApproval => "manual_approval",
         PolicyType::Eip712Signing => "eip712_signing",
+        PolicyType::PerTxMaxShieldAmount => "per_tx_max_shield_amount",
+        PolicyType::DailyMaxShieldAmount => "daily_max_shield_amount",
+        PolicyType::PerTxMaxUnshieldAmount => "per_tx_max_unshield_amount",
+        PolicyType::DailyMaxUnshieldAmount => "daily_max_unshield_amount",
     }
 }
 
@@ -3367,6 +3740,30 @@ fn print_export_vault_private_key_output(
     emit_output(&rendered, target)
 }
 
+fn print_railgun_public_key_output(
+    output: &RailgunPublicKeyOutput,
+    format: OutputFormat,
+    target: &OutputTarget,
+) -> Result<()> {
+    // Always serialize as JSON so the TypeScript admin setup wrapper can
+    // parse the response on both success and failure paths.
+    let _ = format;
+    let rendered =
+        serde_json::to_string(output).context("failed to serialize railgun public key output")?;
+    emit_output(&rendered, target)
+}
+
+fn print_railgun_public_key_error_output(
+    output: &RailgunPublicKeyErrorOutput,
+    format: OutputFormat,
+    target: &OutputTarget,
+) -> Result<()> {
+    let _ = format;
+    let rendered = serde_json::to_string(output)
+        .context("failed to serialize railgun public key error output")?;
+    emit_output(&rendered, target)
+}
+
 fn print_rotate_agent_auth_token_output(
     output: &RotateAgentAuthTokenOutput,
     format: OutputFormat,
@@ -3475,7 +3872,11 @@ fn render_policy_text(policy: &SpendingPolicy) -> String {
     match policy.policy_type {
         PolicyType::DailyMaxSpending
         | PolicyType::WeeklyMaxSpending
-        | PolicyType::PerTxMaxSpending => {
+        | PolicyType::PerTxMaxSpending
+        | PolicyType::PerTxMaxShieldAmount
+        | PolicyType::DailyMaxShieldAmount
+        | PolicyType::PerTxMaxUnshieldAmount
+        | PolicyType::DailyMaxUnshieldAmount => {
             lines.push(format!("Max Amount (wei): {}", policy.max_amount_wei));
         }
         PolicyType::ManualApproval => {
@@ -3754,6 +4155,8 @@ fn format_key_algorithm(algorithm: KeyAlgorithm) -> &'static str {
     match algorithm {
         KeyAlgorithm::Secp256k1 => "secp256k1",
         KeyAlgorithm::Ed25519 => "ed25519",
+        KeyAlgorithm::RailgunSpending => "railgun_spending",
+        KeyAlgorithm::RailgunViewing => "railgun_viewing",
     }
 }
 
@@ -3767,7 +4170,9 @@ fn single_scope<T: Ord>(value: T) -> EntityScope<T> {
 mod tests {
     use super::{
         build_asset_scope, build_network_scope, build_policy_bundle,
-        build_shared_config_bootstrap_params, describe_recipient_scope, ensure_output_parent,
+        build_shared_config_bootstrap_params, confirm_manual_approval_decision,
+        describe_recipient_scope, disable_superseded_policies,
+        ensure_manual_approval_decision_can_confirm, ensure_output_parent,
         execute_add_manual_approval_policy, execute_bootstrap,
         execute_decide_manual_approval_request, execute_export_vault_private_key,
         execute_get_relay_config, execute_list_manual_approval_requests, execute_list_policies,
@@ -3776,7 +4181,7 @@ mod tests {
         policy_bundle_priority_base, print_bootstrap_output, print_manual_approval_policy_output,
         print_manual_approval_request_output, print_manual_approval_requests_output,
         print_relay_config_output, print_revoke_agent_key_output,
-        print_rotate_agent_auth_token_output, render_policy_text,
+        print_rotate_agent_auth_token_output, prompt_manual_approval_decision, render_policy_text,
         resolve_bootstrap_policy_attachment, resolve_daemon_socket_path, resolve_output_format,
         resolve_output_target, should_print_status, single_scope,
         validate_existing_policy_attachments, validate_password, validate_policy_limits,
@@ -4002,7 +4407,7 @@ mod tests {
         let daemon = test_daemon();
         let lease = daemon.issue_lease("vault-password").await.expect("lease");
         let mut session = vault_domain::AdminSession {
-            vault_password: "vault-password".to_string(),
+            vault_password: zeroize::Zeroizing::new("vault-password".to_string()),
             lease,
         };
 
@@ -4151,6 +4556,45 @@ mod tests {
     }
 
     #[test]
+    fn resolve_shared_config_agent_key_id_prefers_wallet_profile_then_legacy_field() {
+        let wallet_agent = Uuid::parse_str("00000000-0000-0000-0000-000000000011").expect("uuid");
+        let legacy_agent = Uuid::parse_str("00000000-0000-0000-0000-000000000012").expect("uuid");
+        let mut config = WlfiConfig::default();
+        assert_eq!(
+            tui::resolve_shared_config_agent_key_id(&config).expect("empty"),
+            None
+        );
+
+        config.agent_key_id = Some(legacy_agent.to_string());
+        assert_eq!(
+            tui::resolve_shared_config_agent_key_id(&config).expect("legacy"),
+            Some(legacy_agent)
+        );
+
+        config.wallet = Some(WalletProfile {
+            vault_key_id: None,
+            vault_public_key: "03abcdef".to_string(),
+            address: None,
+            agent_key_id: Some(wallet_agent.to_string()),
+            policy_attachment: "all_policies".to_string(),
+            attached_policy_ids: Vec::new(),
+            policy_note: None,
+            network_scope: None,
+            asset_scope: None,
+            recipient_scope: None,
+            extra: Default::default(),
+        });
+        assert_eq!(
+            tui::resolve_shared_config_agent_key_id(&config).expect("wallet"),
+            Some(wallet_agent)
+        );
+
+        config.wallet.as_mut().expect("wallet").agent_key_id = Some("not-a-uuid".to_string());
+        let err = tui::resolve_shared_config_agent_key_id(&config).expect_err("invalid uuid");
+        assert!(err.to_string().contains("must be a valid UUID"));
+    }
+
+    #[test]
     fn shared_config_bootstrap_params_reuse_existing_agent_key_when_wallet_metadata_is_supplied() {
         let existing_agent_key_id =
             Uuid::parse_str("00000000-0000-0000-0000-000000000011").expect("agent key uuid");
@@ -4227,6 +4671,61 @@ mod tests {
             args.import_vault_private_key_file,
             Some(PathBuf::from("/tmp/wallet.key"))
         );
+    }
+
+    #[test]
+    fn bootstrap_command_accepts_import_vault_private_key_fd() {
+        let cli = Cli::try_parse_from([
+            "agentpay-admin",
+            "--daemon-socket",
+            "/tmp/agentpay.sock",
+            "bootstrap",
+            "--import-vault-private-key-fd",
+            "3",
+        ])
+        .expect("parse");
+
+        let Commands::Bootstrap(args) = cli.command else {
+            panic!("expected bootstrap command");
+        };
+        assert_eq!(args.import_vault_private_key_fd, Some(3));
+        assert_eq!(args.import_vault_private_key_file, None);
+    }
+
+    #[test]
+    fn bootstrap_command_rejects_standard_stream_import_vault_private_key_fd() {
+        for fd in ["0", "1", "2"] {
+            let err = Cli::try_parse_from([
+                "agentpay-admin",
+                "--daemon-socket",
+                "/tmp/agentpay.sock",
+                "bootstrap",
+                "--import-vault-private-key-fd",
+                fd,
+            ])
+            .expect_err("fd below 3 must be rejected");
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "fd {fd}"
+            );
+        }
+    }
+
+    #[test]
+    fn bootstrap_command_rejects_import_vault_private_key_fd_with_file() {
+        let err = Cli::try_parse_from([
+            "agentpay-admin",
+            "--daemon-socket",
+            "/tmp/agentpay.sock",
+            "bootstrap",
+            "--import-vault-private-key-fd",
+            "3",
+            "--import-vault-private-key-file",
+            "/tmp/wallet.key",
+        ])
+        .expect_err("fd and file must conflict");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
@@ -4484,7 +4983,7 @@ mod tests {
             .await
             .expect("issue lease");
         let session = AdminSession {
-            vault_password: "vault-password".to_string(),
+            vault_password: zeroize::Zeroizing::new("vault-password".to_string()),
             lease,
         };
         let vault_key = daemon
@@ -4514,7 +5013,7 @@ mod tests {
             .await
             .expect("issue lease");
         let session = AdminSession {
-            vault_password: "vault-password".to_string(),
+            vault_password: zeroize::Zeroizing::new("vault-password".to_string()),
             lease,
         };
         daemon
@@ -4698,9 +5197,12 @@ mod tests {
 
         assert_eq!(output.policy_attachment, "all_policies");
         assert!(output.attached_policy_ids.is_empty());
-        assert!(output.policy_note.contains("remains unrestricted"));
+        assert!(output
+            .policy_note
+            .contains("cannot sign anything until policies are added"));
 
-        daemon
+        // An empty enabled policy set never allows signing, even for `AllPolicies`.
+        let error = daemon
             .sign_for_agent(build_sign_request(
                 &output.agent_key_id,
                 &output.agent_auth_token,
@@ -4713,7 +5215,11 @@ mod tests {
                 },
             ))
             .await
-            .expect("unrestricted shared-config agent should sign without policy failures");
+            .expect_err("agent without any enabled policies must not sign");
+        assert!(
+            format!("{error:?}").contains("NoAttachedPolicies"),
+            "unexpected error: {error:?}"
+        );
     }
 
     #[tokio::test]
@@ -4729,7 +5235,7 @@ mod tests {
         let daemon_api: Arc<dyn KeyManagerDaemonApi> = daemon.clone();
         let lease = daemon.issue_lease("vault-password").await.expect("lease");
         let session = AdminSession {
-            vault_password: "vault-password".to_string(),
+            vault_password: zeroize::Zeroizing::new("vault-password".to_string()),
             lease,
         };
         daemon
@@ -5011,7 +5517,7 @@ mod tests {
         .expect("initial bootstrap");
 
         let session = AdminSession {
-            vault_password: "vault-password".to_string(),
+            vault_password: zeroize::Zeroizing::new("vault-password".to_string()),
             lease: daemon
                 .issue_lease("vault-password")
                 .await
@@ -5316,7 +5822,7 @@ mod tests {
 
         let lease = daemon.issue_lease("vault-password").await.expect("lease");
         let session = AdminSession {
-            vault_password: "vault-password".to_string(),
+            vault_password: zeroize::Zeroizing::new("vault-password".to_string()),
             lease,
         };
 
@@ -5567,7 +6073,7 @@ mod tests {
 
         let lease = daemon.issue_lease("vault-password").await.expect("lease");
         let session = AdminSession {
-            vault_password: "vault-password".to_string(),
+            vault_password: zeroize::Zeroizing::new("vault-password".to_string()),
             lease,
         };
 
@@ -5928,7 +6434,7 @@ mod tests {
         let daemon = test_daemon();
         let expected_private_key = "11".repeat(32);
         let mut params = test_bootstrap_params(true);
-        params.import_vault_private_key = Some(expected_private_key.clone());
+        params.import_vault_private_key = Some(expected_private_key.clone().into());
         let output = execute_bootstrap(
             daemon.clone(),
             "vault-password",
@@ -5944,7 +6450,7 @@ mod tests {
             .await
             .expect("issue lease");
         let mut session = AdminSession {
-            vault_password: "vault-password".to_string(),
+            vault_password: zeroize::Zeroizing::new("vault-password".to_string()),
             lease,
         };
         let exported = daemon
@@ -6108,7 +6614,7 @@ mod tests {
 
         let lease = daemon.issue_lease("vault-password").await.expect("lease");
         let mut session = vault_domain::AdminSession {
-            vault_password: "vault-password".to_string(),
+            vault_password: zeroize::Zeroizing::new("vault-password".to_string()),
             lease,
         };
         let policies = daemon.list_policies(&session).await.expect("list policies");
@@ -6212,7 +6718,7 @@ mod tests {
         let daemon = test_daemon();
         let lease = daemon.issue_lease("vault-password").await.expect("lease");
         let session = AdminSession {
-            vault_password: "vault-password".to_string(),
+            vault_password: zeroize::Zeroizing::new("vault-password".to_string()),
             lease,
         };
         let daily = SpendingPolicy::new(
@@ -6322,6 +6828,7 @@ mod tests {
             panic!("expected reject-manual-approval-request");
         };
         assert_eq!(args.rejection_reason.as_deref(), Some("too risky"));
+        assert!(!args.yes);
 
         let add_cli = Cli::try_parse_from([
             "agentpay-admin",
@@ -6468,6 +6975,177 @@ mod tests {
         );
 
         session.vault_password.zeroize();
+    }
+
+    #[test]
+    fn approve_and_reject_accept_yes_flag() {
+        for (subcommand, short) in [
+            ("approve-manual-approval-request", false),
+            ("reject-manual-approval-request", true),
+        ] {
+            let yes_flag = if short { "-y" } else { "--yes" };
+            let cli = Cli::try_parse_from([
+                "agentpay-admin",
+                "--daemon-socket",
+                "/tmp/agentpay.sock",
+                subcommand,
+                "--approval-request-id",
+                "00000000-0000-0000-0000-000000000123",
+                yes_flag,
+            ])
+            .expect("parse with --yes");
+            let yes = match cli.command {
+                Commands::ApproveManualApprovalRequest(args) => args.yes,
+                Commands::RejectManualApprovalRequest(args) => args.yes,
+                _ => panic!("unexpected command"),
+            };
+            assert!(yes, "{subcommand} {yes_flag} must set yes");
+        }
+    }
+
+    #[test]
+    fn manual_approval_decision_requires_tty_or_yes() {
+        let parse = |extra: &[&str]| {
+            let mut argv = vec![
+                "agentpay-admin",
+                "--daemon-socket",
+                "/tmp/agentpay.sock",
+                "approve-manual-approval-request",
+                "--approval-request-id",
+                "00000000-0000-0000-0000-000000000123",
+            ];
+            argv.extend_from_slice(extra);
+            Cli::try_parse_from(argv).expect("parse").command
+        };
+
+        let without_yes = parse(&[]);
+        let err = ensure_manual_approval_decision_can_confirm(&without_yes, false, false, false)
+            .expect_err("non-tty stdin without --yes must fail");
+        assert!(err.to_string().contains("--yes"));
+        ensure_manual_approval_decision_can_confirm(&without_yes, true, false, true)
+            .expect_err("stdin password consumes stdin, so confirmation needs --yes");
+        ensure_manual_approval_decision_can_confirm(&without_yes, false, true, true)
+            .expect_err("--non-interactive needs --yes");
+        ensure_manual_approval_decision_can_confirm(&without_yes, false, false, true)
+            .expect("interactive tty may prompt");
+
+        let with_yes = parse(&["--yes"]);
+        ensure_manual_approval_decision_can_confirm(&with_yes, true, true, false)
+            .expect("--yes allows non-interactive decisions");
+
+        ensure_manual_approval_decision_can_confirm(
+            &Commands::ListManualApprovalRequests,
+            false,
+            true,
+            false,
+        )
+        .expect("other commands are unaffected");
+    }
+
+    #[tokio::test]
+    async fn manual_approval_prompt_shows_request_and_requires_yes_answer() {
+        let daemon = test_daemon();
+        let (approval_request_id, mut session) = seed_manual_approval_request(daemon.clone()).await;
+        let requests =
+            execute_list_manual_approval_requests(daemon.clone(), "vault-password", |_| {})
+                .await
+                .expect("list requests");
+        let request = requests
+            .iter()
+            .find(|request| request.id == approval_request_id)
+            .expect("seeded request");
+
+        for (answer, expected) in [
+            ("y\n", true),
+            ("YES\n", true),
+            ("n\n", false),
+            ("\n", false),
+            ("", false),
+        ] {
+            let mut reader = std::io::Cursor::new(answer.as_bytes().to_vec());
+            let mut writer = Vec::new();
+            let confirmed = prompt_manual_approval_decision(
+                &mut reader,
+                &mut writer,
+                request,
+                ManualApprovalDecision::Approve,
+            )
+            .expect("prompt");
+            assert_eq!(confirmed, expected, "answer {answer:?}");
+            let shown = String::from_utf8(writer).expect("utf8");
+            assert!(shown.contains(&format!("Request ID: {approval_request_id}")));
+            assert!(shown.contains("Approve this request? [y/N]"));
+        }
+
+        let err = confirm_manual_approval_decision(
+            daemon.clone(),
+            "vault-password",
+            Uuid::new_v4(),
+            ManualApprovalDecision::Reject,
+            true,
+            true,
+        )
+        .await
+        .expect_err("unknown request id must fail before deciding");
+        assert!(err.to_string().contains("was not found"));
+
+        session.vault_password.zeroize();
+    }
+
+    #[tokio::test]
+    async fn disable_superseded_policies_disables_only_replaced_bundles() {
+        let daemon = test_daemon();
+        let initial = execute_bootstrap(
+            daemon.clone(),
+            "vault-password",
+            "daemon_socket:/tmp/agentpay.sock",
+            test_per_token_bootstrap_params(true),
+            |_| {},
+        )
+        .await
+        .expect("bootstrap");
+        assert!(initial.attached_policy_ids.len() >= 2);
+        let kept = initial.attached_policy_ids[0].clone();
+        let replaced = initial.attached_policy_ids[1..].to_vec();
+        let mut previous = initial.attached_policy_ids.clone();
+        previous.push(Uuid::new_v4().to_string());
+        previous.push("not-a-uuid".to_string());
+
+        let mut statuses = Vec::new();
+        let disabled = disable_superseded_policies(
+            daemon.clone(),
+            "vault-password",
+            &previous,
+            std::slice::from_ref(&kept),
+            |message| statuses.push(message.to_string()),
+        )
+        .await
+        .expect("disable superseded");
+        assert_eq!(disabled.len(), replaced.len());
+        assert_eq!(statuses, vec!["disabling superseded policies".to_string()]);
+
+        let policies = execute_list_policies(daemon.clone(), "vault-password", &[], |_| {})
+            .await
+            .expect("list policies");
+        for policy in &policies {
+            let id = policy.id.to_string();
+            if id == kept {
+                assert!(policy.enabled, "kept policy must stay enabled");
+            } else if replaced.contains(&id) {
+                assert!(!policy.enabled, "replaced policy {id} must be disabled");
+            }
+        }
+
+        let none = disable_superseded_policies(
+            daemon.clone(),
+            "vault-password",
+            std::slice::from_ref(&kept),
+            std::slice::from_ref(&kept),
+            |_| panic!("no status when nothing is superseded"),
+        )
+        .await
+        .expect("noop");
+        assert!(none.is_empty());
     }
 
     #[tokio::test]

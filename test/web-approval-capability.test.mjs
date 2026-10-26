@@ -151,3 +151,96 @@ test('parseApprovalCapabilitySyncMessage rejects malformed loaded sync payloads'
 
   assert.equal(message, null);
 });
+
+test('parseApprovalLinkFragment reads capability, daemon id, and daemon key from the fragment', async () => {
+  const capability = await loadModule('fragment-valid');
+  const parsed = capability.parseApprovalLinkFragment(
+    `#approvalCapability=${'AA'.repeat(32)}&daemonId=${'BB'.repeat(32)}&daemonKey=${'CC'.repeat(32)}`,
+  );
+
+  assert.equal(parsed.present, true);
+  assert.deepEqual(parsed.capability, { value: 'aa'.repeat(32), state: 'loaded', reason: null });
+  assert.equal(parsed.daemonId, 'bb'.repeat(32));
+  assert.equal(parsed.daemonKey, 'cc'.repeat(32));
+});
+
+test('parseApprovalLinkFragment treats a capability without a well-formed daemon key as invalid', async () => {
+  const capability = await loadModule('fragment-missing-key');
+  const missingKey = capability.parseApprovalLinkFragment(
+    `#approvalCapability=${'aa'.repeat(32)}&daemonId=${'bb'.repeat(32)}`,
+  );
+  const malformedKey = capability.parseApprovalLinkFragment(
+    `#approvalCapability=${'aa'.repeat(32)}&daemonId=${'bb'.repeat(32)}&daemonKey=zz`,
+  );
+
+  assert.equal(missingKey.capability.state, 'invalid');
+  assert.equal(missingKey.capability.value, null);
+  assert.equal(malformedKey.capability.state, 'invalid');
+});
+
+test('parseApprovalLinkFragment reports an empty fragment as absent', async () => {
+  const capability = await loadModule('fragment-empty');
+  const parsed = capability.parseApprovalLinkFragment('');
+
+  assert.equal(parsed.present, false);
+  assert.equal(parsed.capability.state, 'missing');
+});
+
+test('daemonKeysMatch compares hex keys case-insensitively and rejects malformed input', async () => {
+  const capability = await loadModule('daemon-key-match');
+
+  assert.equal(capability.daemonKeysMatch('AB'.repeat(32), 'ab'.repeat(32)), true);
+  assert.equal(capability.daemonKeysMatch('ab'.repeat(32), 'cd'.repeat(32)), false);
+  assert.equal(capability.daemonKeysMatch(null, 'ab'.repeat(32)), false);
+  assert.equal(capability.daemonKeysMatch('not-hex', 'not-hex'), false);
+});
+
+test('pinned daemon keys persist per approval and are cleared with the capability', async () => {
+  const capability = await loadModule('daemon-key-storage');
+  const storage = new Map();
+  const storageLike = {
+    getItem: (entryKey) => storage.get(entryKey) ?? null,
+    setItem: (entryKey, value) => storage.set(entryKey, value),
+    removeItem: (entryKey) => storage.delete(entryKey),
+  };
+
+  assert.equal(
+    capability.persistApprovalDaemonKey('approval-9', 'DD'.repeat(32), storageLike),
+    'dd'.repeat(32),
+  );
+  assert.equal(
+    capability.resolveStoredApprovalDaemonKey('approval-9', storageLike),
+    'dd'.repeat(32),
+  );
+
+  capability.clearApprovalCapability('approval-9', storageLike);
+  assert.equal(capability.resolveStoredApprovalDaemonKey('approval-9', storageLike), null);
+});
+
+test('capability sync messages carry a normalized daemon key and reject malformed ones', async () => {
+  const capability = await loadModule('sync-daemon-key');
+
+  assert.deepEqual(
+    capability.createApprovalCapabilitySyncMessage(
+      'approval-10',
+      'aa'.repeat(32),
+      'loaded',
+      'EE'.repeat(32),
+    ),
+    {
+      approvalId: 'approval-10',
+      capability: 'aa'.repeat(32),
+      daemonKey: 'ee'.repeat(32),
+      state: 'loaded',
+    },
+  );
+  assert.equal(
+    capability.parseApprovalCapabilitySyncMessage({
+      approvalId: 'approval-10',
+      capability: 'aa'.repeat(32),
+      daemonKey: 'nope',
+      state: 'loaded',
+    }),
+    null,
+  );
+});

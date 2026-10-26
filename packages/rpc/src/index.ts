@@ -1,9 +1,33 @@
+import { assertSafeRpcUrl } from '@worldlibertyfinancial/agent-config';
 import type { Address, Hex, TransactionReceipt } from 'viem';
 import * as viem from 'viem';
-import { assertSafeRpcUrl } from '../../config/src/index.js';
+
+export const DEFAULT_NATIVE_DECIMALS = 18;
+/**
+ * Broadcasts must never be replayed by the transport layer: viem's default
+ * `retryCount: 3` re-sends `eth_sendRawTransaction` after a timeout, which
+ * surfaces as spurious "already known" failures for a transaction that was
+ * actually accepted. The broadcast client therefore disables retries and uses
+ * an explicit, generous timeout instead.
+ */
+export const BROADCAST_RPC_TIMEOUT_MS = 30_000;
+export const BROADCAST_RPC_TRANSPORT_CONFIG = {
+  retryCount: 0,
+  timeout: BROADCAST_RPC_TIMEOUT_MS,
+} as const;
+
+const ALREADY_KNOWN_TRANSACTION_PATTERN =
+  /already known|already_exists|known transaction|transaction already imported|already in (?:the )?mempool/iu;
+const MAX_ERROR_CAUSE_DEPTH = 10;
+
+export interface RpcTransportConfig {
+  retryCount?: number;
+  timeout?: number;
+}
 
 export interface RpcClientOptions {
   rpcUrl: string;
+  transport?: RpcTransportConfig;
 }
 
 export interface RpcClientDeps {
@@ -46,12 +70,27 @@ export interface EstimateGasArgs {
   data?: Hex;
 }
 
+function assertNativeDecimals(value: number): number {
+  if (!Number.isInteger(value) || value < 0 || value > 255) {
+    throw new Error('native decimals must be an integer between 0 and 255');
+  }
+  return value;
+}
+
 export function createRpcClient(
   options: RpcClientOptions,
   deps: RpcClientDeps = DEFAULT_RPC_CLIENT_DEPS,
 ) {
   const rpcUrl = assertSafeRpcUrl(options.rpcUrl, 'rpcUrl');
-  return deps.createPublicClient({ transport: deps.http(rpcUrl) });
+  const transport = options.transport ? deps.http(rpcUrl, options.transport) : deps.http(rpcUrl);
+  return deps.createPublicClient({ transport });
+}
+
+export function createBroadcastRpcClient(
+  options: Omit<RpcClientOptions, 'transport'>,
+  deps: RpcClientDeps = DEFAULT_RPC_CLIENT_DEPS,
+) {
+  return createRpcClient({ ...options, transport: BROADCAST_RPC_TRANSPORT_CONFIG }, deps);
 }
 
 export async function getChainInfo(rpcUrl: string): Promise<ChainInfo> {
@@ -71,12 +110,17 @@ export async function getLatestBlockNumber(rpcUrl: string) {
   return client.getBlockNumber();
 }
 
-export async function getNativeBalance(rpcUrl: string, address: Address) {
+export async function getNativeBalance(
+  rpcUrl: string,
+  address: Address,
+  decimals: number = DEFAULT_NATIVE_DECIMALS,
+) {
+  const nativeDecimals = assertNativeDecimals(decimals);
   const client = createRpcClient({ rpcUrl });
   const balance = await client.getBalance({ address });
   return {
     raw: balance,
-    formatted: viem.formatUnits(balance, 18),
+    formatted: viem.formatUnits(balance, nativeDecimals),
   };
 }
 
@@ -249,10 +293,11 @@ export async function getNonce(rpcUrl: string, address: Address) {
 export async function getAccountSnapshot(
   rpcUrl: string,
   address: Address,
+  nativeDecimals: number = DEFAULT_NATIVE_DECIMALS,
 ): Promise<AccountSnapshot> {
   const [chain, balance, nonce] = await Promise.all([
     getChainInfo(rpcUrl),
-    getNativeBalance(rpcUrl, address),
+    getNativeBalance(rpcUrl, address, nativeDecimals),
     getNonce(rpcUrl, address),
   ]);
 
@@ -303,9 +348,47 @@ export async function getCodeAtAddress(rpcUrl: string, address: Address) {
   return client.getBytecode({ address });
 }
 
-export async function broadcastRawTransaction(rpcUrl: string, rawTransaction: Hex) {
-  const client = createRpcClient({ rpcUrl });
-  return client.sendRawTransaction({ serializedTransaction: rawTransaction });
+/**
+ * Detects node responses that mean "this exact signed transaction is already
+ * in the mempool". viem wraps RPC errors in a cause chain, so every level of
+ * `message`, `shortMessage`, and `details` is inspected.
+ */
+export function isAlreadyKnownTransactionError(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < MAX_ERROR_CAUSE_DEPTH && current; depth += 1) {
+    if (typeof current !== 'object') {
+      return false;
+    }
+    const candidate = current as {
+      cause?: unknown;
+      details?: unknown;
+      message?: unknown;
+      shortMessage?: unknown;
+    };
+    for (const text of [candidate.details, candidate.shortMessage, candidate.message]) {
+      if (typeof text === 'string' && ALREADY_KNOWN_TRANSACTION_PATTERN.test(text)) {
+        return true;
+      }
+    }
+    current = candidate.cause;
+  }
+  return false;
+}
+
+export function computeRawTransactionHash(rawTransaction: Hex): Hex {
+  return viem.keccak256(rawTransaction);
+}
+
+export async function broadcastRawTransaction(rpcUrl: string, rawTransaction: Hex): Promise<Hex> {
+  const client = createBroadcastRpcClient({ rpcUrl });
+  try {
+    return await client.sendRawTransaction({ serializedTransaction: rawTransaction });
+  } catch (error) {
+    if (isAlreadyKnownTransactionError(error)) {
+      return computeRawTransactionHash(rawTransaction);
+    }
+    throw error;
+  }
 }
 
 export const TRANSFER_EVENT = viem.parseAbiItem(

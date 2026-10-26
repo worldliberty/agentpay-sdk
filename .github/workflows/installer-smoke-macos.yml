@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Release tag to publish, for example v0.1.0
+        description: Release tag to publish, for example v0.5.0
         required: true
         type: string
   push:
@@ -17,14 +17,16 @@ concurrency:
 
 env:
   ONE_CLICK_RELEASE_REPO: ${{ github.repository }}
-  ONE_CLICK_RELEASE_TAG: one-click-latest
   ONE_CLICK_INSTALLER_ASSET: installer.sh
+  ONE_CLICK_CHECKSUMS_ASSET: SHA256SUMS
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   installer-smoke:
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -49,13 +51,14 @@ jobs:
     timeout-minutes: 60
     env:
       SMOKE_DIR: ${{ github.workspace }}/.agentpay-installer-smoke-${{ matrix.runner }}
+      BUNDLE_NAME: ${{ matrix.bundle_name }}
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '20'
 
@@ -66,7 +69,7 @@ jobs:
         run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-09)
         with:
           toolchain: 1.89.0
 
@@ -78,6 +81,8 @@ jobs:
       - name: Run installer unit tests
         if: ${{ matrix.run_unit_tests }}
         run: node --test test/setup-agentpay-script.test.mjs test/installer-smoke-script.test.mjs
+        env:
+          AGENTPAY_TELEMETRY: '0'
 
       - name: Build precompiled installer bundle
         run: |
@@ -86,15 +91,27 @@ jobs:
             -p agentpay-daemon \
             -p agentpay-admin \
             -p agentpay-agent
-          bundle_path="$RUNNER_TEMP/${{ matrix.bundle_name }}"
+          bundle_path="$RUNNER_TEMP/$BUNDLE_NAME"
           node scripts/build-installer-bundle.mjs --output "$bundle_path"
+          # One "<sha256>  <asset>" line per bundle; the release job merges these into SHA256SUMS.
+          node -e '
+            const fs = require("node:fs");
+            const crypto = require("node:crypto");
+            const [bundlePath, assetName, outputPath] = process.argv.slice(1);
+            const digest = crypto.createHash("sha256").update(fs.readFileSync(bundlePath)).digest("hex");
+            fs.writeFileSync(outputPath, `${digest}  ${assetName}\n`);
+            console.log(`${digest}  ${assetName}`);
+          ' "$bundle_path" "$BUNDLE_NAME" "$bundle_path.sha256"
           echo "BUNDLE_ARCHIVE=$bundle_path" >> "$GITHUB_ENV"
+          echo "BUNDLE_CHECKSUM=$bundle_path.sha256" >> "$GITHUB_ENV"
 
-      - name: Upload precompiled installer bundle
-        uses: actions/upload-artifact@v4
+      - name: Upload precompiled installer bundle and checksum
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.artifact_name }}
-          path: ${{ env.BUNDLE_ARCHIVE }}
+          path: |
+            ${{ env.BUNDLE_ARCHIVE }}
+            ${{ env.BUNDLE_CHECKSUM }}
           if-no-files-found: error
 
       - name: Run installer smoke
@@ -102,7 +119,7 @@ jobs:
 
       - name: Upload installer smoke logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ matrix.smoke_logs_name }}
           path: ${{ env.SMOKE_DIR }}/logs
@@ -116,55 +133,127 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+    env:
+      EVENT_NAME: ${{ github.event_name }}
+      RELEASE_TAG_INPUT: ${{ github.event.inputs.version }}
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Resolve release tag
         id: tag
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "tag=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            release_tag="$RELEASE_TAG_INPUT"
           else
-            echo "tag=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+            release_tag="$GITHUB_REF_NAME"
           fi
+          if ! printf '%s' "$release_tag" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$'; then
+            echo "Release tag must look like v0.5.0, got: $release_tag" >&2
+            exit 1
+          fi
+          echo "tag=$release_tag" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/download-artifact@v4
+      - name: Assert the release tag matches package.json and the Cargo workspace version
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const tag = process.env.RELEASE_TAG;
+            const expected = tag.replace(/^v/, "");
+            const packageVersion = JSON.parse(fs.readFileSync("package.json", "utf8")).version;
+            const cargoToml = fs.readFileSync("Cargo.toml", "utf8");
+            const workspacePackage = cargoToml.split(/^\[workspace\.package\]\s*$/m)[1]?.split(/^\[/m)[0] ?? "";
+            const cargoVersion = workspacePackage.match(/^version\s*=\s*"([^"]+)"/m)?.[1] ?? "<missing>";
+            const problems = [];
+            if (packageVersion !== expected) problems.push(`package.json version ${packageVersion} does not match release tag ${tag}`);
+            if (cargoVersion !== expected) problems.push(`Cargo [workspace.package] version ${cargoVersion} does not match release tag ${tag}`);
+            if (problems.length > 0) {
+              console.error(problems.join("\n"));
+              process.exit(1);
+            }
+            console.log(`release tag ${tag} matches package.json and Cargo workspace version ${expected}`);
+          '
+
+      - name: Download bundle artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: agentpay-installer-bundle-*
           path: bundles
           merge-multiple: true
 
-      - name: Prepare installer release assets
+      - name: Assemble and verify SHA256SUMS
         run: |
+          cd bundles
+          ls -la
+          cat ./*.sha256 | sort -k2 > "$ONE_CLICK_CHECKSUMS_ASSET"
+          rm -f ./*.sha256
+          echo "Published checksums:"
+          cat "$ONE_CLICK_CHECKSUMS_ASSET"
+          sha256sum --check --strict "$ONE_CLICK_CHECKSUMS_ASSET"
+
+      - name: Prepare installer release assets
+        env:
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          digest_for() {
+            awk -v name="$1" '$2 == name { print $1 }' "bundles/$ONE_CLICK_CHECKSUMS_ASSET"
+          }
+          export SHA_MACOS_ARM64="$(digest_for agentpay-sdk-macos-arm64.tar.gz)"
+          export SHA_MACOS_X64="$(digest_for agentpay-sdk-macos-x64.tar.gz)"
+          export SHA_LINUX_X64="$(digest_for agentpay-sdk-linux-x64.tar.gz)"
+          export SHA_LINUX_ARM64="$(digest_for agentpay-sdk-linux-arm64.tar.gz)"
+          for required in SHA_MACOS_ARM64 SHA_MACOS_X64 SHA_LINUX_X64; do
+            if [ -z "${!required}" ]; then
+              echo "Missing bundle digest for $required in $ONE_CLICK_CHECKSUMS_ASSET" >&2
+              exit 1
+            fi
+          done
+
           mkdir -p published-assets
-          release_tag="${{ steps.tag.outputs.tag }}"
-          perl -0pe "s#__AGENTPAY_PUBLIC_RELEASE_REPO__#${ONE_CLICK_RELEASE_REPO}#g; s#__AGENTPAY_PUBLIC_RELEASE_TAG__#${release_tag}#g" \
-            scripts/installer.sh > "published-assets/$ONE_CLICK_INSTALLER_ASSET"
+          perl -0pe '
+            s/__AGENTPAY_PUBLIC_RELEASE_REPO__/$ENV{ONE_CLICK_RELEASE_REPO}/g;
+            s/__AGENTPAY_PUBLIC_RELEASE_TAG__/$ENV{RELEASE_TAG}/g;
+            s/__AGENTPAY_PUBLIC_BUNDLE_SHA256_MACOS_ARM64__/$ENV{SHA_MACOS_ARM64}/g;
+            s/__AGENTPAY_PUBLIC_BUNDLE_SHA256_MACOS_X64__/$ENV{SHA_MACOS_X64}/g;
+            s/__AGENTPAY_PUBLIC_BUNDLE_SHA256_LINUX_X64__/$ENV{SHA_LINUX_X64}/g;
+            s/__AGENTPAY_PUBLIC_BUNDLE_SHA256_LINUX_ARM64__/$ENV{SHA_LINUX_ARM64}/g;
+          ' scripts/installer.sh > "published-assets/$ONE_CLICK_INSTALLER_ASSET"
           chmod 755 "published-assets/$ONE_CLICK_INSTALLER_ASSET"
+
+          if grep -q '__AGENTPAY_' "published-assets/$ONE_CLICK_INSTALLER_ASSET"; then
+            echo "Installer template still contains unresolved placeholders:" >&2
+            grep -n '__AGENTPAY_' "published-assets/$ONE_CLICK_INSTALLER_ASSET" >&2
+            exit 1
+          fi
+          bash -n "published-assets/$ONE_CLICK_INSTALLER_ASSET"
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
         run: |
           release_repo="$ONE_CLICK_RELEASE_REPO"
-          release_tag="${{ steps.tag.outputs.tag }}"
-          release_title="AgentPay SDK ${release_tag}"
-          release_notes="Precompiled AgentPay SDK bundles for ${release_tag}"
+          release_title="AgentPay SDK ${RELEASE_TAG}"
+          release_notes="Precompiled AgentPay SDK bundles for ${RELEASE_TAG}. Verify downloads against ${ONE_CLICK_CHECKSUMS_ASSET}."
 
-          if gh release view "$release_tag" --repo "$release_repo" >/dev/null 2>&1; then
-            gh release edit "$release_tag" --repo "$release_repo" \
+          if gh release view "$RELEASE_TAG" --repo "$release_repo" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --repo "$release_repo" \
               --title "$release_title" \
               --notes "$release_notes"
           else
-            gh release create "$release_tag" \
+            gh release create "$RELEASE_TAG" \
               --repo "$release_repo" \
               --title "$release_title" \
               --notes "$release_notes"
           fi
 
-          gh release upload "$release_tag" \
+          # No --clobber: release assets are immutable once published. Re-running against an
+          # existing release with assets fails on purpose instead of silently replacing them.
+          gh release upload "$RELEASE_TAG" \
             --repo "$release_repo" \
             bundles/*.tar.gz \
-            "published-assets/$ONE_CLICK_INSTALLER_ASSET" \
-            --clobber
+            "bundles/$ONE_CLICK_CHECKSUMS_ASSET" \
+            "published-assets/$ONE_CLICK_INSTALLER_ASSET"

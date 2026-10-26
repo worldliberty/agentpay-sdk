@@ -10,14 +10,23 @@ function resolveRustBinDir(config?: WlfiConfig): string {
   return path.resolve(config?.rustBinDir || defaultRustBinDir());
 }
 
+/**
+ * The checked-in `scripts/launchd` copies are only consulted when a developer opts in with
+ * `AGENTPAY_DEV_SCRIPTS=1`; installed CLIs must never execute helper scripts from the current
+ * working directory as root.
+ */
+export function developmentHelperScriptsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.AGENTPAY_DEV_SCRIPTS === '1';
+}
+
 export function resolveLaunchDaemonHelperScriptPath(
   scriptName: string,
   config?: WlfiConfig,
 ): string {
-  const candidates = [
-    path.join(resolveRustBinDir(config), scriptName),
-    path.resolve(process.cwd(), 'scripts/launchd', scriptName),
-  ];
+  const candidates = [path.join(resolveRustBinDir(config), scriptName)];
+  if (developmentHelperScriptsEnabled()) {
+    candidates.push(path.resolve(process.cwd(), 'scripts/launchd', scriptName));
+  }
 
   for (const candidate of candidates) {
     if (fs.existsSync(candidate)) {

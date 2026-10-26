@@ -4,30 +4,8 @@ where
     B: VaultSignerBackend,
 {
     async fn issue_lease(&self, vault_password: &str) -> Result<Lease, DaemonError> {
-        let _state_guard = self.state_persist_guard.lock().await;
-        let backup = self.backup_state_if_persistent()?;
-        self.authenticate_password(vault_password)?;
-        let now = OffsetDateTime::now_utc();
-        let expires_at = now.checked_add(self.config.lease_ttl).ok_or_else(|| {
-            DaemonError::InvalidConfig("lease_ttl causes timestamp overflow".to_string())
-        })?;
-        let lease = Lease {
-            lease_id: Uuid::new_v4(),
-            issued_at: now,
-            expires_at,
-        };
-        {
-            let mut leases = self.leases.write().map_err(|_| DaemonError::LockPoisoned)?;
-            // Retain only currently valid leases so corrupted/future-dated entries
-            // cannot permanently consume capacity.
-            leases.retain(|_, existing_lease| existing_lease.is_valid_at(now));
-            if leases.len() >= self.config.max_active_leases {
-                return Err(DaemonError::TooManyActiveLeases);
-            }
-            leases.insert(lease.lease_id, lease.clone());
-        }
-        self.persist_or_revert(backup)?;
-        Ok(lease)
+        self.issue_lease_with_source(vault_password, AdminAuthSource::Local)
+            .await
     }
 
     async fn add_policy(
@@ -38,7 +16,7 @@ where
         let _state_guard = self.state_persist_guard.lock().await;
         let backup = self.backup_state_if_persistent()?;
         let now = OffsetDateTime::now_utc();
-        self.authenticate(session, now)?;
+        self.authenticate(session, now).await?;
         validate_policy(&policy)?;
         self.prune_manual_approval_requests(now)?;
         if policy.policy_type != vault_domain::PolicyType::ManualApproval
@@ -80,7 +58,8 @@ where
         &self,
         session: &AdminSession,
     ) -> Result<Vec<SpendingPolicy>, DaemonError> {
-        self.authenticate(session, OffsetDateTime::now_utc())?;
+        self.authenticate(session, OffsetDateTime::now_utc())
+            .await?;
         let mut policies: Vec<SpendingPolicy> = self
             .policies
             .read()
@@ -96,7 +75,8 @@ where
         &self,
         session: &AdminSession,
     ) -> Result<Vec<PolicySummary>, DaemonError> {
-        self.authenticate(session, OffsetDateTime::now_utc())?;
+        self.authenticate(session, OffsetDateTime::now_utc())
+            .await?;
         let mut summaries: Vec<(u32, PolicySummary)> = self
             .policies
             .read()
@@ -130,7 +110,8 @@ where
     ) -> Result<(), DaemonError> {
         let _state_guard = self.state_persist_guard.lock().await;
         let backup = self.backup_state_if_persistent()?;
-        self.authenticate(session, OffsetDateTime::now_utc())?;
+        self.authenticate(session, OffsetDateTime::now_utc())
+            .await?;
         {
             let mut policies = self
                 .policies
@@ -164,7 +145,8 @@ where
     ) -> Result<VaultKey, DaemonError> {
         let _state_guard = self.state_persist_guard.lock().await;
         let backup = self.backup_state_if_persistent()?;
-        self.authenticate(session, OffsetDateTime::now_utc())?;
+        self.authenticate(session, OffsetDateTime::now_utc())
+            .await?;
 
         let vault_key = self.signer_backend.create_vault_key(request).await?;
         if let Err(err) = self
@@ -175,7 +157,10 @@ where
                 vault_keys.insert(vault_key.id, vault_key.clone());
             })
         {
-            if let Err(cleanup_err) = self.signer_backend.delete_vault_key_if_present(vault_key.id) {
+            if let Err(cleanup_err) = self
+                .signer_backend
+                .delete_vault_key_if_present(vault_key.id)
+            {
                 return Err(DaemonError::Signer(SignerError::Internal(format!(
                     "create_vault_key cleanup failed after error `{err}`: {cleanup_err}"
                 ))));
@@ -183,7 +168,10 @@ where
             return Err(err);
         }
         if let Err(err) = self.persist_or_revert(backup) {
-            if let Err(cleanup_err) = self.signer_backend.delete_vault_key_if_present(vault_key.id) {
+            if let Err(cleanup_err) = self
+                .signer_backend
+                .delete_vault_key_if_present(vault_key.id)
+            {
                 return Err(DaemonError::Signer(SignerError::Internal(format!(
                     "create_vault_key cleanup failed after error `{err}`: {cleanup_err}"
                 ))));
@@ -198,7 +186,8 @@ where
         session: &AdminSession,
         vault_key_id: Uuid,
     ) -> Result<Option<String>, DaemonError> {
-        self.authenticate(session, OffsetDateTime::now_utc())?;
+        self.authenticate(session, OffsetDateTime::now_utc())
+            .await?;
 
         if !self
             .vault_keys
@@ -226,7 +215,8 @@ where
         session: &AdminSession,
         vault_key_id: Uuid,
     ) -> Result<String, DaemonError> {
-        self.authenticate(session, OffsetDateTime::now_utc())?;
+        self.authenticate(session, OffsetDateTime::now_utc())
+            .await?;
 
         if !self
             .vault_keys
@@ -242,6 +232,52 @@ where
             .map_err(DaemonError::Signer)
     }
 
+    async fn railgun_master_public_key(
+        &self,
+        session: &AdminSession,
+        vault_key_id: Uuid,
+    ) -> Result<String, DaemonError> {
+        self.authenticate(session, OffsetDateTime::now_utc())
+            .await?;
+
+        if !self
+            .vault_keys
+            .read()
+            .map_err(|_| DaemonError::LockPoisoned)?
+            .contains_key(&vault_key_id)
+        {
+            return Err(DaemonError::UnknownVaultKey(vault_key_id));
+        }
+
+        self.signer_backend
+            .railgun_master_public_key(vault_key_id)
+            .await
+            .map_err(DaemonError::Signer)
+    }
+
+    async fn railgun_viewing_public_key(
+        &self,
+        session: &AdminSession,
+        vault_key_id: Uuid,
+    ) -> Result<vault_domain::RailgunViewingPublicKeys, DaemonError> {
+        self.authenticate(session, OffsetDateTime::now_utc())
+            .await?;
+
+        if !self
+            .vault_keys
+            .read()
+            .map_err(|_| DaemonError::LockPoisoned)?
+            .contains_key(&vault_key_id)
+        {
+            return Err(DaemonError::UnknownVaultKey(vault_key_id));
+        }
+
+        self.signer_backend
+            .railgun_viewing_public_key(vault_key_id)
+            .await
+            .map_err(DaemonError::Signer)
+    }
+
     async fn create_agent_key(
         &self,
         session: &AdminSession,
@@ -251,7 +287,7 @@ where
         let _state_guard = self.state_persist_guard.lock().await;
         let backup = self.backup_state_if_persistent()?;
         let now = OffsetDateTime::now_utc();
-        self.authenticate(session, now)?;
+        self.authenticate(session, now).await?;
 
         if !self
             .vault_keys
@@ -296,7 +332,8 @@ where
         vault_key_id: Uuid,
         attachment: PolicyAttachment,
     ) -> Result<AgentCredentials, DaemonError> {
-        self.authenticate(session, OffsetDateTime::now_utc())?;
+        self.authenticate(session, OffsetDateTime::now_utc())
+            .await?;
         let _signing_guard = self.signing_guard.lock().await;
         let _state_guard = self.state_persist_guard.lock().await;
         let backup = self.backup_state_if_persistent()?;
@@ -338,7 +375,8 @@ where
         session: &AdminSession,
         agent_key_id: Uuid,
     ) -> Result<String, DaemonError> {
-        self.authenticate(session, OffsetDateTime::now_utc())?;
+        self.authenticate(session, OffsetDateTime::now_utc())
+            .await?;
         let _signing_guard = self.signing_guard.lock().await;
         let _state_guard = self.state_persist_guard.lock().await;
         let backup = self.backup_state_if_persistent()?;
@@ -366,7 +404,8 @@ where
         session: &AdminSession,
         agent_key_id: Uuid,
     ) -> Result<(), DaemonError> {
-        self.authenticate(session, OffsetDateTime::now_utc())?;
+        self.authenticate(session, OffsetDateTime::now_utc())
+            .await?;
         let _signing_guard = self.signing_guard.lock().await;
         let _state_guard = self.state_persist_guard.lock().await;
         let backup = self.backup_state_if_persistent()?;
@@ -414,6 +453,10 @@ where
             .write()
             .map_err(|_| DaemonError::LockPoisoned)?
             .retain(|_, result| result.agent_key_id != agent_key_id);
+        self.tempo_channels
+            .write()
+            .map_err(|_| DaemonError::LockPoisoned)?
+            .retain(|_, record| record.agent_key_id != agent_key_id);
         self.prune_manual_approval_requests(now)?;
         self.persist_or_revert(backup)?;
         Ok(())
@@ -424,7 +467,7 @@ where
         session: &AdminSession,
     ) -> Result<Vec<ManualApprovalRequest>, DaemonError> {
         let now = OffsetDateTime::now_utc();
-        self.authenticate(session, now)?;
+        self.authenticate(session, now).await?;
         let mut requests = self.retained_manual_approval_requests_at(now)?;
         requests.sort_by(|left, right| right.created_at.cmp(&left.created_at));
         Ok(requests)
@@ -437,92 +480,14 @@ where
         decision: ManualApprovalDecision,
         rejection_reason: Option<String>,
     ) -> Result<ManualApprovalRequest, DaemonError> {
-        self.authenticate(session, OffsetDateTime::now_utc())?;
-        let _state_guard = self.state_persist_guard.lock().await;
-        let backup = self.backup_state_if_persistent()?;
-        let now = OffsetDateTime::now_utc();
-        let manual_approval_cutoffs = self.manual_approval_retention_cutoffs(now)?;
-
-        let triggered_by_policy_ids = {
-            let requests = self
-                .manual_approval_requests
-                .read()
-                .map_err(|_| DaemonError::LockPoisoned)?;
-            let request = requests.get(&approval_request_id).ok_or(
-                DaemonError::UnknownManualApprovalRequest(approval_request_id),
-            )?;
-            if request.status != ManualApprovalStatus::Pending {
-                return Err(DaemonError::ManualApprovalRequestNotPending {
-                    approval_request_id,
-                    status: request.status,
-                });
-            }
-            request.triggered_by_policy_ids.clone()
-        };
-        if matches!(decision, ManualApprovalDecision::Approve) {
-            let policies = self
-                .policies
-                .read()
-                .map_err(|_| DaemonError::LockPoisoned)?;
-            if let Err(err) = validate_manual_approval_policy_references(
-                &policies,
-                &triggered_by_policy_ids,
-                true,
-            ) {
-                return Err(manual_approval_policy_reference_decision_error(
-                    approval_request_id,
-                    err,
-                ));
-            }
-        }
-
-        let updated = {
-            let mut requests = self
-                .manual_approval_requests
-                .write()
-                .map_err(|_| DaemonError::LockPoisoned)?;
-            let Some(request) = requests.get_mut(&approval_request_id) else {
-                return Err(DaemonError::UnknownManualApprovalRequest(
-                    approval_request_id,
-                ));
-            };
-            if !Self::manual_approval_request_retained_with_cutoffs(
-                request,
-                &manual_approval_cutoffs,
-            ) {
-                requests.remove(&approval_request_id);
-                drop(requests);
-                self.persist_or_revert(backup)?;
-                return Err(DaemonError::UnknownManualApprovalRequest(
-                    approval_request_id,
-                ));
-            }
-            if request.status != ManualApprovalStatus::Pending {
-                return Err(DaemonError::ManualApprovalRequestNotPending {
-                    approval_request_id,
-                    status: request.status,
-                });
-            }
-            request.updated_at = now;
-            match decision {
-                ManualApprovalDecision::Approve => {
-                    request.status = ManualApprovalStatus::Approved;
-                    request.rejection_reason = None;
-                }
-                ManualApprovalDecision::Reject => {
-                    request.status = ManualApprovalStatus::Rejected;
-                    request.rejection_reason = rejection_reason.and_then(|value| {
-                        let trimmed = value.trim().to_string();
-                        (!trimmed.is_empty()).then_some(trimmed)
-                    });
-                }
-            }
-            request.clone()
-        };
-
-        self.prune_manual_approval_requests(now)?;
-        self.persist_or_revert(backup)?;
-        Ok(updated)
+        self.decide_manual_approval_request_with_source(
+            session,
+            approval_request_id,
+            decision,
+            rejection_reason,
+            AdminAuthSource::Local,
+        )
+        .await
     }
 
     async fn set_relay_config(
@@ -531,7 +496,8 @@ where
         relay_url: Option<String>,
         frontend_url: Option<String>,
     ) -> Result<RelayConfig, DaemonError> {
-        self.authenticate(session, OffsetDateTime::now_utc())?;
+        self.authenticate(session, OffsetDateTime::now_utc())
+            .await?;
         let _state_guard = self.state_persist_guard.lock().await;
         let backup = self.backup_state_if_persistent()?;
 
@@ -556,7 +522,8 @@ where
     }
 
     async fn get_relay_config(&self, session: &AdminSession) -> Result<RelayConfig, DaemonError> {
-        self.authenticate(session, OffsetDateTime::now_utc())?;
+        self.authenticate(session, OffsetDateTime::now_utc())
+            .await?;
         Ok(self
             .relay_config
             .read()
@@ -613,6 +580,14 @@ where
             }
             let agent_key =
                 self.authenticate_agent(request.agent_key_id, &request.agent_auth_token)?;
+            // Reject huge skips before touching replay/nonce state: every skipped
+            // nonce below `min_nonce` would otherwise be materialized as a
+            // reusable gap, so an agent could force unbounded allocations.
+            self.ensure_nonce_skip_within_bounds(
+                agent_key.vault_key_id,
+                request.chain_id,
+                request.min_nonce,
+            )?;
             self.register_replay_id(request.request_id, request.expires_at, now)?;
             self.prune_nonce_reservations(now)?;
             if self
@@ -672,7 +647,10 @@ where
                     &mut nonce_heads,
                     agent_key.vault_key_id,
                     request.chain_id,
-                    0,
+                    // An untracked chain head (fresh daemon, restored wallet, or a
+                    // head reclaimed and pruned) starts at `min_nonce`, the caller's
+                    // view of the live on-chain nonce, without materializing gaps.
+                    request.min_nonce,
                 )?;
                 let chain_gaps = reusable_nonce_gaps
                     .entry(agent_key.vault_key_id)
@@ -700,7 +678,10 @@ where
                     &mut nonce_heads,
                     agent_key.vault_key_id,
                     request.chain_id,
-                    0,
+                    // An untracked chain head (fresh daemon, restored wallet, or a
+                    // head reclaimed and pruned) starts at `min_nonce`, the caller's
+                    // view of the live on-chain nonce, without materializing gaps.
+                    request.min_nonce,
                 )?;
                 let chain_gaps = reusable_nonce_gaps
                     .entry(agent_key.vault_key_id)
@@ -840,14 +821,14 @@ where
                                 &relay_private_key_hex,
                                 approval_request_id,
                             )
-                                .ok()
-                                .and_then(|approval_capability| {
-                                    manual_approval_frontend_url(
-                                        &relay_config,
-                                        approval_request_id,
-                                        &approval_capability,
-                                    )
-                                });
+                            .ok()
+                            .and_then(|approval_capability| {
+                                manual_approval_frontend_url(
+                                    &relay_config,
+                                    approval_request_id,
+                                    &approval_capability,
+                                )
+                            });
                             self.persist_or_revert(backup)?;
                             return Err(DaemonError::ManualApprovalRequired {
                                 approval_request_id,
@@ -890,14 +871,14 @@ where
                                 &relay_private_key_hex,
                                 approval_request_id,
                             )
-                                .ok()
-                                .and_then(|approval_capability| {
-                                    manual_approval_frontend_url(
-                                        &relay_config,
-                                        approval_request_id,
-                                        &approval_capability,
-                                    )
-                                });
+                            .ok()
+                            .and_then(|approval_capability| {
+                                manual_approval_frontend_url(
+                                    &relay_config,
+                                    approval_request_id,
+                                    &approval_capability,
+                                )
+                            });
                             self.persist_or_revert(backup)?;
                             return Err(DaemonError::ManualApprovalRequired {
                                 approval_request_id,
@@ -907,7 +888,10 @@ where
                         }
                     }
                 }
-                PolicyDecision::Deny(PolicyError::Eip712ManualApprovalRequired { policy_id, .. }) => {
+                PolicyDecision::Deny(PolicyError::Eip712ManualApprovalRequired {
+                    policy_id,
+                    ..
+                }) => {
                     ensure_action_supports_manual_approval(&payload_action)?;
                     let payload_hash = payload_hash_hex(&request.payload);
                     // Read the relay secret before creating or mutating approval state so a
@@ -939,14 +923,14 @@ where
                                 &relay_private_key_hex,
                                 approval_request_id,
                             )
-                                .ok()
-                                .and_then(|approval_capability| {
-                                    manual_approval_frontend_url(
-                                        &relay_config,
-                                        approval_request_id,
-                                        &approval_capability,
-                                    )
-                                });
+                            .ok()
+                            .and_then(|approval_capability| {
+                                manual_approval_frontend_url(
+                                    &relay_config,
+                                    approval_request_id,
+                                    &approval_capability,
+                                )
+                            });
                             self.persist_or_revert(backup)?;
                             return Err(DaemonError::ManualApprovalRequired {
                                 approval_request_id,
@@ -1043,6 +1027,8 @@ where
                 self.prune_manual_approval_requests(now)?;
             }
 
+            self.record_tempo_channel_deposit(request.agent_key_id, &payload_action, now)?;
+
             if payload_action.records_spend_event() {
                 let event = SpendEvent {
                     agent_key_id: request.agent_key_id,
@@ -1051,6 +1037,7 @@ where
                     recipient: payload_action.recipient(),
                     amount_wei: payload_action.amount_wei(),
                     at: now,
+                    action_kind: payload_action.action_kind(),
                 };
                 self.spend_log
                     .write()
@@ -1065,6 +1052,184 @@ where
         .await;
         request.zeroize_secrets();
         result
+    }
+}
+
+impl<B> InMemoryDaemon<B>
+where
+    B: VaultSignerBackend,
+{
+    /// Issues an admin lease after verifying the password against the lockout
+    /// state that belongs to `source`.
+    ///
+    /// Authentication runs before any state snapshot so unauthenticated callers
+    /// cannot trigger key-material exports or allocations.
+    async fn issue_lease_with_source(
+        &self,
+        vault_password: &str,
+        source: AdminAuthSource,
+    ) -> Result<Lease, DaemonError> {
+        let _state_guard = self.state_persist_guard.lock().await;
+        self.authenticate_password(vault_password, source).await?;
+        let backup = self.backup_state_if_persistent()?;
+        let now = OffsetDateTime::now_utc();
+        let expires_at = now.checked_add(self.config.lease_ttl).ok_or_else(|| {
+            DaemonError::InvalidConfig("lease_ttl causes timestamp overflow".to_string())
+        })?;
+        let lease = Lease {
+            lease_id: Uuid::new_v4(),
+            issued_at: now,
+            expires_at,
+        };
+        {
+            let mut leases = self.leases.write().map_err(|_| DaemonError::LockPoisoned)?;
+            // Retain only currently valid leases so corrupted/future-dated entries
+            // cannot permanently consume capacity.
+            leases.retain(|_, existing_lease| existing_lease.is_valid_at(now));
+            if leases.len() >= self.config.max_active_leases {
+                return Err(DaemonError::TooManyActiveLeases);
+            }
+            leases.insert(lease.lease_id, lease.clone());
+        }
+        self.persist_or_revert(backup)?;
+        Ok(lease)
+    }
+
+    async fn decide_manual_approval_request_with_source(
+        &self,
+        session: &AdminSession,
+        approval_request_id: Uuid,
+        decision: ManualApprovalDecision,
+        rejection_reason: Option<String>,
+        source: AdminAuthSource,
+    ) -> Result<ManualApprovalRequest, DaemonError> {
+        self.authenticate_with_source(session, OffsetDateTime::now_utc(), source)
+            .await?;
+        let _state_guard = self.state_persist_guard.lock().await;
+        let backup = self.backup_state_if_persistent()?;
+        let now = OffsetDateTime::now_utc();
+        let manual_approval_cutoffs = self.manual_approval_retention_cutoffs(now)?;
+
+        let triggered_by_policy_ids = {
+            let requests = self
+                .manual_approval_requests
+                .read()
+                .map_err(|_| DaemonError::LockPoisoned)?;
+            let request = requests.get(&approval_request_id).ok_or(
+                DaemonError::UnknownManualApprovalRequest(approval_request_id),
+            )?;
+            if request.status != ManualApprovalStatus::Pending {
+                return Err(DaemonError::ManualApprovalRequestNotPending {
+                    approval_request_id,
+                    status: request.status,
+                });
+            }
+            request.triggered_by_policy_ids.clone()
+        };
+        if matches!(decision, ManualApprovalDecision::Approve) {
+            let policies = self
+                .policies
+                .read()
+                .map_err(|_| DaemonError::LockPoisoned)?;
+            if let Err(err) = validate_manual_approval_policy_references(
+                &policies,
+                &triggered_by_policy_ids,
+                true,
+            ) {
+                return Err(manual_approval_policy_reference_decision_error(
+                    approval_request_id,
+                    err,
+                ));
+            }
+        }
+
+        let updated = {
+            let mut requests = self
+                .manual_approval_requests
+                .write()
+                .map_err(|_| DaemonError::LockPoisoned)?;
+            let Some(request) = requests.get_mut(&approval_request_id) else {
+                return Err(DaemonError::UnknownManualApprovalRequest(
+                    approval_request_id,
+                ));
+            };
+            if !Self::manual_approval_request_retained_with_cutoffs(
+                request,
+                &manual_approval_cutoffs,
+            ) {
+                requests.remove(&approval_request_id);
+                drop(requests);
+                self.persist_or_revert(backup)?;
+                return Err(DaemonError::UnknownManualApprovalRequest(
+                    approval_request_id,
+                ));
+            }
+            if request.status != ManualApprovalStatus::Pending {
+                return Err(DaemonError::ManualApprovalRequestNotPending {
+                    approval_request_id,
+                    status: request.status,
+                });
+            }
+            request.updated_at = now;
+            match decision {
+                ManualApprovalDecision::Approve => {
+                    request.status = ManualApprovalStatus::Approved;
+                    request.rejection_reason = None;
+                }
+                ManualApprovalDecision::Reject => {
+                    request.status = ManualApprovalStatus::Rejected;
+                    request.rejection_reason = rejection_reason.and_then(|value| {
+                        let trimmed = value.trim().to_string();
+                        (!trimmed.is_empty()).then_some(trimmed)
+                    });
+                }
+            }
+            request.clone()
+        };
+
+        self.prune_manual_approval_requests(now)?;
+        self.persist_or_revert(backup)?;
+        Ok(updated)
+    }
+
+    /// Rejects reservations that would skip more than [`MAX_NONCE_SKIP`] nonces
+    /// past the currently tracked chain head.
+    ///
+    /// The bound only applies relative to a tracked head. An untracked chain
+    /// (fresh daemon, restored wallet, or a head pruned after its reservations
+    /// were reclaimed) is seeded at `min_nonce` by the allocator without
+    /// creating gaps, so a large live on-chain nonce is not a skip.
+    fn ensure_nonce_skip_within_bounds(
+        &self,
+        vault_key_id: Uuid,
+        chain_id: u64,
+        min_nonce: u64,
+    ) -> Result<(), DaemonError> {
+        let tracked_head = self
+            .nonce_heads
+            .read()
+            .map_err(|_| DaemonError::LockPoisoned)?
+            .get(&vault_key_id)
+            .and_then(|chain_heads| chain_heads.get(&chain_id))
+            .copied();
+        let Some(head) = tracked_head else {
+            // Fail before any state is touched if a head seeded at `min_nonce`
+            // could never advance past the reserved nonce.
+            if min_nonce == u64::MAX {
+                return Err(DaemonError::InvalidNonceReservation(
+                    "nonce allocation overflow".to_string(),
+                ));
+            }
+            return Ok(());
+        };
+        let requested_skip = min_nonce.saturating_sub(head);
+        if requested_skip > MAX_NONCE_SKIP {
+            return Err(DaemonError::NonceSkipTooLarge {
+                requested_skip,
+                max_skip: MAX_NONCE_SKIP,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -1261,6 +1426,31 @@ fn validate_config(config: &DaemonConfig) -> Result<(), DaemonError> {
             "argon2_parallelism must be greater than zero".to_string(),
         ));
     }
+    if config.max_pending_manual_approval_requests_per_agent == 0 {
+        return Err(DaemonError::InvalidConfig(
+            "max_pending_manual_approval_requests_per_agent must be greater than zero".to_string(),
+        ));
+    }
+    if config.max_recoverable_agent_results == 0 {
+        return Err(DaemonError::InvalidConfig(
+            "max_recoverable_agent_results must be greater than zero".to_string(),
+        ));
+    }
+    if config.argon2_memory_kib > config.max_persisted_argon2_memory_kib {
+        return Err(DaemonError::InvalidConfig(
+            "argon2_memory_kib must not exceed max_persisted_argon2_memory_kib".to_string(),
+        ));
+    }
+    if config.argon2_time_cost > config.max_persisted_argon2_time_cost {
+        return Err(DaemonError::InvalidConfig(
+            "argon2_time_cost must not exceed max_persisted_argon2_time_cost".to_string(),
+        ));
+    }
+    if config.argon2_parallelism > config.max_persisted_argon2_parallelism {
+        return Err(DaemonError::InvalidConfig(
+            "argon2_parallelism must not exceed max_persisted_argon2_parallelism".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -1356,6 +1546,20 @@ fn manual_approval_policy_reference_persistence_error(
     }
 }
 
+/// Returns the lowercase `0x`-prefixed channel id for Tempo session actions.
+fn tempo_channel_key(action: &AgentAction) -> Result<Option<String>, DaemonError> {
+    let channel_id = match action {
+        AgentAction::TempoSessionOpenTransaction { authorization } => authorization.channel_id(),
+        AgentAction::TempoSessionTopUpTransaction { authorization } => {
+            authorization.channel_id_bytes32()
+        }
+        AgentAction::TempoSessionVoucher { authorization } => authorization.channel_id_bytes32(),
+        _ => return Ok(None),
+    }
+    .map_err(|error| DaemonError::InvalidAction(error.to_string()))?;
+    Ok(Some(format!("0x{}", hex::encode(channel_id))))
+}
+
 fn ensure_action_supports_manual_approval(action: &AgentAction) -> Result<(), DaemonError> {
     let missing_durable_nonce = match action {
         AgentAction::SolanaSolTransfer { transfer } => transfer.durable_nonce_account.is_none(),
@@ -1370,7 +1574,9 @@ fn ensure_action_supports_manual_approval(action: &AgentAction) -> Result<(), Da
     Ok(())
 }
 
-fn prepare_loaded_state(mut state: PersistedDaemonState) -> Result<PersistedDaemonState, DaemonError> {
+fn prepare_loaded_state(
+    mut state: PersistedDaemonState,
+) -> Result<PersistedDaemonState, DaemonError> {
     ensure_relay_identity(&mut state);
     normalize_disabled_policy_set_attachments(&mut state);
     validate_loaded_state(&state)?;

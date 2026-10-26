@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use crate::{OutputFormat, OutputTarget};
 
@@ -17,7 +17,10 @@ const GROUP_OTHER_WRITE_MODE_MASK: u32 = 0o022;
 #[cfg(unix)]
 const STICKY_BIT_MODE: u32 = 0o1000;
 
-pub(crate) fn resolve_vault_password(from_stdin: bool, non_interactive: bool) -> Result<String> {
+pub(crate) fn resolve_vault_password(
+    from_stdin: bool,
+    non_interactive: bool,
+) -> Result<Zeroizing<String>> {
     if from_stdin {
         return read_secret_from_reader(std::io::stdin(), "vault password");
     }
@@ -26,29 +29,44 @@ pub(crate) fn resolve_vault_password(from_stdin: bool, non_interactive: bool) ->
         bail!("vault password is required in non-interactive mode; use --vault-password-stdin");
     }
 
-    let prompted =
-        rpassword::prompt_password("Vault password: ").context("failed to read password input")?;
+    let prompted = Zeroizing::new(
+        rpassword::prompt_password("Vault password: ").context("failed to read password input")?,
+    );
     validate_password(prompted, "prompt")
 }
 
-pub(crate) fn validate_password(mut password: String, source: &str) -> Result<String> {
+pub(crate) fn validate_password(
+    password: impl Into<Zeroizing<String>>,
+    source: &str,
+) -> Result<Zeroizing<String>> {
+    let password = password.into();
     if password.as_bytes().len() > MAX_SECRET_STDIN_BYTES as usize {
-        password.zeroize();
         bail!("vault password from {source} must not exceed {MAX_SECRET_STDIN_BYTES} bytes");
     }
     if password.trim().is_empty() {
-        password.zeroize();
         bail!("vault password from {source} must not be empty or whitespace");
     }
     Ok(password)
 }
 
-pub(crate) fn read_secret_from_file(path: &Path, label: &str) -> Result<String> {
-    let metadata = std::fs::symlink_metadata(path)
+/// Reads a secret from a regular, owner-only file. The file is opened exactly once with
+/// `O_NOFOLLOW` and every check runs against the opened descriptor (`fstat`), so the path cannot
+/// be swapped for a symlink or another file between the checks and the read.
+pub(crate) fn read_secret_from_file(path: &Path, label: &str) -> Result<Zeroizing<String>> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW);
+    let file = options.open(path).map_err(|error| {
+        #[cfg(unix)]
+        if error.raw_os_error() == Some(libc::ELOOP) {
+            return anyhow!("{label} file '{}' must not be a symlink", path.display());
+        }
+        anyhow!("failed to open {label} file '{}': {error}", path.display())
+    })?;
+    let metadata = file
+        .metadata()
         .with_context(|| format!("failed to inspect {label} file '{}'", path.display()))?;
-    if metadata.file_type().is_symlink() {
-        bail!("{label} file '{}' must not be a symlink", path.display());
-    }
     if !metadata.is_file() {
         bail!("{label} file '{}' must be a regular file", path.display());
     }
@@ -60,42 +78,77 @@ pub(crate) fn read_secret_from_file(path: &Path, label: &str) -> Result<String> 
         );
     }
 
-    let mut raw = std::fs::read_to_string(path)
+    let mut raw = Zeroizing::new(String::new());
+    file.take(MAX_SECRET_STDIN_BYTES + 1)
+        .read_to_string(&mut raw)
         .with_context(|| format!("failed to read {label} file '{}'", path.display()))?;
     if raw.as_bytes().len() > MAX_SECRET_STDIN_BYTES as usize {
-        raw.zeroize();
         bail!(
             "{label} file '{}' must not exceed {MAX_SECRET_STDIN_BYTES} bytes",
             path.display()
         );
     }
-    let secret = raw.trim_end_matches(['\r', '\n']).to_string();
-    raw.zeroize();
+    let secret = Zeroizing::new(raw.trim_end_matches(['\r', '\n']).to_string());
     validate_password(secret, "file")
 }
 
-fn read_secret_from_reader(mut reader: impl Read, label: &str) -> Result<String> {
-    let mut raw = String::new();
+/// Reads a secret from an inherited file descriptor, typically the read end of a pipe the parent
+/// process wired up as fd 3. The descriptor must not be one of the standard streams, must be open,
+/// and is consumed (closed) after the bounded read.
+#[cfg(unix)]
+pub(crate) fn read_secret_from_fd(fd: i32, label: &str) -> Result<Zeroizing<String>> {
+    use std::os::unix::io::FromRawFd;
+
+    if fd < 3 {
+        bail!("{label} file descriptor must be 3 or greater (got {fd})");
+    }
+    // SAFETY: `fcntl(F_GETFD)` only queries descriptor flags and has no side effects.
+    if unsafe { libc::fcntl(fd, libc::F_GETFD) } == -1 {
+        bail!(
+            "{label} file descriptor {fd} is not open: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+    // SAFETY: the descriptor was verified open above, was inherited from the parent process for
+    // this purpose only, and is not wrapped or used anywhere else in this process. Ownership moves
+    // into `File`, which closes it when dropped.
+    let file = unsafe { std::fs::File::from_raw_fd(fd) };
+    read_secret_from_source(file, label, &format!("file descriptor {fd}"))
+}
+
+#[cfg(not(unix))]
+pub(crate) fn read_secret_from_fd(_fd: i32, label: &str) -> Result<Zeroizing<String>> {
+    bail!("reading the {label} from a file descriptor is only supported on unix platforms")
+}
+
+fn read_secret_from_reader(reader: impl Read, label: &str) -> Result<Zeroizing<String>> {
+    read_secret_from_source(reader, label, "stdin")
+}
+
+fn read_secret_from_source(
+    mut reader: impl Read,
+    label: &str,
+    source: &str,
+) -> Result<Zeroizing<String>> {
+    let mut raw = Zeroizing::new(String::new());
     reader
         .by_ref()
         .take(MAX_SECRET_STDIN_BYTES + 1)
         .read_to_string(&mut raw)
-        .with_context(|| format!("failed to read {label} from stdin"))?;
+        .with_context(|| format!("failed to read {label} from {source}"))?;
     if raw.as_bytes().len() > MAX_SECRET_STDIN_BYTES as usize {
-        raw.zeroize();
         bail!("{label} must not exceed {MAX_SECRET_STDIN_BYTES} bytes");
     }
-    let secret = raw.trim_end_matches(['\r', '\n']).to_string();
-    raw.zeroize();
-    validate_password(secret, "stdin")
+    let secret = Zeroizing::new(raw.trim_end_matches(['\r', '\n']).to_string());
+    validate_password(secret, source)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        emit_output, ensure_output_parent, print_status, read_secret_from_reader,
-        resolve_output_target, resolve_vault_password, should_print_status, validate_password,
-        write_output_file,
+        emit_output, ensure_output_parent, print_status, read_secret_from_fd,
+        read_secret_from_file, read_secret_from_reader, resolve_output_target,
+        resolve_vault_password, should_print_status, validate_password, write_output_file,
     };
     use crate::{OutputFormat, OutputTarget};
     use std::fs;
@@ -121,6 +174,96 @@ mod tests {
         assert!(err.to_string().contains("must not exceed"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn read_secret_from_file_checks_opened_descriptor() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let root = temp_path("agentpay-admin-secret-file");
+        fs::create_dir_all(&root).expect("create root");
+        let secret_path = root.join("secret.txt");
+        fs::write(&secret_path, "key-material\n").expect("write secret");
+        fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o600)).expect("chmod");
+
+        let secret = read_secret_from_file(&secret_path, "imported vault private key")
+            .expect("owner-only regular file");
+        assert_eq!(secret.as_str(), "key-material");
+
+        let link_path = root.join("secret-link.txt");
+        symlink(&secret_path, &link_path).expect("symlink");
+        let err = read_secret_from_file(&link_path, "imported vault private key")
+            .expect_err("symlink must be rejected");
+        assert!(err.to_string().contains("must not be a symlink"));
+
+        let err = read_secret_from_file(&root, "imported vault private key")
+            .expect_err("directory must be rejected");
+        assert!(err.to_string().contains("must be a regular file"));
+
+        fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o640)).expect("chmod");
+        let err = read_secret_from_file(&secret_path, "imported vault private key")
+            .expect_err("group-readable file must be rejected");
+        assert!(err.to_string().contains("group/other"));
+
+        fs::write(&secret_path, "a".repeat((16 * 1024) + 1)).expect("write oversized");
+        fs::set_permissions(&secret_path, fs::Permissions::from_mode(0o600)).expect("chmod");
+        let err = read_secret_from_file(&secret_path, "imported vault private key")
+            .expect_err("oversized file must be rejected");
+        assert!(err.to_string().contains("must not exceed"));
+
+        fs::remove_dir_all(&root).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    fn pipe_with_contents(contents: &[u8]) -> i32 {
+        use std::io::Write;
+        use std::os::unix::io::FromRawFd;
+
+        let mut fds = [0i32; 2];
+        // SAFETY: `fds` is a valid two-element buffer for `pipe`.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "pipe");
+        // SAFETY: the write end was just created by `pipe` and is owned only here.
+        let mut writer = unsafe { fs::File::from_raw_fd(fds[1]) };
+        writer.write_all(contents).expect("write pipe");
+        drop(writer);
+        fds[0]
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_secret_from_fd_reads_pipe() {
+        let fd = pipe_with_contents(b"key-material\n");
+        let secret = read_secret_from_fd(fd, "imported vault private key").expect("pipe secret");
+        assert_eq!(secret.as_str(), "key-material");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_secret_from_fd_rejects_oversized_and_empty_input() {
+        let fd = pipe_with_contents(&vec![b'a'; (16 * 1024) + 1]);
+        let err = read_secret_from_fd(fd, "imported vault private key").expect_err("oversized");
+        assert!(err.to_string().contains("must not exceed"));
+
+        let fd = pipe_with_contents(b"\n");
+        let err = read_secret_from_fd(fd, "imported vault private key").expect_err("empty");
+        assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_secret_from_fd_rejects_standard_streams_and_closed_descriptors() {
+        for fd in [-1, 0, 1, 2] {
+            let err = read_secret_from_fd(fd, "imported vault private key")
+                .expect_err("standard stream must be rejected");
+            assert!(err.to_string().contains("must be 3 or greater"));
+        }
+
+        // Far above any realistic open-descriptor count, so it is never open in the test process
+        // (closing and reusing a real descriptor would race with parallel tests).
+        let err = read_secret_from_fd(1_000_000, "imported vault private key")
+            .expect_err("closed descriptor must be rejected");
+        assert!(err.to_string().contains("is not open"));
+    }
+
     #[test]
     fn validate_password_rejects_oversized_non_stdin_secret() {
         let err = validate_password("a".repeat((16 * 1024) + 1), "argument or environment")
@@ -133,14 +276,14 @@ mod tests {
         let secret =
             read_secret_from_reader(Cursor::new(b"vault-secret\r\n".to_vec()), "vault password")
                 .expect("valid stdin secret");
-        assert_eq!(secret, "vault-secret");
+        assert_eq!(secret.as_str(), "vault-secret");
     }
 
     #[test]
     fn validate_password_accepts_non_empty_secret() {
         let password =
             validate_password("vault-secret".to_string(), "prompt").expect("valid password");
-        assert_eq!(password, "vault-secret");
+        assert_eq!(password.as_str(), "vault-secret");
     }
 
     #[test]
@@ -594,7 +737,7 @@ pub(crate) fn write_output_file(path: &Path, output: &str, overwrite: bool) -> R
     Ok(())
 }
 
-fn write_output_file_atomic_replace(path: &Path, output: &str) -> Result<()> {
+pub(crate) fn write_output_file_atomic_replace(path: &Path, output: &str) -> Result<()> {
     let temp_path = temporary_output_path(path);
     let result = (|| -> Result<()> {
         let mut options = OpenOptions::new();

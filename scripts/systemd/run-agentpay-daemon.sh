@@ -68,4 +68,6 @@ if [[ -n "${AGENTPAY_TPM_DEVICE:-}" ]]; then
   args+=(--tpm-device "$AGENTPAY_TPM_DEVICE")
 fi
 
-exec "$AGENTPAY_DAEMON_BIN" "${args[@]}" <<<"$vault_password"
+# Feed the password through a pipe (process substitution) instead of a here-string, which bash
+# may spill to a $TMPDIR temp file; `exec` keeps the daemon as systemd's direct child.
+exec "$AGENTPAY_DAEMON_BIN" "${args[@]}" < <(printf '%s\n' "$vault_password")

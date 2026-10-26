@@ -6,7 +6,13 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { Keypair, PublicKey, SystemProgram } from '@solana/web3.js';
+import {
+  Keypair,
+  PublicKey,
+  SystemProgram,
+  TransactionMessage,
+  VersionedTransaction,
+} from '@solana/web3.js';
 import { encodeFunctionData, keccak256, parseTransaction } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 
@@ -51,24 +57,35 @@ const ROOT_HARNESS = [
   '  const originalLstatSync = fs.lstatSync;',
   '  const originalStatSync = fs.statSync;',
   '  const originalFstatSync = fs.fstatSync;',
-  '  const withRootUid = (stats) => {',
+  // Sticky system temp directories above the test HOME (for example /private/tmp) stand in for
+  // the root-owned, non-writable ancestors of a real root install; directories created by the
+  // tests themselves are never listed here and keep their real modes.
+  '  const rootTrustedAncestors = new Set(',
+  "    JSON.parse(process.env.AGENTPAY_TEST_ROOT_TRUSTED_ANCESTORS_JSON ?? '[]'),",
+  '  );',
+  '  const withRootUid = (stats, targetPath) => {',
   "    if (!stats || typeof stats !== 'object') {",
   '      return stats;',
   '    }',
+  '    const trustedAncestor =',
+  "      typeof targetPath === 'string' && rootTrustedAncestors.has(targetPath);",
   '    return new Proxy(stats, {',
   '      get(target, key, receiver) {',
   "        if (key === 'uid') {",
   '          return 0;',
+  '        }',
+  "        if (key === 'mode' && trustedAncestor) {",
+  '          return target.mode & ~0o022;',
   '        }',
   '        return Reflect.get(target, key, receiver);',
   '      },',
   '    });',
   '  };',
   '  fs.lstatSync = (...args) => {',
-  '    return withRootUid(originalLstatSync(...args));',
+  '    return withRootUid(originalLstatSync(...args), args[0]);',
   '  };',
   '  fs.statSync = (...args) => {',
-  '    return withRootUid(originalStatSync(...args));',
+  '    return withRootUid(originalStatSync(...args), args[0]);',
   '  };',
   '  fs.fstatSync = (...args) => {',
   '    return withRootUid(originalFstatSync(...args));',
@@ -85,12 +102,32 @@ const ROOT_HARNESS = [
   "await import('./src/cli.ts');",
 ].join('\n');
 
+// Returns the sticky, group/other-writable directories strictly above the test HOME (the shared
+// system temp directory the isolated test sandbox lives under). Root-mode CLI runs treat only
+// these as root-trusted ancestors; see ROOT_HARNESS.
+function rootTrustedAncestors(homeDir) {
+  const trusted = [];
+  let currentPath = path.dirname(fs.realpathSync.native(homeDir));
+  while (true) {
+    const stats = fs.lstatSync(currentPath);
+    if (stats.isDirectory() && (stats.mode & 0o1000) !== 0 && (stats.mode & 0o022) !== 0) {
+      trusted.push(currentPath);
+    }
+    const parentPath = path.dirname(currentPath);
+    if (parentPath === currentPath) {
+      return trusted;
+    }
+    currentPath = parentPath;
+  }
+}
+
 function runCli(args, { homeDir, env = {}, input, assumeRoot = false, sudoWrapped = false }) {
   const agentpayHome = path.join(homeDir, '.agentpay');
   const baseEnv = {
     ...process.env,
     HOME: homeDir,
     AGENTPAY_HOME: agentpayHome,
+    AGENTPAY_TELEMETRY: '0',
     ...env,
   };
 
@@ -128,6 +165,7 @@ function runCli(args, { homeDir, env = {}, input, assumeRoot = false, sudoWrappe
         ...baseEnv,
         AGENTPAY_CLI_ARGS_JSON: JSON.stringify(args),
         AGENTPAY_TEST_MOCK_ROOT_OWNERSHIP: '1',
+        AGENTPAY_TEST_ROOT_TRUSTED_ANCESTORS_JSON: JSON.stringify(rootTrustedAncestors(homeDir)),
       },
       encoding: 'utf8',
       input,
@@ -135,12 +173,13 @@ function runCli(args, { homeDir, env = {}, input, assumeRoot = false, sudoWrappe
   );
 }
 
-function runCliAsync(args, { homeDir, env = {}, input, assumeRoot = false, sudoWrapped = false }) {
+function runCliAsync(args, { homeDir, env = {}, input, assumeRoot = false }) {
   const agentpayHome = path.join(homeDir, '.agentpay');
   const baseEnv = {
     ...process.env,
     HOME: homeDir,
     AGENTPAY_HOME: agentpayHome,
+    AGENTPAY_TELEMETRY: '0',
     ...env,
   };
 
@@ -154,6 +193,7 @@ function runCliAsync(args, { homeDir, env = {}, input, assumeRoot = false, sudoW
         ...baseEnv,
         AGENTPAY_CLI_ARGS_JSON: JSON.stringify(args),
         AGENTPAY_TEST_MOCK_ROOT_OWNERSHIP: '1',
+        AGENTPAY_TEST_ROOT_TRUSTED_ANCESTORS_JSON: JSON.stringify(rootTrustedAncestors(homeDir)),
       };
 
   return new Promise((resolve, reject) => {
@@ -194,6 +234,20 @@ function runCliAsync(args, { homeDir, env = {}, input, assumeRoot = false, sudoW
 
 function combinedOutput(result) {
   return `${result.stdout ?? ''}${result.stderr ?? ''}`;
+}
+
+async function waitForFile(filePath, { timeoutMs = 30_000, intervalMs = 25 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (!fs.existsSync(filePath)) {
+    if (Date.now() > deadline) {
+      throw new Error(`timed out after ${timeoutMs}ms waiting for ${filePath}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
+function pendingSeenMarkerPath(approvalMarkerPath) {
+  return `${approvalMarkerPath}.pending-seen`;
 }
 
 function writeConfig(agentpayHome, config) {
@@ -244,17 +298,6 @@ if (!dbPath) {
   process.exit(1);
 }
 
-const args = process.argv.slice(2);
-const command = args[0];
-
-function valueFor(flag) {
-  const index = args.indexOf(flag);
-  if (index < 0 || index + 1 >= args.length) {
-    return undefined;
-  }
-  return args[index + 1];
-}
-
 function readDb() {
   try {
     return JSON.parse(fs.readFileSync(dbPath, 'utf8'));
@@ -267,45 +310,113 @@ function writeDb(payload) {
   fs.writeFileSync(dbPath, JSON.stringify(payload), 'utf8');
 }
 
-const service = valueFor('-s') ?? '';
-const account = valueFor('-a') ?? '';
-const key = service + '\\u0000' + account;
-
-if (command === 'add-generic-password') {
-  const encoded = valueFor('-X') ?? '';
-  const db = readDb();
-  db[key] = Buffer.from(encoded, 'hex').toString('utf8');
-  writeDb(db);
-  process.exit(0);
+// Mirrors the argv splitting of \`security -i\`: whitespace separates tokens, double quotes
+// group whitespace, and a backslash escapes the next character (\\" and \\\\).
+function splitInteractiveLine(line) {
+  const tokens = [];
+  let current = '';
+  let inToken = false;
+  let inQuotes = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === '\\\\' && index + 1 < line.length) {
+      current += line[index + 1];
+      index += 1;
+      inToken = true;
+      continue;
+    }
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      inToken = true;
+      continue;
+    }
+    if (!inQuotes && /\\s/u.test(char)) {
+      if (inToken) {
+        tokens.push(current);
+        current = '';
+        inToken = false;
+      }
+      continue;
+    }
+    current += char;
+    inToken = true;
+  }
+  if (inQuotes) {
+    throw new Error('unterminated quote in security -i command');
+  }
+  if (inToken) {
+    tokens.push(current);
+  }
+  return tokens;
 }
 
-if (command === 'find-generic-password') {
-  if (process.env.AGENTPAY_SECURITY_FAIL_FIND === '1') {
-    process.stderr.write('mock keychain backend failure');
-    process.exit(1);
+function runCommand(args) {
+  const command = args[0];
+  const valueFor = (flag) => {
+    const index = args.indexOf(flag);
+    if (index < 0 || index + 1 >= args.length) {
+      return undefined;
+    }
+    return args[index + 1];
+  };
+  const service = valueFor('-s') ?? '';
+  const account = valueFor('-a') ?? '';
+  const key = service + '\\u0000' + account;
+
+  if (command === 'add-generic-password') {
+    const encoded = valueFor('-X') ?? '';
+    const db = readDb();
+    db[key] = Buffer.from(encoded, 'hex').toString('utf8');
+    writeDb(db);
+    return 0;
   }
-  const db = readDb();
-  if (!(key in db)) {
-    process.stderr.write('The specified item could not be found in the keychain.');
-    process.exit(44);
+
+  if (command === 'find-generic-password') {
+    if (process.env.AGENTPAY_SECURITY_FAIL_FIND === '1') {
+      process.stderr.write('mock keychain backend failure');
+      return 1;
+    }
+    const db = readDb();
+    if (!(key in db)) {
+      process.stderr.write('The specified item could not be found in the keychain.');
+      return 44;
+    }
+    process.stdout.write(String(db[key]));
+    return 0;
   }
-  process.stdout.write(String(db[key]));
-  process.exit(0);
+
+  if (command === 'delete-generic-password') {
+    const db = readDb();
+    if (!(key in db)) {
+      process.stderr.write('The specified item could not be found in the keychain.');
+      return 44;
+    }
+    delete db[key];
+    writeDb(db);
+    return 0;
+  }
+
+  process.stderr.write('unsupported security command');
+  return 1;
 }
 
-if (command === 'delete-generic-password') {
-  const db = readDb();
-  if (!(key in db)) {
-    process.stderr.write('The specified item could not be found in the keychain.');
-    process.exit(44);
+const args = process.argv.slice(2);
+if (args[0] === '-i') {
+  const lines = fs.readFileSync(0, 'utf8').split('\\n');
+  let status = 0;
+  for (const line of lines) {
+    const lineArgs = splitInteractiveLine(line);
+    if (lineArgs.length === 0) {
+      continue;
+    }
+    status = runCommand(lineArgs);
+    if (status !== 0) {
+      break;
+    }
   }
-  delete db[key];
-  writeDb(db);
-  process.exit(0);
+  process.exit(status);
 }
-
-process.stderr.write('unsupported security command');
-process.exit(1);
+process.exit(runCommand(args));
 `;
   fs.writeFileSync(securityPath, script, { mode: 0o700 });
   const secretToolScript = `#!/usr/bin/env node
@@ -558,9 +669,22 @@ function nonceAccountRpcData({ authority, nonce }) {
   return data.toString('base64');
 }
 
-function startMockSolanaRpcServer({ nonceAuthority } = {}) {
+function signedSolanaTxBase64({ payer, blockhash, instructions }) {
+  const message = new TransactionMessage({
+    payerKey: payer.publicKey,
+    recentBlockhash: blockhash,
+    instructions,
+  }).compileToV0Message();
+  const transaction = new VersionedTransaction(message);
+  transaction.sign([payer]);
+  return Buffer.from(transaction.serialize()).toString('base64');
+}
+
+function startMockSolanaRpcServer({
+  nonceAuthority,
+  blockhash = Keypair.generate().publicKey.toBase58(),
+} = {}) {
   const calls = [];
-  const blockhash = Keypair.generate().publicKey.toBase58();
   const signature = Keypair.generate().publicKey.toBase58();
   let sentTransactions = 0;
 
@@ -751,13 +875,15 @@ test('root-mode local admin commands mutate chain/token config successfully', ()
   }
 });
 
-test('Solana broadcast reuses stdin agent auth for managed nonce creation and transfer', async () => {
+async function runSolanaSolBroadcastScenario({ signedRecipient } = {}) {
   const { homeDir, agentpayHome } = makeIsolatedHome();
   const rustBinDir = path.join(agentpayHome, 'bin');
   fs.mkdirSync(rustBinDir, { recursive: true, mode: 0o700 });
   const socketPath = path.join(agentpayHome, 'daemon.sock');
   const socketServer = await startUnixSocket(socketPath);
-  const feePayer = Keypair.generate().publicKey;
+  const feePayerKeypair = Keypair.generate();
+  const feePayer = feePayerKeypair.publicKey;
+  const blockhash = Keypair.generate().publicKey.toBase58();
   const {
     server: rpcServer,
     rpcUrl,
@@ -765,9 +891,34 @@ test('Solana broadcast reuses stdin agent auth for managed nonce creation and tr
     calls,
   } = await startMockSolanaRpcServer({
     nonceAuthority: feePayer,
+    blockhash,
   });
   const recipient = Keypair.generate().publicKey;
   const tokenLog = path.join(agentpayHome, 'agent-token.log');
+  const nonceAccount = await PublicKey.createWithSeed(
+    feePayer,
+    'agentpay-900000002-nonce',
+    SystemProgram.programId,
+  );
+  const nonceCreateTx = signedSolanaTxBase64({
+    payer: feePayerKeypair,
+    blockhash,
+    instructions: [
+      SystemProgram.transfer({ fromPubkey: feePayer, toPubkey: nonceAccount, lamports: 1 }),
+    ],
+  });
+  const transferTx = signedSolanaTxBase64({
+    payer: feePayerKeypair,
+    blockhash,
+    instructions: [
+      SystemProgram.nonceAdvance({ noncePubkey: nonceAccount, authorizedPubkey: feePayer }),
+      SystemProgram.transfer({
+        fromPubkey: feePayer,
+        toPubkey: signedRecipient ?? recipient,
+        lamports: 100_000_000,
+      }),
+    ],
+  });
 
   try {
     writeExecutable(
@@ -787,10 +938,10 @@ test('Solana broadcast reuses stdin agent auth for managed nonce creation and tr
         'done',
         'case "$cmd" in',
         '  solana-nonce-account-create)',
-        '    printf "{\\"command\\":\\"solana_nonce_account_create\\",\\"raw_tx_base64\\":\\"AQID\\",\\"tx_id\\":\\"nonce-tx\\"}"',
+        '    printf "{\\"command\\":\\"solana_nonce_account_create\\",\\"raw_tx_base64\\":\\"%s\\",\\"tx_id\\":\\"nonce-tx\\"}" "$AGENTPAY_SOLANA_NONCE_TX"',
         '    ;;',
         '  solana-sol-transfer)',
-        '    printf "{\\"command\\":\\"solana_sol_transfer\\",\\"network\\":\\"900000002\\",\\"asset\\":\\"native_sol\\",\\"counterparty\\":\\"%s\\",\\"amount_wei\\":\\"100000000\\",\\"signature_hex\\":\\"0x11\\",\\"raw_tx_base64\\":\\"BAUG\\",\\"tx_id\\":\\"sol-tx\\"}" "$AGENTPAY_SOLANA_RECIPIENT"',
+        '    printf "{\\"command\\":\\"solana_sol_transfer\\",\\"network\\":\\"900000002\\",\\"asset\\":\\"native_sol\\",\\"counterparty\\":\\"%s\\",\\"amount_wei\\":\\"100000000\\",\\"signature_hex\\":\\"0x11\\",\\"raw_tx_base64\\":\\"%s\\",\\"tx_id\\":\\"sol-tx\\"}" "$AGENTPAY_SOLANA_RECIPIENT" "$AGENTPAY_SOLANA_TRANSFER_TX"',
         '    ;;',
         '  *)',
         '    echo "unexpected command" 1>&2',
@@ -868,25 +1019,50 @@ test('Solana broadcast reuses stdin agent auth for managed nonce creation and tr
         env: {
           AGENTPAY_TOKEN_LOG: tokenLog,
           AGENTPAY_SOLANA_RECIPIENT: recipient.toBase58(),
+          AGENTPAY_SOLANA_NONCE_TX: nonceCreateTx,
+          AGENTPAY_SOLANA_TRANSFER_TX: transferTx,
         },
         input: 'stdin-agent-token\n',
       },
     );
-
-    assert.equal(result.status, 0, combinedOutput(result));
-    const output = JSON.parse(result.stdout);
-    assert.equal(output.network_tx_id, signature);
-    assert.deepEqual(fs.readFileSync(tokenLog, 'utf8').trim().split('\n'), [
-      'stdin-agent-token',
-      'stdin-agent-token',
-    ]);
-    assert.ok(calls.includes('getMinimumBalanceForRentExemption'));
-    assert.equal(calls.filter((method) => method === 'sendTransaction').length, 2);
+    return {
+      result,
+      signature,
+      calls,
+      recipient,
+      tokenLines: fs.readFileSync(tokenLog, 'utf8').trim().split('\n'),
+    };
   } finally {
     await closeServer(rpcServer);
     await closeServer(socketServer);
     fs.rmSync(homeDir, { recursive: true, force: true });
   }
+}
+
+test('Solana broadcast reuses stdin agent auth for managed nonce creation and transfer', async () => {
+  const { result, signature, calls, tokenLines } = await runSolanaSolBroadcastScenario();
+
+  assert.equal(result.status, 0, combinedOutput(result));
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.network_tx_id, signature);
+  assert.deepEqual(tokenLines, ['stdin-agent-token', 'stdin-agent-token']);
+  assert.ok(calls.includes('getMinimumBalanceForRentExemption'));
+  assert.equal(calls.filter((method) => method === 'sendTransaction').length, 2);
+});
+
+test('Solana broadcast refuses a signed transfer whose recipient differs from the request', async () => {
+  const attacker = Keypair.generate().publicKey;
+  const { result, calls, recipient } = await runSolanaSolBroadcastScenario({
+    signedRecipient: attacker,
+  });
+
+  assert.notEqual(result.status, 0, combinedOutput(result));
+  const output = combinedOutput(result);
+  assert.match(output, /SOL transfer recipient/);
+  assert.ok(output.includes(attacker.toBase58()), output);
+  assert.ok(output.includes(recipient.toBase58()), output);
+  // Only the managed nonce-account creation was broadcast; the tampered transfer never was.
+  assert.equal(calls.filter((method) => method === 'sendTransaction').length, 1);
 });
 
 test('rpc balance native json uses a chain-neutral formatted field', async () => {
@@ -2892,6 +3068,7 @@ test('cli validation, amount rewrite, and receipt timeout branches are exercised
         '  exit 9',
         'fi',
         'if [ "$AGENTPAY_AGENT_MODE" = "manual_until_file" ] && [ ! -f "$AGENTPAY_AGENT_MANUAL_FILE" ]; then',
+        '  : > "$AGENTPAY_AGENT_MANUAL_FILE.pending-seen"',
         '  printf "{\\"command\\":\\"%s\\",\\"approval_request_id\\":\\"approval-999\\",\\"cli_approval_command\\":\\"agentpay web approve --approval-id approval-999\\"}" "$cmd"',
         '  exit 9',
         'fi',
@@ -3292,7 +3469,7 @@ test('cli validation, amount rewrite, and receipt timeout branches are exercised
         },
       },
     );
-    await new Promise((resolve) => setTimeout(resolve, 2500));
+    await waitForFile(pendingSeenMarkerPath(transferApprovalMarkerPath));
     fs.writeFileSync(transferApprovalMarkerPath, 'approved');
     const transferBroadcastApproved = await transferBroadcastManual;
     assert.equal(transferBroadcastApproved.status, 0, combinedOutput(transferBroadcastApproved));
@@ -3490,7 +3667,7 @@ test('cli validation, amount rewrite, and receipt timeout branches are exercised
         },
       },
     );
-    await new Promise((resolve) => setTimeout(resolve, 2500));
+    await waitForFile(pendingSeenMarkerPath(approveApprovalMarkerPath));
     fs.writeFileSync(approveApprovalMarkerPath, 'approved');
     const approveBroadcastApproved = await approveBroadcastManual;
     assert.equal(approveBroadcastApproved.status, 0, combinedOutput(approveBroadcastApproved));

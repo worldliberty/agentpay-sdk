@@ -55,3 +55,158 @@ test('selectMppChallenge prefers the testnet challenge for Quicknode tempo-testn
   });
   assert.equal(selected.request.methodDetails?.chainId, 42431);
 });
+
+function encodeRequest(request) {
+  return Buffer.from(JSON.stringify(request), 'utf8').toString('base64url');
+}
+
+function challengeHeader(request, extra = '') {
+  return `Payment id="abc123", realm="mpp.example.com", method="tempo", intent="charge", request="${encodeRequest(request)}"${extra}`;
+}
+
+const baseRequest = {
+  amount: '10',
+  currency: '0x20c0000000000000000000000000000000000000',
+  recipient: '0xFD24114C3981Aba78aE2441991B1BdB89329c556',
+};
+
+test('resolveMppChainId refuses challenges without methodDetails.chainId instead of defaulting to mainnet', async () => {
+  const mpp = await import(`${modulePath.href}?case=${Date.now()}-chain-missing`);
+  const withoutDetails = mpp.parseMppChallengeHeader(challengeHeader(baseRequest));
+  assert.throws(
+    () => mpp.resolveMppChainId(withoutDetails),
+    /missing request\.methodDetails\.chainId/,
+  );
+
+  const withoutChain = mpp.parseMppChallengeHeader(
+    challengeHeader({ ...baseRequest, methodDetails: { feePayer: true } }),
+  );
+  assert.throws(() => mpp.resolveMppChainId(withoutChain), /refusing to assume a default network/);
+  assert.throws(() => mpp.resolveMppEscrowContract(withoutChain), /methodDetails\.chainId/);
+
+  const withChain = mpp.parseMppChallengeHeader(
+    challengeHeader({ ...baseRequest, methodDetails: { chainId: 42431 } }),
+  );
+  assert.equal(mpp.resolveMppChainId(withChain), 42431);
+});
+
+test('resolveMppEscrowContract pins the Tempo escrow and rejects a differing server value', async () => {
+  const mpp = await import(`${modulePath.href}?case=${Date.now()}-escrow-pin`);
+  const mainnet = mpp.parseMppChallengeHeader(
+    challengeHeader({ ...baseRequest, methodDetails: { chainId: 4217 } }),
+  );
+  assert.equal(mpp.resolveMppEscrowContract(mainnet), '0x33b901018174DDabE4841042ab76ba85D4e24f25');
+  const testnetMatching = mpp.parseMppChallengeHeader(
+    challengeHeader({
+      ...baseRequest,
+      methodDetails: {
+        chainId: 42431,
+        escrowContract: '0xE1C4D3DCE17BC111181DDF716F75BAE49E61A336',
+      },
+    }),
+  );
+  assert.equal(
+    mpp.resolveMppEscrowContract(testnetMatching),
+    '0xe1c4d3dce17bc111181ddf716f75bae49e61a336',
+  );
+
+  const attackerEscrow = mpp.parseMppChallengeHeader(
+    challengeHeader({
+      ...baseRequest,
+      methodDetails: {
+        chainId: 4217,
+        escrowContract: '0x3333333333333333333333333333333333333333',
+      },
+    }),
+  );
+  assert.throws(
+    () => mpp.resolveMppEscrowContract(attackerEscrow),
+    /does not match the pinned Tempo stream-channel escrow/,
+  );
+
+  const unpinnedChain = mpp.parseMppChallengeHeader(
+    challengeHeader({
+      ...baseRequest,
+      methodDetails: {
+        chainId: 1,
+        escrowContract: '0x33b901018174DDabE4841042ab76ba85D4e24f25',
+      },
+    }),
+  );
+  assert.throws(() => mpp.resolveMppEscrowContract(unpinnedChain), /no pinned Tempo/);
+  const unpinnedWithoutEscrow = mpp.parseMppChallengeHeader(
+    challengeHeader({ ...baseRequest, methodDetails: { chainId: 1 } }),
+  );
+  assert.equal(mpp.resolveMppEscrowContract(unpinnedWithoutEscrow), null);
+});
+
+test('resolveMppChainId rejects non-positive or non-integer chain ids', async () => {
+  const mpp = await import(`${modulePath.href}?case=${Date.now()}-chain-invalid`);
+  for (const chainId of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    const challenge = {
+      id: 'abc',
+      realm: 'r',
+      method: 'tempo',
+      intent: 'charge',
+      request: { ...baseRequest, methodDetails: { chainId } },
+    };
+    assert.throws(
+      () => mpp.resolveMppChainId(challenge),
+      /methodDetails\.chainId/,
+      String(chainId),
+    );
+  }
+});
+
+test('parseMppChallengeHeader rejects malformed challenge headers', async () => {
+  const mpp = await import(`${modulePath.href}?case=${Date.now()}-malformed`);
+  assert.throws(() => mpp.parseMppChallengeHeader('Bearer realm="x"'), /Missing Payment scheme/);
+  assert.throws(() => mpp.parseMppChallengeHeader('Payment id="a", realm="r"'));
+  assert.throws(() =>
+    mpp.parseMppChallengeHeader(
+      'Payment id="a", realm="r", method="tempo", intent="charge", request="!!!not-base64-json"',
+    ),
+  );
+  assert.throws(
+    () => mpp.parseMppChallengeHeader(challengeHeader({ ...baseRequest, amount: '' })),
+    /request\.amount must be a non-empty string/,
+  );
+  assert.throws(
+    () => mpp.parseMppChallengeHeader(challengeHeader({ ...baseRequest, recipient: 7 })),
+    /request\.recipient must be a non-empty string/,
+  );
+  assert.throws(
+    () => mpp.parseMppChallengesFromHeaders(new Headers()),
+    /missing the WWW-Authenticate header/,
+  );
+  assert.throws(() => mpp.deserializeMppReceiptHeader('%%%'));
+});
+
+test('MPP header parsers reject oversized challenge and receipt headers', async () => {
+  const mpp = await import(`${modulePath.href}?case=${Date.now()}-oversized`);
+  const padding = 'x'.repeat(mpp.MAX_MPP_HEADER_BYTES);
+  const oversized = challengeHeader(
+    { ...baseRequest, methodDetails: { chainId: 4217 } },
+    `, description="${padding}"`,
+  );
+  assert.throws(
+    () => mpp.parseMppChallengeHeader(oversized),
+    new RegExp(`MPP challenge header must not exceed ${mpp.MAX_MPP_HEADER_BYTES} bytes`),
+  );
+  assert.throws(
+    () => mpp.parseMppChallengesFromHeaders(new Headers({ 'WWW-Authenticate': oversized })),
+    /MPP challenge header must not exceed/,
+  );
+  assert.throws(
+    () => mpp.deserializeMppReceiptHeader(padding + padding),
+    /MPP receipt header must not exceed/,
+  );
+
+  // Multi-byte characters count by UTF-8 bytes, not string length.
+  const multibyte = 'é'.repeat(mpp.MAX_MPP_HEADER_BYTES / 2 + 1);
+  assert.throws(() => mpp.parseMppChallengeHeader(multibyte), /must not exceed/);
+
+  const atLimit = challengeHeader({ ...baseRequest, methodDetails: { chainId: 4217 } });
+  assert.ok(Buffer.byteLength(atLimit) < mpp.MAX_MPP_HEADER_BYTES);
+  assert.equal(mpp.parseMppChallengeHeader(atLimit).id, 'abc123');
+});

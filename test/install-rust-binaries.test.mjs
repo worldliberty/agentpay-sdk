@@ -75,7 +75,7 @@ test('verifyRustInstallPrerequisites rejects rustc versions older than the suppo
           return result(0);
         },
       }),
-    /Rust 1\.87\.0 or newer is required; found rustc 1\.86\.0-nightly/u,
+    /Rust 1\.89\.0 or newer is required; found rustc 1\.86\.0-nightly/u,
   );
 });
 

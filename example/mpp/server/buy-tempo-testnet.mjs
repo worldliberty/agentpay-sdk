@@ -12,7 +12,7 @@ const repoRoot = path.resolve(new URL('../../..', import.meta.url).pathname);
 const SERVER_PORT = 4020;
 const DEFAULT_RECIPIENT = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8';
 const PRICE_UNITS = '0.01';
-const WLFI_AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE = 'wlfi-agent-agent-auth-token';
+const AGENTPAY_AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE = 'agentpay-agent-auth-token';
 
 function log(message) {
   process.stderr.write(`[demo] ${message}\n`);
@@ -69,8 +69,8 @@ function writeExecutable(filePath, body) {
 
 async function loadWlfiWalletContext() {
   const [{ stdout: configRaw }, { stdout: walletRaw }] = await Promise.all([
-    runCommand('wlfi-agent', ['config', 'show', '--json']),
-    runCommand('wlfi-agent', ['wallet', '--json']),
+    runCommand('agentpay', ['config', 'show', '--json']),
+    runCommand('agentpay', ['wallet', '--json']),
   ]);
   const config = JSON.parse(configRaw);
   const wallet = JSON.parse(walletRaw);
@@ -78,7 +78,7 @@ async function loadWlfiWalletContext() {
   const { stdout: keychainToken } = await runCommand('security', [
     'find-generic-password',
     '-s',
-    WLFI_AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE,
+    AGENTPAY_AGENT_AUTH_TOKEN_KEYCHAIN_SERVICE,
     '-a',
     wallet.agentKeyId,
     '-w',
@@ -88,7 +88,7 @@ async function loadWlfiWalletContext() {
     ? path.join(config.paths.wlfiHome, 'bin')
     : String(config.rustBinDir ?? '').trim();
   if (!wlfiBinDir) {
-    throw new Error('wlfi-agent config is missing rustBinDir');
+    throw new Error('agentpay config is missing rustBinDir');
   }
 
   return {
@@ -131,11 +131,11 @@ function streamWithPrefix(stream, prefix) {
 function createAgentpayWrappers({ rustBinDir, wlfiBinDir }) {
   writeExecutable(
     path.join(rustBinDir, 'agentpay-agent'),
-    `exec "${path.join(wlfiBinDir, 'wlfi-agent-agent')}" "$@"`,
+    `exec "${path.join(wlfiBinDir, 'agentpay-agent')}" "$@"`,
   );
   writeExecutable(
     path.join(rustBinDir, 'agentpay-admin'),
-    `exec "${path.join(wlfiBinDir, 'wlfi-agent-admin')}" "$@"`,
+    `exec "${path.join(wlfiBinDir, 'agentpay-admin')}" "$@"`,
   );
 }
 

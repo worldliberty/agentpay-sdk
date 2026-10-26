@@ -46,6 +46,13 @@ curl -fsSL https://wlfi.sh | AGENTPAY_SETUP_PAYMENT_METHOD=none bash
 
 The legacy `AGENTPAY_SETUP_RUN_ADMIN_SETUP=yes` option still maps to the Crypto wallet setup path.
 
+Installer safety checks:
+
+- before extracting, the installer verifies the downloaded bundle's SHA-256 against the digests published in the release's `SHA256SUMS`
+- `AGENTPAY_SDK_BUNDLE_SHA256` is required when you override `AGENTPAY_SDK_BUNDLE_URL` with an `https://` URL, or override the release repository or tag (`AGENTPAY_PUBLIC_RELEASE_REPO` / `AGENTPAY_PUBLIC_RELEASE_TAG`), because the pinned digests no longer apply
+- fish is not configured automatically; the installer prints the lines to add to `~/.config/fish/config.fish`
+- the installer refuses `$HOME`, `/`, `/usr*`, `/opt`, and unrelated non-empty directories as install or skill destinations
+
 ### Skills only
 
 If you only want the AI skill pack and adapters, without installing the local AgentPay SDK runtime:
@@ -473,6 +480,8 @@ agentpay admin approve-manual-approval-request \
   --approval-request-id <REQUEST_ID>
 ```
 
+`approve-manual-approval-request` and `reject-manual-approval-request` show the pending request and ask for confirmation before acting; pass `--yes` for non-interactive use.
+
 Resume an already-approved broadcast-backed request on this machine:
 
 ```bash
@@ -599,6 +608,8 @@ agentpay admin approve-manual-approval-request --approval-request-id <UUID>
 agentpay admin reject-manual-approval-request --approval-request-id <UUID> --rejection-reason "<TEXT>"
 ```
 
+   Both commands show the pending request and ask for confirmation first; add `--yes` to skip the prompt in non-interactive use.
+
 3. for `agentpay transfer --broadcast`, `agentpay transfer-native --broadcast`, and `agentpay approve --broadcast`, the original CLI command keeps waiting on that same approval request and continues automatically after approval
 4. if that original broadcast command has already exited after the request was approved, recover the same approved request locally with `agentpay admin resume-manual-approval-request --approval-request-id <UUID>`
 
@@ -672,6 +683,66 @@ For automation or CI-style local flows:
 ```bash
 agentpay admin uninstall --yes
 ```
+
+## Telemetry and privacy
+
+AgentPay SDK reports anonymous usage analytics (Mixpanel) and crash diagnostics (Sentry) so we can
+see which commands people rely on and which ones break. It is **on by default**, and this is the
+only background network traffic the CLI generates.
+
+### Turning it off
+
+Any one of these is enough:
+
+```bash
+agentpay telemetry disable      # persists to ~/.agentpay/telemetry.json
+AGENTPAY_TELEMETRY=0 agentpay … # per-invocation
+DO_NOT_TRACK=1 agentpay …       # honoured as a global convention
+```
+
+`agentpay telemetry status` shows the current setting and why it resolved that way. None of these
+commands require root, unlike `agentpay config set`.
+
+### What is collected
+
+Every event carries exactly these fields, and nothing else:
+
+- A random install id, generated on first run and stored in `~/.agentpay/telemetry.json`. It is
+  not derived from your wallet, machine, or account; deleting that file (or reinstalling after
+  removing `~/.agentpay`) starts a new id
+- The command and subcommand you ran, its exit code, and how long it took
+- CLI version, OS platform and release, architecture, Node version, and whether the run was in CI
+- For balance-changing commands: the action, chain id, token symbol, the amount as a coarse range,
+  whether it was broadcast, and whether it succeeded, failed, or is waiting on manual approval
+- Held balances only as coarse ranges, at most once per day, and only from commands that already
+  queried a balance for their own purposes — telemetry never issues an RPC call of its own
+- For a crash: the error type, a scrubbed error message, and the stack trace
+
+Amounts and balances are reported only as one of `0`, `<10`, `10-100`, `100-1k`, `1k-10k`, or
+`10k+`. Event timestamps are rounded down to the minute so an event cannot be lined up with a
+block time, and Mixpanel is asked not to derive a location from your IP address.
+
+Crash reports are scrubbed before they leave the process: every URL is reduced to its scheme and
+host (dropping API keys in paths and query strings), and `0x` hex of 16+ characters, bare hex of
+32+ characters, Solana base58 strings, Railgun `0zk` addresses, email addresses, your machine's
+hostname, and your home directory are redacted. Sentry's default integrations are disabled, so no
+breadcrumbs, console output, HTTP URLs, hostname, locale, timezone, or device details are attached.
+
+Output from the Rust signing binaries is **replaced, not scrubbed**: when a binary fails, the report
+contains only `<binary> exited <code>` and the JavaScript stack, never its `stdout` or `stderr`.
+
+### What is never collected
+
+- Private keys, seed phrases, vault passwords, wallet backup passwords, or agent auth tokens
+- Wallet addresses, recipient addresses, transaction hashes, or anything derived from them
+- `stdout`/`stderr` from the Rust signing binaries
+- Exact amounts or held balances
+- RPC URLs beyond their host, your hostname, username, home directory path, or IP-derived location
+
+If an endpoint is unreachable, the CLI waits at most 3 seconds at exit and then stops sending for
+an hour, so an offline or firewalled machine is not slowed down on every command.
+
+The first run prints a one-time notice to stderr, so `--json` output stays machine-parseable.
 
 ## Open-source governance
 

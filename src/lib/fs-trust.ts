@@ -492,44 +492,45 @@ export function readUtf8FileSecure(targetPath: string, label: string, maxBytes?:
   }
 }
 
-export function assertTrustedExecutablePath(targetPath: string): void {
+export function assertTrustedExecutablePath(targetPath: string, label = 'Rust binary'): void {
   const normalizedPath = path.resolve(targetPath);
-  assertNoSymlinkAncestorDirectories(normalizedPath, 'Rust binary');
+  const directoryLabel = `${label} directory`;
+  assertNoSymlinkAncestorDirectories(normalizedPath, label);
   const stats = fs.lstatSync(normalizedPath);
   if (stats.isSymbolicLink()) {
-    throw new Error(`Rust binary '${normalizedPath}' must not be a symlink`);
+    throw new Error(`${label} '${normalizedPath}' must not be a symlink`);
   }
   if (!stats.isFile()) {
-    throw new Error(`Rust binary '${normalizedPath}' must be a regular file`);
+    throw new Error(`${label} '${normalizedPath}' must be a regular file`);
   }
 
   if (runningAsRoot()) {
-    assertRootOwned(stats, normalizedPath, 'Rust binary');
+    assertRootOwned(stats, normalizedPath, label);
   } else {
-    assertTrustedOwner(stats, normalizedPath, 'Rust binary');
+    assertTrustedOwner(stats, normalizedPath, label);
   }
   if (process.platform !== 'win32' && (stats.mode & GROUP_OTHER_WRITE_MODE_MASK) !== 0) {
-    throw new Error(`Rust binary '${normalizedPath}' must not be writable by group/other`);
+    throw new Error(`${label} '${normalizedPath}' must not be writable by group/other`);
   }
 
   const binaryDirectory = path.dirname(normalizedPath);
   if (!runningAsRoot()) {
-    assertTrustedDirectoryPath(binaryDirectory, 'Rust binary directory');
+    assertTrustedDirectoryPath(binaryDirectory, directoryLabel);
     return;
   }
 
   for (const currentPath of ancestorDirectoryPaths(binaryDirectory)) {
     const currentStats = fs.lstatSync(currentPath);
     if (currentStats.isSymbolicLink()) {
-      throw new Error(`Rust binary directory '${currentPath}' must not be a symlink`);
+      throw new Error(`${directoryLabel} '${currentPath}' must not be a symlink`);
     }
     if (!currentStats.isDirectory()) {
-      throw new Error(`Rust binary directory '${currentPath}' must be a directory`);
+      throw new Error(`${directoryLabel} '${currentPath}' must be a directory`);
     }
 
-    assertRootOwned(currentStats, currentPath, 'Rust binary directory');
+    assertRootOwned(currentStats, currentPath, directoryLabel);
     if (process.platform !== 'win32' && (currentStats.mode & GROUP_OTHER_WRITE_MODE_MASK) !== 0) {
-      throw new Error(`Rust binary directory '${currentPath}' must not be writable by group/other`);
+      throw new Error(`${directoryLabel} '${currentPath}' must not be writable by group/other`);
     }
   }
 }

@@ -1,0 +1,637 @@
+{
+  "description": "Tempo session open/topUp/voucher digests produced by viem/tempo. Regenerate with node scripts/generate-tempo-session-vectors.mjs.",
+  "vectors": [
+    {
+      "name": "4217-unsponsored-expiring-nonce",
+      "open": {
+        "chain_id": 4217,
+        "escrow_contract": "0x33b901018174DDabE4841042ab76ba85D4e24f25",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "deposit_wei": "2500000",
+        "tx": {
+          "nonce": 0,
+          "nonce_key": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+          "gas_limit": 412345,
+          "max_fee_per_gas_wei": "20000000000",
+          "max_priority_fee_per_gas_wei": "1000000",
+          "valid_before": 1900000025,
+          "fee_token": "0x20c0000000000000000000000000000000000001",
+          "fee_payer": false
+        }
+      },
+      "top_up": {
+        "chain_id": 4217,
+        "escrow_contract": "0x33b901018174DDabE4841042ab76ba85D4e24f25",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "channel_id_hex": "0x5a93f6d6047e243860b2ef2dc77b22f772e04215568b192e90d4142180c86903",
+        "additional_deposit_wei": "750000",
+        "tx": {
+          "nonce": 0,
+          "nonce_key": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+          "gas_limit": 412345,
+          "max_fee_per_gas_wei": "20000000000",
+          "max_priority_fee_per_gas_wei": "1000000",
+          "valid_before": 1900000025,
+          "fee_token": "0x20c0000000000000000000000000000000000001",
+          "fee_payer": false
+        }
+      },
+      "voucher": {
+        "chain_id": 4217,
+        "escrow_contract": "0x33b901018174DDabE4841042ab76ba85D4e24f25",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "channel_id_hex": "0x5a93f6d6047e243860b2ef2dc77b22f772e04215568b192e90d4142180c86903",
+        "cumulative_amount_wei": "1250000"
+      },
+      "expected": {
+        "channel_id_hex": "0x5a93f6d6047e243860b2ef2dc77b22f772e04215568b192e90d4142180c86903",
+        "open_calls": [
+          {
+            "to": "0x20c0000000000000000000000000000000000001",
+            "data": "0x095ea7b300000000000000000000000033b901018174ddabe4841042ab76ba85d4e24f2500000000000000000000000000000000000000000000000000000000002625a0"
+          },
+          {
+            "to": "0x33b901018174ddabe4841042ab76ba85d4e24f25",
+            "data": "0xc79ea485000000000000000000000000777777777777777777777777777777777777777700000000000000000000000020c000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000002625a05a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a00000000000000000000000019e7e376e7c213b7e7e7e46cc70a5dd086daff2a"
+          }
+        ],
+        "top_up_calls": [
+          {
+            "to": "0x20c0000000000000000000000000000000000001",
+            "data": "0x095ea7b300000000000000000000000033b901018174ddabe4841042ab76ba85d4e24f2500000000000000000000000000000000000000000000000000000000000b71b0"
+          },
+          {
+            "to": "0x33b901018174ddabe4841042ab76ba85d4e24f25",
+            "data": "0xb67644b95a93f6d6047e243860b2ef2dc77b22f772e04215568b192e90d4142180c8690300000000000000000000000000000000000000000000000000000000000b71b0"
+          }
+        ],
+        "open_signing_hash_hex": "0xca4cedc26690fbc5ca3150bdd228b4d837f295877cdc94aaf5145c2b9dcb9fb8",
+        "top_up_signing_hash_hex": "0x5edf5ed0b49907f4665d44cfa94a1e5a0a9c98bc79e2be5176e0f50385f53760",
+        "voucher_signing_hash_hex": "0x5fb4a4e6a088be60b99476d2bca467b1ee0ce678d56f8529bab03a29008a03fd"
+      }
+    },
+    {
+      "name": "4217-unsponsored-sequential-nonce",
+      "open": {
+        "chain_id": 4217,
+        "escrow_contract": "0x33b901018174DDabE4841042ab76ba85D4e24f25",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "deposit_wei": "2500000",
+        "tx": {
+          "nonce": 7,
+          "gas_limit": 412345,
+          "max_fee_per_gas_wei": "20000000000",
+          "max_priority_fee_per_gas_wei": "1000000",
+          "valid_after": 1800000000,
+          "fee_token": "0x20c0000000000000000000000000000000000001",
+          "fee_payer": false
+        }
+      },
+      "top_up": {
+        "chain_id": 4217,
+        "escrow_contract": "0x33b901018174DDabE4841042ab76ba85D4e24f25",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "channel_id_hex": "0x5a93f6d6047e243860b2ef2dc77b22f772e04215568b192e90d4142180c86903",
+        "additional_deposit_wei": "750000",
+        "tx": {
+          "nonce": 7,
+          "gas_limit": 412345,
+          "max_fee_per_gas_wei": "20000000000",
+          "max_priority_fee_per_gas_wei": "1000000",
+          "valid_after": 1800000000,
+          "fee_token": "0x20c0000000000000000000000000000000000001",
+          "fee_payer": false
+        }
+      },
+      "voucher": {
+        "chain_id": 4217,
+        "escrow_contract": "0x33b901018174DDabE4841042ab76ba85D4e24f25",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "channel_id_hex": "0x5a93f6d6047e243860b2ef2dc77b22f772e04215568b192e90d4142180c86903",
+        "cumulative_amount_wei": "1250000"
+      },
+      "expected": {
+        "channel_id_hex": "0x5a93f6d6047e243860b2ef2dc77b22f772e04215568b192e90d4142180c86903",
+        "open_calls": [
+          {
+            "to": "0x20c0000000000000000000000000000000000001",
+            "data": "0x095ea7b300000000000000000000000033b901018174ddabe4841042ab76ba85d4e24f2500000000000000000000000000000000000000000000000000000000002625a0"
+          },
+          {
+            "to": "0x33b901018174ddabe4841042ab76ba85d4e24f25",
+            "data": "0xc79ea485000000000000000000000000777777777777777777777777777777777777777700000000000000000000000020c000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000002625a05a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a00000000000000000000000019e7e376e7c213b7e7e7e46cc70a5dd086daff2a"
+          }
+        ],
+        "top_up_calls": [
+          {
+            "to": "0x20c0000000000000000000000000000000000001",
+            "data": "0x095ea7b300000000000000000000000033b901018174ddabe4841042ab76ba85d4e24f2500000000000000000000000000000000000000000000000000000000000b71b0"
+          },
+          {
+            "to": "0x33b901018174ddabe4841042ab76ba85d4e24f25",
+            "data": "0xb67644b95a93f6d6047e243860b2ef2dc77b22f772e04215568b192e90d4142180c8690300000000000000000000000000000000000000000000000000000000000b71b0"
+          }
+        ],
+        "open_signing_hash_hex": "0x92136c624ebc16d0533349874e3c3a5da5b512743635198c7f2e0eef862d0e91",
+        "top_up_signing_hash_hex": "0xe852cd74777eadd46c4254fe65387076342701a5911a792c3ec251ab383fc482",
+        "voucher_signing_hash_hex": "0x5fb4a4e6a088be60b99476d2bca467b1ee0ce678d56f8529bab03a29008a03fd"
+      }
+    },
+    {
+      "name": "4217-sponsored-expiring-nonce",
+      "open": {
+        "chain_id": 4217,
+        "escrow_contract": "0x33b901018174DDabE4841042ab76ba85D4e24f25",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "deposit_wei": "2500000",
+        "tx": {
+          "nonce": 0,
+          "nonce_key": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+          "gas_limit": 412345,
+          "max_fee_per_gas_wei": "20000000000",
+          "max_priority_fee_per_gas_wei": "1000000",
+          "valid_before": 1900000025,
+          "fee_payer": true
+        }
+      },
+      "top_up": {
+        "chain_id": 4217,
+        "escrow_contract": "0x33b901018174DDabE4841042ab76ba85D4e24f25",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "channel_id_hex": "0x5a93f6d6047e243860b2ef2dc77b22f772e04215568b192e90d4142180c86903",
+        "additional_deposit_wei": "750000",
+        "tx": {
+          "nonce": 0,
+          "nonce_key": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+          "gas_limit": 412345,
+          "max_fee_per_gas_wei": "20000000000",
+          "max_priority_fee_per_gas_wei": "1000000",
+          "valid_before": 1900000025,
+          "fee_payer": true
+        }
+      },
+      "voucher": {
+        "chain_id": 4217,
+        "escrow_contract": "0x33b901018174DDabE4841042ab76ba85D4e24f25",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "channel_id_hex": "0x5a93f6d6047e243860b2ef2dc77b22f772e04215568b192e90d4142180c86903",
+        "cumulative_amount_wei": "1250000"
+      },
+      "expected": {
+        "channel_id_hex": "0x5a93f6d6047e243860b2ef2dc77b22f772e04215568b192e90d4142180c86903",
+        "open_calls": [
+          {
+            "to": "0x20c0000000000000000000000000000000000001",
+            "data": "0x095ea7b300000000000000000000000033b901018174ddabe4841042ab76ba85d4e24f2500000000000000000000000000000000000000000000000000000000002625a0"
+          },
+          {
+            "to": "0x33b901018174ddabe4841042ab76ba85d4e24f25",
+            "data": "0xc79ea485000000000000000000000000777777777777777777777777777777777777777700000000000000000000000020c000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000002625a05a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a00000000000000000000000019e7e376e7c213b7e7e7e46cc70a5dd086daff2a"
+          }
+        ],
+        "top_up_calls": [
+          {
+            "to": "0x20c0000000000000000000000000000000000001",
+            "data": "0x095ea7b300000000000000000000000033b901018174ddabe4841042ab76ba85d4e24f2500000000000000000000000000000000000000000000000000000000000b71b0"
+          },
+          {
+            "to": "0x33b901018174ddabe4841042ab76ba85d4e24f25",
+            "data": "0xb67644b95a93f6d6047e243860b2ef2dc77b22f772e04215568b192e90d4142180c8690300000000000000000000000000000000000000000000000000000000000b71b0"
+          }
+        ],
+        "open_signing_hash_hex": "0xe796932107c02076868f973ff053c64bfd56fcccc35df1065331da794e2d96de",
+        "top_up_signing_hash_hex": "0xea587a043afa928eb5138c2472962ec2f3f7582095887e785246f108f1f776d9",
+        "voucher_signing_hash_hex": "0x5fb4a4e6a088be60b99476d2bca467b1ee0ce678d56f8529bab03a29008a03fd"
+      }
+    },
+    {
+      "name": "4217-sponsored-sequential-nonce",
+      "open": {
+        "chain_id": 4217,
+        "escrow_contract": "0x33b901018174DDabE4841042ab76ba85D4e24f25",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "deposit_wei": "2500000",
+        "tx": {
+          "nonce": 7,
+          "gas_limit": 412345,
+          "max_fee_per_gas_wei": "20000000000",
+          "max_priority_fee_per_gas_wei": "1000000",
+          "valid_after": 1800000000,
+          "fee_payer": true
+        }
+      },
+      "top_up": {
+        "chain_id": 4217,
+        "escrow_contract": "0x33b901018174DDabE4841042ab76ba85D4e24f25",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "channel_id_hex": "0x5a93f6d6047e243860b2ef2dc77b22f772e04215568b192e90d4142180c86903",
+        "additional_deposit_wei": "750000",
+        "tx": {
+          "nonce": 7,
+          "gas_limit": 412345,
+          "max_fee_per_gas_wei": "20000000000",
+          "max_priority_fee_per_gas_wei": "1000000",
+          "valid_after": 1800000000,
+          "fee_payer": true
+        }
+      },
+      "voucher": {
+        "chain_id": 4217,
+        "escrow_contract": "0x33b901018174DDabE4841042ab76ba85D4e24f25",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "channel_id_hex": "0x5a93f6d6047e243860b2ef2dc77b22f772e04215568b192e90d4142180c86903",
+        "cumulative_amount_wei": "1250000"
+      },
+      "expected": {
+        "channel_id_hex": "0x5a93f6d6047e243860b2ef2dc77b22f772e04215568b192e90d4142180c86903",
+        "open_calls": [
+          {
+            "to": "0x20c0000000000000000000000000000000000001",
+            "data": "0x095ea7b300000000000000000000000033b901018174ddabe4841042ab76ba85d4e24f2500000000000000000000000000000000000000000000000000000000002625a0"
+          },
+          {
+            "to": "0x33b901018174ddabe4841042ab76ba85d4e24f25",
+            "data": "0xc79ea485000000000000000000000000777777777777777777777777777777777777777700000000000000000000000020c000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000002625a05a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a00000000000000000000000019e7e376e7c213b7e7e7e46cc70a5dd086daff2a"
+          }
+        ],
+        "top_up_calls": [
+          {
+            "to": "0x20c0000000000000000000000000000000000001",
+            "data": "0x095ea7b300000000000000000000000033b901018174ddabe4841042ab76ba85d4e24f2500000000000000000000000000000000000000000000000000000000000b71b0"
+          },
+          {
+            "to": "0x33b901018174ddabe4841042ab76ba85d4e24f25",
+            "data": "0xb67644b95a93f6d6047e243860b2ef2dc77b22f772e04215568b192e90d4142180c8690300000000000000000000000000000000000000000000000000000000000b71b0"
+          }
+        ],
+        "open_signing_hash_hex": "0x027145d2fde3a07a429e56cb5388e144781ef3ff5aa5f2ccdc1d72d4b3f7c493",
+        "top_up_signing_hash_hex": "0x2a7c9216e2322c424bf9d5f6ebe81eb38824fb84061690825ae6bcb214efede5",
+        "voucher_signing_hash_hex": "0x5fb4a4e6a088be60b99476d2bca467b1ee0ce678d56f8529bab03a29008a03fd"
+      }
+    },
+    {
+      "name": "42431-unsponsored-expiring-nonce",
+      "open": {
+        "chain_id": 42431,
+        "escrow_contract": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "deposit_wei": "2500000",
+        "tx": {
+          "nonce": 0,
+          "nonce_key": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+          "gas_limit": 412345,
+          "max_fee_per_gas_wei": "20000000000",
+          "max_priority_fee_per_gas_wei": "1000000",
+          "valid_before": 1900000025,
+          "fee_token": "0x20c0000000000000000000000000000000000001",
+          "fee_payer": false
+        }
+      },
+      "top_up": {
+        "chain_id": 42431,
+        "escrow_contract": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "channel_id_hex": "0xf06275d1efdae1e60683ba6a2e60504c4958573e404d4b8c1056f4319cce58b0",
+        "additional_deposit_wei": "750000",
+        "tx": {
+          "nonce": 0,
+          "nonce_key": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+          "gas_limit": 412345,
+          "max_fee_per_gas_wei": "20000000000",
+          "max_priority_fee_per_gas_wei": "1000000",
+          "valid_before": 1900000025,
+          "fee_token": "0x20c0000000000000000000000000000000000001",
+          "fee_payer": false
+        }
+      },
+      "voucher": {
+        "chain_id": 42431,
+        "escrow_contract": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "channel_id_hex": "0xf06275d1efdae1e60683ba6a2e60504c4958573e404d4b8c1056f4319cce58b0",
+        "cumulative_amount_wei": "1250000"
+      },
+      "expected": {
+        "channel_id_hex": "0xf06275d1efdae1e60683ba6a2e60504c4958573e404d4b8c1056f4319cce58b0",
+        "open_calls": [
+          {
+            "to": "0x20c0000000000000000000000000000000000001",
+            "data": "0x095ea7b3000000000000000000000000e1c4d3dce17bc111181ddf716f75bae49e61a33600000000000000000000000000000000000000000000000000000000002625a0"
+          },
+          {
+            "to": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+            "data": "0xc79ea485000000000000000000000000777777777777777777777777777777777777777700000000000000000000000020c000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000002625a05a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a00000000000000000000000019e7e376e7c213b7e7e7e46cc70a5dd086daff2a"
+          }
+        ],
+        "top_up_calls": [
+          {
+            "to": "0x20c0000000000000000000000000000000000001",
+            "data": "0x095ea7b3000000000000000000000000e1c4d3dce17bc111181ddf716f75bae49e61a33600000000000000000000000000000000000000000000000000000000000b71b0"
+          },
+          {
+            "to": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+            "data": "0xb67644b9f06275d1efdae1e60683ba6a2e60504c4958573e404d4b8c1056f4319cce58b000000000000000000000000000000000000000000000000000000000000b71b0"
+          }
+        ],
+        "open_signing_hash_hex": "0x4a9161b4a8b1c6ceb815178361d0c7bacdd6042ed4a5adaccf2301ec7403799a",
+        "top_up_signing_hash_hex": "0xa5112b45dc6386648f4ac21ce7fc5adbd0ae57893715e44cdca2753a21090e1c",
+        "voucher_signing_hash_hex": "0x756133a05d9fe0822ae00d1719f4f39bc35c5c98b9c7f89726f1606150bb5fdd"
+      }
+    },
+    {
+      "name": "42431-unsponsored-sequential-nonce",
+      "open": {
+        "chain_id": 42431,
+        "escrow_contract": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "deposit_wei": "2500000",
+        "tx": {
+          "nonce": 7,
+          "gas_limit": 412345,
+          "max_fee_per_gas_wei": "20000000000",
+          "max_priority_fee_per_gas_wei": "1000000",
+          "valid_after": 1800000000,
+          "fee_token": "0x20c0000000000000000000000000000000000001",
+          "fee_payer": false
+        }
+      },
+      "top_up": {
+        "chain_id": 42431,
+        "escrow_contract": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "channel_id_hex": "0xf06275d1efdae1e60683ba6a2e60504c4958573e404d4b8c1056f4319cce58b0",
+        "additional_deposit_wei": "750000",
+        "tx": {
+          "nonce": 7,
+          "gas_limit": 412345,
+          "max_fee_per_gas_wei": "20000000000",
+          "max_priority_fee_per_gas_wei": "1000000",
+          "valid_after": 1800000000,
+          "fee_token": "0x20c0000000000000000000000000000000000001",
+          "fee_payer": false
+        }
+      },
+      "voucher": {
+        "chain_id": 42431,
+        "escrow_contract": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "channel_id_hex": "0xf06275d1efdae1e60683ba6a2e60504c4958573e404d4b8c1056f4319cce58b0",
+        "cumulative_amount_wei": "1250000"
+      },
+      "expected": {
+        "channel_id_hex": "0xf06275d1efdae1e60683ba6a2e60504c4958573e404d4b8c1056f4319cce58b0",
+        "open_calls": [
+          {
+            "to": "0x20c0000000000000000000000000000000000001",
+            "data": "0x095ea7b3000000000000000000000000e1c4d3dce17bc111181ddf716f75bae49e61a33600000000000000000000000000000000000000000000000000000000002625a0"
+          },
+          {
+            "to": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+            "data": "0xc79ea485000000000000000000000000777777777777777777777777777777777777777700000000000000000000000020c000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000002625a05a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a00000000000000000000000019e7e376e7c213b7e7e7e46cc70a5dd086daff2a"
+          }
+        ],
+        "top_up_calls": [
+          {
+            "to": "0x20c0000000000000000000000000000000000001",
+            "data": "0x095ea7b3000000000000000000000000e1c4d3dce17bc111181ddf716f75bae49e61a33600000000000000000000000000000000000000000000000000000000000b71b0"
+          },
+          {
+            "to": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+            "data": "0xb67644b9f06275d1efdae1e60683ba6a2e60504c4958573e404d4b8c1056f4319cce58b000000000000000000000000000000000000000000000000000000000000b71b0"
+          }
+        ],
+        "open_signing_hash_hex": "0x606ce1dee724b8ed95d438f9f48c79344a2d83687c5634e4c482436bacd9fd10",
+        "top_up_signing_hash_hex": "0xa19cc917f6af12a049d6061dcdac525322c3ba0dfcddd2b9ae4b696e2bce126a",
+        "voucher_signing_hash_hex": "0x756133a05d9fe0822ae00d1719f4f39bc35c5c98b9c7f89726f1606150bb5fdd"
+      }
+    },
+    {
+      "name": "42431-sponsored-expiring-nonce",
+      "open": {
+        "chain_id": 42431,
+        "escrow_contract": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "deposit_wei": "2500000",
+        "tx": {
+          "nonce": 0,
+          "nonce_key": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+          "gas_limit": 412345,
+          "max_fee_per_gas_wei": "20000000000",
+          "max_priority_fee_per_gas_wei": "1000000",
+          "valid_before": 1900000025,
+          "fee_payer": true
+        }
+      },
+      "top_up": {
+        "chain_id": 42431,
+        "escrow_contract": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "channel_id_hex": "0xf06275d1efdae1e60683ba6a2e60504c4958573e404d4b8c1056f4319cce58b0",
+        "additional_deposit_wei": "750000",
+        "tx": {
+          "nonce": 0,
+          "nonce_key": "115792089237316195423570985008687907853269984665640564039457584007913129639935",
+          "gas_limit": 412345,
+          "max_fee_per_gas_wei": "20000000000",
+          "max_priority_fee_per_gas_wei": "1000000",
+          "valid_before": 1900000025,
+          "fee_payer": true
+        }
+      },
+      "voucher": {
+        "chain_id": 42431,
+        "escrow_contract": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "channel_id_hex": "0xf06275d1efdae1e60683ba6a2e60504c4958573e404d4b8c1056f4319cce58b0",
+        "cumulative_amount_wei": "1250000"
+      },
+      "expected": {
+        "channel_id_hex": "0xf06275d1efdae1e60683ba6a2e60504c4958573e404d4b8c1056f4319cce58b0",
+        "open_calls": [
+          {
+            "to": "0x20c0000000000000000000000000000000000001",
+            "data": "0x095ea7b3000000000000000000000000e1c4d3dce17bc111181ddf716f75bae49e61a33600000000000000000000000000000000000000000000000000000000002625a0"
+          },
+          {
+            "to": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+            "data": "0xc79ea485000000000000000000000000777777777777777777777777777777777777777700000000000000000000000020c000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000002625a05a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a00000000000000000000000019e7e376e7c213b7e7e7e46cc70a5dd086daff2a"
+          }
+        ],
+        "top_up_calls": [
+          {
+            "to": "0x20c0000000000000000000000000000000000001",
+            "data": "0x095ea7b3000000000000000000000000e1c4d3dce17bc111181ddf716f75bae49e61a33600000000000000000000000000000000000000000000000000000000000b71b0"
+          },
+          {
+            "to": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+            "data": "0xb67644b9f06275d1efdae1e60683ba6a2e60504c4958573e404d4b8c1056f4319cce58b000000000000000000000000000000000000000000000000000000000000b71b0"
+          }
+        ],
+        "open_signing_hash_hex": "0x98ce3ff61221655f042d5d9155978c9566982544768958689649bb6196011d89",
+        "top_up_signing_hash_hex": "0x754aab229f1f64a5d7bc28658da310f60065a036182ffae3b56e0de2bc9275b9",
+        "voucher_signing_hash_hex": "0x756133a05d9fe0822ae00d1719f4f39bc35c5c98b9c7f89726f1606150bb5fdd"
+      }
+    },
+    {
+      "name": "42431-sponsored-sequential-nonce",
+      "open": {
+        "chain_id": 42431,
+        "escrow_contract": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "deposit_wei": "2500000",
+        "tx": {
+          "nonce": 7,
+          "gas_limit": 412345,
+          "max_fee_per_gas_wei": "20000000000",
+          "max_priority_fee_per_gas_wei": "1000000",
+          "valid_after": 1800000000,
+          "fee_payer": true
+        }
+      },
+      "top_up": {
+        "chain_id": 42431,
+        "escrow_contract": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "channel_id_hex": "0xf06275d1efdae1e60683ba6a2e60504c4958573e404d4b8c1056f4319cce58b0",
+        "additional_deposit_wei": "750000",
+        "tx": {
+          "nonce": 7,
+          "gas_limit": 412345,
+          "max_fee_per_gas_wei": "20000000000",
+          "max_priority_fee_per_gas_wei": "1000000",
+          "valid_after": 1800000000,
+          "fee_payer": true
+        }
+      },
+      "voucher": {
+        "chain_id": 42431,
+        "escrow_contract": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+        "token": "0x20c0000000000000000000000000000000000001",
+        "recipient": "0x7777777777777777777777777777777777777777",
+        "payer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "authorized_signer": "0x19E7E376E7C213B7E7e7e46cc70A5dD086DAff2A",
+        "salt_hex": "0x5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+        "channel_id_hex": "0xf06275d1efdae1e60683ba6a2e60504c4958573e404d4b8c1056f4319cce58b0",
+        "cumulative_amount_wei": "1250000"
+      },
+      "expected": {
+        "channel_id_hex": "0xf06275d1efdae1e60683ba6a2e60504c4958573e404d4b8c1056f4319cce58b0",
+        "open_calls": [
+          {
+            "to": "0x20c0000000000000000000000000000000000001",
+            "data": "0x095ea7b3000000000000000000000000e1c4d3dce17bc111181ddf716f75bae49e61a33600000000000000000000000000000000000000000000000000000000002625a0"
+          },
+          {
+            "to": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+            "data": "0xc79ea485000000000000000000000000777777777777777777777777777777777777777700000000000000000000000020c000000000000000000000000000000000000100000000000000000000000000000000000000000000000000000000002625a05a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a00000000000000000000000019e7e376e7c213b7e7e7e46cc70a5dd086daff2a"
+          }
+        ],
+        "top_up_calls": [
+          {
+            "to": "0x20c0000000000000000000000000000000000001",
+            "data": "0x095ea7b3000000000000000000000000e1c4d3dce17bc111181ddf716f75bae49e61a33600000000000000000000000000000000000000000000000000000000000b71b0"
+          },
+          {
+            "to": "0xe1c4d3dce17bc111181ddf716f75bae49e61a336",
+            "data": "0xb67644b9f06275d1efdae1e60683ba6a2e60504c4958573e404d4b8c1056f4319cce58b000000000000000000000000000000000000000000000000000000000000b71b0"
+          }
+        ],
+        "open_signing_hash_hex": "0x07a0703cb872b25a298f26f63ea65cf232a763efe0ebe51c8388cfb8d4d71cc5",
+        "top_up_signing_hash_hex": "0xa41ccbef8f6ac2791089fe72bfd3994a698c92ecff8ec26c9f86ecf138025ead",
+        "voucher_signing_hash_hex": "0x756133a05d9fe0822ae00d1719f4f39bc35c5c98b9c7f89726f1606150bb5fdd"
+      }
+    }
+  ]
+}
