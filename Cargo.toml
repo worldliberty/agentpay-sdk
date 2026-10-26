@@ -35,7 +35,7 @@ ark-bn254 = "0.5"
 ark-ec = "0.5"
 ark-ed-on-bn254 = "0.5"
 ark-ff = { version = "0.5", features = ["std"] }
-ark-serialize = "0.5"
+ark-serialize = "0.6"
 argon2 = "0.5"
 async-trait = "0.1"
 base64 = "0.22"
