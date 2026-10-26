@@ -28,7 +28,7 @@ aes = "0.8"
 aes-gcm = "0.10"
 alloy-chains = "0.2.33"
 alloy-dyn-abi = { version = "0.8.26", features = ["eip712"] }
-alloy-primitives = "0.8"
+alloy-primitives = "1.5"
 alloy-sol-types = "0.8"
 anyhow = "1"
 ark-bn254 = "0.5"
