@@ -24,7 +24,7 @@ authors = ["AgentPay SDK Team"]
 overflow-checks = true
 
 [workspace.dependencies]
-aes = "0.8"
+aes = "0.9"
 aes-gcm = "0.10"
 alloy-chains = "0.2.33"
 alloy-dyn-abi = { version = "0.8.26", features = ["eip712"] }
