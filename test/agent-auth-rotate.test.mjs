@@ -145,7 +145,10 @@ test('completeAgentAuthRotation uses the default Keychain writer when storeAgent
     chains: {},
   };
 
-  await withMockSecurityOnPath('exit 0', async () => {
+  // `security -i` reads its command from stdin; drain it so the write cannot race the exit.
+  const securityScript = ['if [ "$1" = "-i" ]; then', '  cat >/dev/null', 'fi', 'exit 0'];
+
+  await withMockSecurityOnPath(securityScript.join('\n'), async () => {
     const result = rotation.completeAgentAuthRotation(
       {
         agent_key_id: TEST_AGENT_KEY_ID,

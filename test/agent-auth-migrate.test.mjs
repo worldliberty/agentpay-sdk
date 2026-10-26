@@ -401,6 +401,9 @@ test('migrateLegacyAgentAuthToken uses the default platform and Keychain runners
       '  echo "The specified item could not be found in the keychain." 1>&2',
       '  exit 44',
       'fi',
+      'if [ "$1" = "-i" ]; then',
+      '  cat >/dev/null',
+      'fi',
       'exit 0',
     ].join('\n'),
     async () => {

@@ -2111,7 +2111,12 @@ async function withMockedAdminSetupEnv(fn) {
   fs.mkdirSync(rustBinDir, { recursive: true, mode: 0o700 });
   fs.mkdirSync(toolDir, { recursive: true, mode: 0o700 });
 
-  writeExecutable(path.join(toolDir, 'security'), 'exit 0');
+  // `security -i` reads its command from stdin; drain it like the real binary so the write
+  // cannot race the exit and fail with EPIPE.
+  writeExecutable(
+    path.join(toolDir, 'security'),
+    ['if [ "$1" = "-i" ]; then', '  cat >/dev/null', 'fi', 'exit 0'].join('\n'),
+  );
   writeDefaultMockSudo(path.join(toolDir, 'sudo'));
   writeMockSecretTool(path.join(toolDir, 'secret-tool'));
   writeManagedSetupHelpers(rustBinDir);
