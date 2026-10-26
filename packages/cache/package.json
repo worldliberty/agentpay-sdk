@@ -37,7 +37,7 @@
   },
   "types": "./src/index.ts",
   "dependencies": {
-    "ioredis": "^5.7.0"
+    "ioredis": "^6.0.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
