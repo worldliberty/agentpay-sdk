@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# launchd runner for the AgentPay daemon, installed by `agentpay-setup` (which embeds this file).
+#
+# Reads the machine secret from the System Keychain through the root-only helper and hands it to
+# the daemon on stdin. The secret never appears in argv or the environment.
 set -euo pipefail
 
 require_var() {
@@ -12,64 +16,50 @@ require_var() {
 require_var "AGENTPAY_DAEMON_BIN"
 require_var "AGENTPAY_STATE_FILE"
 require_var "AGENTPAY_DAEMON_SOCKET"
+require_var "AGENTPAY_KEYCHAIN_HELPER"
 require_var "AGENTPAY_KEYCHAIN_SERVICE"
 require_var "AGENTPAY_KEYCHAIN_ACCOUNT"
-require_var "AGENTPAY_KEYCHAIN_HELPER"
+require_var "AGENTPAY_ALLOW_ADMIN_EUID"
+require_var "AGENTPAY_ALLOW_AGENT_EUID"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "run-agentpay-daemon.sh must run as root" >&2
   exit 1
 fi
 
-if [[ ! -x "$AGENTPAY_DAEMON_BIN" ]]; then
-  echo "daemon binary is not executable: $AGENTPAY_DAEMON_BIN" >&2
-  exit 1
-fi
-if [[ ! -x "$AGENTPAY_KEYCHAIN_HELPER" ]]; then
-  echo "keychain helper is not executable: $AGENTPAY_KEYCHAIN_HELPER" >&2
-  exit 1
-fi
+for executable in "$AGENTPAY_DAEMON_BIN" "$AGENTPAY_KEYCHAIN_HELPER"; do
+  if [[ -L "$executable" || ! -f "$executable" || ! -x "$executable" ]]; then
+    echo "not a regular executable file: $executable" >&2
+    exit 1
+  fi
+done
 
 umask 077
-mkdir -p "$(dirname "$AGENTPAY_STATE_FILE")"
-mkdir -p "$(dirname "$AGENTPAY_DAEMON_SOCKET")"
-chmod 700 "$(dirname "$AGENTPAY_STATE_FILE")"
-chmod 755 "$(dirname "$AGENTPAY_DAEMON_SOCKET")"
-chown root:wheel "$(dirname "$AGENTPAY_STATE_FILE")" "$(dirname "$AGENTPAY_DAEMON_SOCKET")"
+keychain="${AGENTPAY_KEYCHAIN:-/Library/Keychains/System.keychain}"
 
-if ! vault_password="$("$AGENTPAY_KEYCHAIN_HELPER" read-generic-password --keychain /Library/Keychains/System.keychain --service "$AGENTPAY_KEYCHAIN_SERVICE" --account "$AGENTPAY_KEYCHAIN_ACCOUNT" 2>/dev/null)"; then
-  cat >&2 <<EOF2
-failed to read daemon password from System.keychain.
-expected generic password item:
+if ! machine_secret="$("$AGENTPAY_KEYCHAIN_HELPER" read-generic-password \
+  --keychain "$keychain" \
+  --service "$AGENTPAY_KEYCHAIN_SERVICE" \
+  --account "$AGENTPAY_KEYCHAIN_ACCOUNT" 2>/dev/null)"; then
+  cat >&2 <<EOF
+failed to read the AgentPay machine secret from the System Keychain
   service: $AGENTPAY_KEYCHAIN_SERVICE
   account: $AGENTPAY_KEYCHAIN_ACCOUNT
-  helper: $AGENTPAY_KEYCHAIN_HELPER
-EOF2
+rerun: sudo agentpay-setup install --user <your-login>
+EOF
   exit 1
 fi
-
-trap 'unset vault_password' EXIT
-
-admin_uid="${AGENTPAY_ALLOW_ADMIN_EUID:?missing AGENTPAY_ALLOW_ADMIN_EUID}"
-agent_uid="${AGENTPAY_ALLOW_AGENT_EUID:?missing AGENTPAY_ALLOW_AGENT_EUID}"
-signer_backend="${AGENTPAY_SIGNER_BACKEND:-software}"
+trap 'unset machine_secret' EXIT
 
 args=(
-  --non-interactive
-  --vault-password-stdin
+  --state-secret-stdin
   --state-file "$AGENTPAY_STATE_FILE"
   --daemon-socket "$AGENTPAY_DAEMON_SOCKET"
-  --signer-backend "$signer_backend"
-  --allow-admin-euid "$admin_uid"
-  --allow-agent-euid "$agent_uid"
+  --signer-backend "${AGENTPAY_SIGNER_BACKEND:-software}"
+  --allow-admin-euid "$AGENTPAY_ALLOW_ADMIN_EUID"
+  --allow-agent-euid "$AGENTPAY_ALLOW_AGENT_EUID"
 )
-if [[ -n "${AGENTPAY_SECURE_ENCLAVE_LABEL_PREFIX:-}" ]]; then
-  args+=(--secure-enclave-label-prefix "$AGENTPAY_SECURE_ENCLAVE_LABEL_PREFIX")
-fi
-if [[ -n "${AGENTPAY_ALLOW_CLIENT_EUID:-}" ]]; then
-  args+=(--allow-client-euid "$AGENTPAY_ALLOW_CLIENT_EUID")
-fi
 
-# Feed the password through a pipe (process substitution) instead of a here-string, which bash
-# may spill to a $TMPDIR temp file; `exec` keeps the daemon as launchd's direct child.
-exec "$AGENTPAY_DAEMON_BIN" "${args[@]}" < <(printf '%s\n' "$vault_password")
+# A pipe (process substitution) rather than a here-string, which bash may spill to a temp file;
+# `exec` keeps the daemon as launchd's direct child.
+exec "$AGENTPAY_DAEMON_BIN" "${args[@]}" < <(printf '%s\n' "$machine_secret")

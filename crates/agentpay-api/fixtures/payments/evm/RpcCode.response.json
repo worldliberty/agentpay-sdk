@@ -1,0 +1,9 @@
+{
+  "type": "EvmCode",
+  "data": {
+    "network": "bsc",
+    "chain_id": 56,
+    "address": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d",
+    "code_hex": "0x363d3d373d3d3d363d73"
+  }
+}

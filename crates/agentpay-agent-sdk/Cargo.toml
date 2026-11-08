@@ -1,0 +1,22 @@
+[package]
+name = "agentpay-agent-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+agentpay-signerd = { path = "../agentpay-signerd" }
+agentpay-domain = { path = "../agentpay-domain" }
+
+[dev-dependencies]
+tokio.workspace = true
+agentpay-api = { path = "../agentpay-api" }
+agentpay-policy = { path = "../agentpay-policy" }
+agentpay-signer = { path = "../agentpay-signer" }

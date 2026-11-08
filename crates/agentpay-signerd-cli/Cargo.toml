@@ -1,0 +1,34 @@
+[package]
+name = "agentpay-signerd-cli"
+description = "Binaries for the AgentPay signer daemon: agentpay-daemon and the agentpay-system-keychain helper"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+# The binary names are part of the install layout (agentpay-setup, launchd/systemd units and
+# runner scripts), so they stay fixed even though the package is named after the crate.
+[[bin]]
+name = "agentpay-daemon"
+path = "src/main.rs"
+
+[[bin]]
+name = "agentpay-system-keychain"
+path = "src/bin/agentpay-system-keychain.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+clap.workspace = true
+libc.workspace = true
+nix = { version = "0.30", features = ["user"] }
+tokio.workspace = true
+zeroize.workspace = true
+agentpay-signerd = { path = "../agentpay-signerd" }
+agentpay-signer = { path = "../agentpay-signer" }
+agentpay-transport = { path = "../agentpay-transport" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation.workspace = true
+security-framework.workspace = true
+security-framework-sys.workspace = true

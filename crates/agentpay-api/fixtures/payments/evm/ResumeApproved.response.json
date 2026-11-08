@@ -1,0 +1,31 @@
+{
+  "type": "EvmTransaction",
+  "data": {
+    "network": "bsc",
+    "chain_id": 56,
+    "payment": {
+      "asset": {
+        "key": "usd1",
+        "symbol": "USD1",
+        "decimals": 18,
+        "token": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d"
+      },
+      "counterparty": "0x10ed43c718714eb63d5aa57b78b54704e256024e",
+      "amount": "100",
+      "amount_wei": "100000000000000000000"
+    },
+    "from": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+    "to": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d",
+    "value_wei": "0",
+    "data_hex": "0x095ea7b300000000000000000000000010ed43c718714eb63d5aa57b78b54704e256024e0000000000000000000000000000000000000000000000056bc75e2d63100000",
+    "nonce": 8,
+    "gas_limit": 60000,
+    "max_fee_per_gas_wei": "1000000000",
+    "max_priority_fee_per_gas_wei": "1000000000",
+    "tx_hash": "0xa754253ff3995dd1cc4c283e819319aca14e970ed168d2a451d3be3cdda9f29b",
+    "raw_tx_hex": "0x02f8af3808843b9aca00843b9aca0082ea60948d0d000ee44948fc98c9b98a4fa4921476f08b0d80b844095ea7b300000000000000000000000010ed43c718714eb63d5aa57b78b54704e256024e0000000000000000000000000000000000000000000000056bc75e2d63100000c001a05555600efb706d1705ce849b90da9d2f47e2518bba42d73d7c6ccfcf0e07c913a003573f4d7bb9add59095ff5448bcb16b575e46ab24a226bd184469242619bcf5",
+    "broadcast": true,
+    "receipt": null,
+    "receipt_timed_out": false
+  }
+}

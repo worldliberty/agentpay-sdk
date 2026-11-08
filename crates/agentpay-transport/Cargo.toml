@@ -1,0 +1,27 @@
+[package]
+name = "agentpay-transport"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+agentpay-api = { path = "../agentpay-api" }
+anyhow.workspace = true
+async-trait.workspace = true
+nix = { version = "0.30", features = ["user", "socket"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+agentpay-signerd = { path = "../agentpay-signerd" }
+agentpay-domain = { path = "../agentpay-domain" }
+agentpay-policy = { path = "../agentpay-policy" }
+agentpay-signer = { path = "../agentpay-signer" }
+uuid.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+p256.workspace = true
+time.workspace = true

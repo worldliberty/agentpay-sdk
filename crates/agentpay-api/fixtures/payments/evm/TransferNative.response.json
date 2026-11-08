@@ -1,0 +1,28 @@
+{
+  "type": "EvmSignature",
+  "data": {
+    "network": "bsc",
+    "chain_id": 56,
+    "payment": {
+      "asset": {
+        "key": "bnb",
+        "symbol": "BNB",
+        "decimals": 18,
+        "token": null
+      },
+      "counterparty": "0x5aeda56215b167893e80b4fe645ba6d5bab767de",
+      "amount": "0.01",
+      "amount_wei": "10000000000000000"
+    },
+    "action": {
+      "kind": "TransferNative",
+      "chain_id": 56,
+      "to": "0x5aeda56215b167893e80b4fe645ba6d5bab767de",
+      "amount_wei": "10000000000000000"
+    },
+    "signature_hex": "0x3045022100ec45bc19c47411c28bdb8943d47eb123593560791f14f510bf05a16a60a6a6a6022042ea02dd8828c6eb17c5110b124b0b93e9840ddddda46637f2a7f6703ef39567",
+    "r_hex": null,
+    "s_hex": null,
+    "v": null
+  }
+}

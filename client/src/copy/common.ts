@@ -1,0 +1,62 @@
+/** Product-wide wording: names, key hints, and shared phrases. */
+export const common = {
+  product: 'AgentPay',
+  keys: {
+    select: '↑↓ select',
+    move: '←→ field',
+    adjust: '+/- adjust',
+    exclude: 'x block',
+    type: 'type to edit',
+    continue: 'enter continue',
+    confirm: 'enter confirm',
+    open: 'enter open',
+    back: 'esc back',
+    quit: 'q quit',
+    acknowledge: 'space acknowledge',
+    retry: 'r retry',
+    refresh: 'r refresh',
+    addToken: 'a add token',
+    rename: 'n rename',
+    openApprovals: 'a approvals',
+    amount: '0-9 or +/- amount',
+    blockRest: 'X block rest',
+    cancel: 'esc cancel',
+    showTestnets: 't test networks',
+    hideTestnets: 't hide test networks',
+    approve: 'a approve',
+    reject: 'x reject',
+  },
+  next: 'Next',
+  loading: 'Loading…',
+  working: 'Working…',
+  done: 'Done',
+  yes: 'Yes',
+  no: 'No',
+  on: 'On',
+  off: 'Off',
+  notSet: 'Not set',
+  none: 'None',
+  unknown: 'Unknown',
+  errorTitle: 'Something went wrong',
+  stepOf: (step: number, total: number) => `Step ${step} of ${total}`,
+  /** How a wallet on this machine is described (wallet picker, `agentpay admin wallets`). */
+  wallet: {
+    created: (date: string) => `created ${date}`,
+    agentKeys: (count: number) => (count === 1 ? '1 agent key' : `${count} agent keys`),
+    columns: ['NAME', 'VAULT KEY ID', 'EVM ADDRESS', 'SOLANA ADDRESS', 'CREATED', 'AGENT KEYS'],
+  },
+  /**
+   * Touch ID prompt reasons. macOS shows them as "agentpay-auth is trying to <reason>.", so each
+   * names exactly the operation being approved.
+   */
+  reasons: {
+    approve: (what: string) => `approve ${what}`,
+    reject: (what: string) => `reject ${what}`,
+    limits: 'change your AgentPay spending limits',
+    backup: 'export an encrypted backup of your AgentPay wallet',
+    verifyBackup: 'check an AgentPay wallet backup',
+    bootstrap: 'set up your AgentPay wallet',
+    session: 'make changes to your AgentPay wallet',
+    revoke: 'turn off Touch ID approvals for AgentPay',
+  },
+} as const;

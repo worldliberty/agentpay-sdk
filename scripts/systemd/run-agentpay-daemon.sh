@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# systemd runner for the AgentPay daemon, installed by `agentpay-setup` (which embeds this file).
+#
+# Reads the machine secret from the root-only secret file and hands it to the daemon on stdin.
+# The secret never appears in argv or the environment.
 set -euo pipefail
 
 require_var() {
@@ -12,62 +16,50 @@ require_var() {
 require_var "AGENTPAY_DAEMON_BIN"
 require_var "AGENTPAY_STATE_FILE"
 require_var "AGENTPAY_DAEMON_SOCKET"
-require_var "AGENTPAY_PASSWORD_FILE"
-require_var "AGENTPAY_PASSWORD_HELPER"
+require_var "AGENTPAY_SECRET_FILE"
+require_var "AGENTPAY_ALLOW_ADMIN_EUID"
+require_var "AGENTPAY_ALLOW_AGENT_EUID"
 
 if [[ "${EUID}" -ne 0 ]]; then
   echo "run-agentpay-daemon.sh must run as root" >&2
   exit 1
 fi
 
-if [[ ! -x "$AGENTPAY_DAEMON_BIN" ]]; then
-  echo "daemon binary is not executable: $AGENTPAY_DAEMON_BIN" >&2
+if [[ -L "$AGENTPAY_DAEMON_BIN" || ! -f "$AGENTPAY_DAEMON_BIN" || ! -x "$AGENTPAY_DAEMON_BIN" ]]; then
+  echo "not a regular executable file: $AGENTPAY_DAEMON_BIN" >&2
   exit 1
 fi
-if [[ ! -x "$AGENTPAY_PASSWORD_HELPER" ]]; then
-  echo "password helper is not executable: $AGENTPAY_PASSWORD_HELPER" >&2
+
+secret_file="$AGENTPAY_SECRET_FILE"
+if [[ -L "$secret_file" || ! -f "$secret_file" ]]; then
+  cat >&2 <<EOF
+the AgentPay machine secret is missing or not a regular file: $secret_file
+rerun: sudo agentpay-setup install --user <your-login>
+EOF
+  exit 1
+fi
+# GNU stat; the file must stay root-owned and private.
+if [[ "$(stat -c '%u %a' "$secret_file")" != "0 600" ]]; then
+  echo "the AgentPay machine secret must be owned by root with mode 0600: $secret_file" >&2
   exit 1
 fi
 
 umask 077
-mkdir -p "$(dirname "$AGENTPAY_STATE_FILE")"
-mkdir -p "$(dirname "$AGENTPAY_DAEMON_SOCKET")"
-chmod 700 "$(dirname "$AGENTPAY_STATE_FILE")"
-chmod 755 "$(dirname "$AGENTPAY_DAEMON_SOCKET")"
-chown root:root "$(dirname "$AGENTPAY_STATE_FILE")" "$(dirname "$AGENTPAY_DAEMON_SOCKET")"
-
-if ! vault_password="$("$AGENTPAY_PASSWORD_HELPER" "$AGENTPAY_PASSWORD_FILE" 2>/dev/null)"; then
-  cat >&2 <<EOF2
-failed to read daemon password from the managed password file.
-expected password file:
-  path: $AGENTPAY_PASSWORD_FILE
-  helper: $AGENTPAY_PASSWORD_HELPER
-EOF2
-  exit 1
-fi
-
-trap 'unset vault_password' EXIT
-
-admin_uid="${AGENTPAY_ALLOW_ADMIN_EUID:?missing AGENTPAY_ALLOW_ADMIN_EUID}"
-agent_uid="${AGENTPAY_ALLOW_AGENT_EUID:?missing AGENTPAY_ALLOW_AGENT_EUID}"
-signer_backend="${AGENTPAY_SIGNER_BACKEND:-software}"
+machine_secret="$(<"$secret_file")"
+trap 'unset machine_secret' EXIT
 
 args=(
-  --non-interactive
-  --vault-password-stdin
+  --state-secret-stdin
   --state-file "$AGENTPAY_STATE_FILE"
   --daemon-socket "$AGENTPAY_DAEMON_SOCKET"
-  --signer-backend "$signer_backend"
-  --allow-admin-euid "$admin_uid"
-  --allow-agent-euid "$agent_uid"
+  --signer-backend "${AGENTPAY_SIGNER_BACKEND:-software}"
+  --allow-admin-euid "$AGENTPAY_ALLOW_ADMIN_EUID"
+  --allow-agent-euid "$AGENTPAY_ALLOW_AGENT_EUID"
 )
-if [[ -n "${AGENTPAY_ALLOW_CLIENT_EUID:-}" ]]; then
-  args+=(--allow-client-euid "$AGENTPAY_ALLOW_CLIENT_EUID")
-fi
 if [[ -n "${AGENTPAY_TPM_DEVICE:-}" ]]; then
   args+=(--tpm-device "$AGENTPAY_TPM_DEVICE")
 fi
 
-# Feed the password through a pipe (process substitution) instead of a here-string, which bash
-# may spill to a $TMPDIR temp file; `exec` keeps the daemon as systemd's direct child.
-exec "$AGENTPAY_DAEMON_BIN" "${args[@]}" < <(printf '%s\n' "$vault_password")
+# A pipe (process substitution) rather than a here-string, which bash may spill to a temp file;
+# `exec` keeps the daemon as systemd's direct child.
+exec "$AGENTPAY_DAEMON_BIN" "${args[@]}" < <(printf '%s\n' "$machine_secret")

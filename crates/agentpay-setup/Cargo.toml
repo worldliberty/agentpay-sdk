@@ -1,0 +1,27 @@
+[package]
+name = "agentpay-setup"
+description = "Privileged installer for the AgentPay daemon (launchd/systemd units, machine secret, service account)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "agentpay-setup"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+getrandom = "0.3"
+hex.workspace = true
+nix = { version = "0.30", features = ["fs", "user"] }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

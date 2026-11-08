@@ -1,0 +1,45 @@
+{
+  "type": "Policies",
+  "data": [
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000001",
+      "priority": 10,
+      "policy_type": "PerTxMaxSpending",
+      "max_amount_wei": "100000000000000000000",
+      "recipients": {
+        "mode": "All"
+      },
+      "assets": {
+        "mode": "Set",
+        "values": [
+          {
+            "kind": "erc20",
+            "value": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d"
+          }
+        ]
+      },
+      "networks": {
+        "mode": "Set",
+        "values": [56]
+      },
+      "enabled": true
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000002",
+      "priority": 20,
+      "policy_type": "ManualApproval",
+      "min_amount_wei": "50000000000000000000",
+      "max_amount_wei": "100000000000000000000",
+      "recipients": {
+        "mode": "All"
+      },
+      "assets": {
+        "mode": "All"
+      },
+      "networks": {
+        "mode": "All"
+      },
+      "enabled": true
+    }
+  ]
+}

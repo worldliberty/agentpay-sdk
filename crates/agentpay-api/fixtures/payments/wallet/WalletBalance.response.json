@@ -1,0 +1,18 @@
+{
+  "type": "WalletBalance",
+  "data": {
+    "network": "bsc",
+    "chain_id": 56,
+    "chain_name": "BSC",
+    "family": "evm",
+    "asset": "usd1",
+    "symbol": "USD1",
+    "kind": "erc20",
+    "token": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d",
+    "decimals": 18,
+    "address": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+    "balance_base_units": "25500000000000000000",
+    "balance": "25.5",
+    "error": null
+  }
+}

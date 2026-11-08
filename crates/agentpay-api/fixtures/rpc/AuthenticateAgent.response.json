@@ -1,0 +1,20 @@
+{
+  "type": "AgentIdentity",
+  "data": {
+    "agent_key": {
+      "id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+      "vault_key_id": "5e0b7c1a-2d3f-4a5b-9c6d-7e8f9a0b1c2d",
+      "policies": "AllPolicies",
+      "created_at": [2026, 309, 11, 59, 5, 0, 0, 0, 0]
+    },
+    "vault_key": {
+      "id": "5e0b7c1a-2d3f-4a5b-9c6d-7e8f9a0b1c2d",
+      "source": "Generated",
+      "algorithm": "secp256k1",
+      "public_key_hex": "044e3b81af9c2234cad09d679ce6035ed1392347ce64ce405f5dcd36228a25de6e47fd35c4215d1edf53e6f83de344615ce719bdb0fd878f6ed76f06dd277956de",
+      "created_at": [2026, 309, 11, 59, 0, 0, 0, 0, 0]
+    },
+    "evm_address": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+    "solana_address": "9fijMemJYwXS5QD85Qxsq7iKqvSebgb6LvpGftgkeigk"
+  }
+}

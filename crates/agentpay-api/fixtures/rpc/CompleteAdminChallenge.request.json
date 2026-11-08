@@ -1,0 +1,7 @@
+{
+  "method": "CompleteAdminChallenge",
+  "params": {
+    "challenge_id": "0b8e4f2a-7c1d-4a3e-9b5f-6d2c8e1a4f70",
+    "signature_der_hex": "3045022100cb67edea00738b8d58107cb800b40f0faa0a52208281e4d7786cb7e089f7405c02204a510839863316625bcf0e05ff4aa634ec76dbc19b7848b3ea5c9ded41a19e64"
+  }
+}

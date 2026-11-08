@@ -1,0 +1,16 @@
+{
+  "type": "EvmReceiptLookup",
+  "data": {
+    "network": "bsc",
+    "chain_id": 56,
+    "receipt": {
+      "tx_hash": "0xeea2f8bd120806cc3bdd89e0640411ed04e47d11b01305059fd0948e887eaeaf",
+      "success": true,
+      "block_number": 45000123,
+      "block_hash": "0x5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b",
+      "gas_used": 34512,
+      "effective_gas_price_wei": "1000000000",
+      "contract_address": null
+    }
+  }
+}

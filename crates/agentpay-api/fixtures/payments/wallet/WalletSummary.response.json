@@ -1,0 +1,108 @@
+{
+  "type": "WalletSummary",
+  "data": {
+    "agent_key_id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+    "evm_address": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+    "solana_address": "9fijMemJYwXS5QD85Qxsq7iKqvSebgb6LvpGftgkeigk",
+    "default_network": "bsc",
+    "default_asset": "usd1",
+    "balances": [
+      {
+        "network": "bsc",
+        "chain_id": 56,
+        "chain_name": "BSC",
+        "family": "evm",
+        "asset": "bnb",
+        "symbol": "BNB",
+        "kind": "native",
+        "token": null,
+        "decimals": 18,
+        "address": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+        "balance_base_units": "2000000000000000000",
+        "balance": "2",
+        "error": null
+      },
+      {
+        "network": "bsc",
+        "chain_id": 56,
+        "chain_name": "BSC",
+        "family": "evm",
+        "asset": "usd1",
+        "symbol": "USD1",
+        "kind": "erc20",
+        "token": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d",
+        "decimals": 18,
+        "address": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+        "balance_base_units": "25500000000000000000",
+        "balance": "25.5",
+        "error": null
+      },
+      {
+        "network": "eth",
+        "chain_id": 1,
+        "chain_name": "ETH",
+        "family": "evm",
+        "asset": "eth",
+        "symbol": "ETH",
+        "kind": "native",
+        "token": null,
+        "decimals": 18,
+        "address": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+        "balance_base_units": null,
+        "balance": null,
+        "error": {
+          "kind": "ChainRpc",
+          "data": "eth_chainId failed: endpoint unreachable"
+        }
+      },
+      {
+        "network": "eth",
+        "chain_id": 1,
+        "chain_name": "ETH",
+        "family": "evm",
+        "asset": "usd1",
+        "symbol": "USD1",
+        "kind": "erc20",
+        "token": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d",
+        "decimals": 18,
+        "address": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+        "balance_base_units": null,
+        "balance": null,
+        "error": {
+          "kind": "ChainRpc",
+          "data": "eth_chainId failed: endpoint unreachable"
+        }
+      },
+      {
+        "network": "solana-devnet",
+        "chain_id": 900000002,
+        "chain_name": "Solana Devnet",
+        "family": "solana",
+        "asset": "sol",
+        "symbol": "SOL",
+        "kind": "sol",
+        "token": null,
+        "decimals": 9,
+        "address": "9fijMemJYwXS5QD85Qxsq7iKqvSebgb6LvpGftgkeigk",
+        "balance_base_units": "1000000",
+        "balance": "0.001",
+        "error": null
+      },
+      {
+        "network": "solana-devnet",
+        "chain_id": 900000002,
+        "chain_name": "Solana Devnet",
+        "family": "solana",
+        "asset": "usdc",
+        "symbol": "USDC",
+        "kind": "spl",
+        "token": "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+        "decimals": 6,
+        "address": "9fijMemJYwXS5QD85Qxsq7iKqvSebgb6LvpGftgkeigk",
+        "balance_base_units": "12500000",
+        "balance": "12.5",
+        "error": null
+      }
+    ]
+  }
+}

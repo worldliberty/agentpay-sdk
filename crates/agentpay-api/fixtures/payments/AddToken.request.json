@@ -1,0 +1,11 @@
+{
+  "method": "AddToken",
+  "params": {
+    "auth": {
+      "agent_key_id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+      "agent_auth_token": "8c1e5f0b2a7d4e3c9b6a1f8e2d7c4b0a.f3e2d1c0b9a8476594a3b2c1d0e9f8a7"
+    },
+    "network": "bsc",
+    "address": "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d"
+  }
+}

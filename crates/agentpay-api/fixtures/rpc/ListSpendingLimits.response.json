@@ -1,0 +1,52 @@
+{
+  "type": "SpendingLimits",
+  "data": {
+    "agent_key_id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+    "limits": [
+      {
+        "limit": {
+          "chain_id": 56,
+          "asset": {
+            "kind": "native_eth"
+          },
+          "per_tx_max_wei": "10000000000000000",
+          "daily_max_wei": "50000000000000000",
+          "weekly_max_wei": "100000000000000000"
+        },
+        "policy_ids": ["b1c2d3e4-0000-4000-8000-000000000006", "b1c2d3e4-0000-4000-8000-000000000007", "b1c2d3e4-0000-4000-8000-000000000008"],
+        "usage": {
+          "spent_24h_wei": "0",
+          "spent_7d_wei": "0",
+          "tx_count_24h": 0,
+          "remaining_24h_wei": "50000000000000000",
+          "remaining_7d_wei": "100000000000000000",
+          "available_now_wei": "10000000000000000"
+        }
+      },
+      {
+        "limit": {
+          "chain_id": 56,
+          "asset": {
+            "kind": "erc20",
+            "value": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d"
+          },
+          "per_tx_max_wei": "100000000000000000000",
+          "daily_max_wei": "500000000000000000000",
+          "weekly_max_wei": "1000000000000000000000",
+          "max_gas_per_tx_wei": "2000000000000000"
+        },
+        "policy_ids": ["b1c2d3e4-0000-4000-8000-000000000001", "b1c2d3e4-0000-4000-8000-000000000002", "b1c2d3e4-0000-4000-8000-000000000003", "b1c2d3e4-0000-4000-8000-000000000004"],
+        "usage": {
+          "spent_24h_wei": "1000000000000000000",
+          "spent_7d_wei": "41000000000000000000",
+          "tx_count_24h": 1,
+          "remaining_24h_wei": "499000000000000000000",
+          "remaining_7d_wei": "959000000000000000000",
+          "available_now_wei": "100000000000000000000"
+        }
+      }
+    ],
+    "other_policy_ids": [],
+    "as_of": [2026, 309, 12, 5, 0, 0, 0, 0, 0]
+  }
+}

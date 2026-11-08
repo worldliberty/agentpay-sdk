@@ -1,0 +1,12 @@
+{
+  "type": "WalletBackupSummary",
+  "data": {
+    "version": 2,
+    "created_at": "2026-11-05T12:00:00.000Z",
+    "address": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+    "public_key_hex": "044e3b81af9c2234cad09d679ce6035ed1392347ce64ce405f5dcd36228a25de6e47fd35c4215d1edf53e6f83de344615ce719bdb0fd878f6ed76f06dd277956de",
+    "source_vault_key_id": "5e0b7c1a-2d3f-4a5b-9c6d-7e8f9a0b1c2d",
+    "matching_vault_key_id": "5e0b7c1a-2d3f-4a5b-9c6d-7e8f9a0b1c2d",
+    "name": null
+  }
+}

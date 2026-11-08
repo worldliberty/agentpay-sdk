@@ -1,0 +1,12 @@
+{
+  "type": "TelemetryStatus",
+  "data": {
+    "enabled": true,
+    "consent": true,
+    "disabled_reason": null,
+    "install_id": "3f6c2a9e-8b1d-4e7f-a5c0-9d2b4e6f8a1c",
+    "crash_reports": true,
+    "analytics": true,
+    "notice": "AgentPay collects anonymous usage analytics and crash reports to understand adoption. It never collects private keys, passwords, wallet or recipient addresses, transaction hashes, or exact amounts; amounts and balances are reported only as coarse ranges. Opt out with `agentpay telemetry disable` or by setting AGENTPAY_TELEMETRY=0."
+  }
+}

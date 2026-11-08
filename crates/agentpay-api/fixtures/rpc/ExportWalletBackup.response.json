@@ -1,0 +1,15 @@
+{
+  "type": "WalletBackup",
+  "data": {
+    "backup_json": "{\n  \"kind\": \"agentpay-wallet-backup\",\n  \"version\": 2,\n  \"createdAt\": \"2026-11-05T12:00:00.000Z\",\n  \"wallet\": {\n    \"address\": \"0x2c7536E3605D9C16a7a3D7b1898e529396a65c23\",\n    \"vaultPublicKey\": \"0x044e3b81af9c2234cad09d679ce6035ed1392347ce64ce405f5dcd36228a25de6e47fd35c4215d1edf53e6f83de344615ce719bdb0fd878f6ed76f06dd277956de\",\n    \"sourceVaultKeyId\": \"5e0b7c1a-2d3f-4a5b-9c6d-7e8f9a0b1c2d\"\n  },\n  \"encryption\": {\n    \"algorithm\": \"aes-256-gcm\",\n    \"kdf\": \"scrypt\",\n    \"saltHex\": \"28c3e98d8d7bafd940830c489a04883a\",\n    \"ivHex\": \"6ff1f3acce295b0a9eda9fab\",\n    \"n\": 262144,\n    \"r\": 8,\n    \"p\": 1,\n    \"authTagHex\": \"933455f2529998e455b38ebea9731074\"\n  },\n  \"ciphertextHex\": \"53b4debb8483b8fa1700cec7f82ac8a39a50e21ed1d2faaf5cc3d90a9b60c665ac1d7fc46a21533c479f6ed1e82af0f0342cb0f7e595d18d60d7acde01365df9a4653f2b89ddfceb17748420a35efcc1964e43bc207f70347c29fb374c9fcbb18d66524c070aa43aa4d75516f6b37020a2d4adedab0e93ffaf77ff4d5644fdef70d915051ce0cdca306e6a87a7fa0dcb72a2c55b3a42d0816b44314f0c51b7fb2012d3b29c39acfd86003a276f229ae1c26acb01196104e3707652bf2b437240a7058c6088c7096bd4e2c828177a1d7c122a9d37a0bf068c2a8a177f2aa8949be23a5abbcebd662dc380df11ab324837d1b9cf746331699403df967d5c19fe8adcd3812341016fec82e24172facce323f33cd0dd5fc041426f5eadff42a7ffebc78f4327b4e3d9434359216c0d241af62004be56271e0e295dcf10c246297d6b815ae6f8712d08474bd61b1359eab74b8dd98a0855726ea908992d36bf8b33516b44396bc5ef498979aa2f03566895630ddd5aef32d3669a9c562d0a4bbef9d381b63715\"\n}\n",
+    "summary": {
+      "version": 2,
+      "created_at": "2026-11-05T12:00:00.000Z",
+      "address": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+      "public_key_hex": "044e3b81af9c2234cad09d679ce6035ed1392347ce64ce405f5dcd36228a25de6e47fd35c4215d1edf53e6f83de344615ce719bdb0fd878f6ed76f06dd277956de",
+      "source_vault_key_id": "5e0b7c1a-2d3f-4a5b-9c6d-7e8f9a0b1c2d",
+      "matching_vault_key_id": "5e0b7c1a-2d3f-4a5b-9c6d-7e8f9a0b1c2d",
+      "name": null
+    }
+  }
+}

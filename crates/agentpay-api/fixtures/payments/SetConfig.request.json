@@ -1,0 +1,43 @@
+{
+  "method": "SetConfig",
+  "params": {
+    "auth": {
+      "agent_key_id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+      "agent_auth_token": "8c1e5f0b2a7d4e3c9b6a1f8e2d7c4b0a.f3e2d1c0b9a8476594a3b2c1d0e9f8a7"
+    },
+    "config": {
+      "default_network": "bsc",
+      "default_asset": "usd1",
+      "chains": {
+        "bsc": {
+          "chain_id": 56,
+          "name": "BSC",
+          "family": "evm",
+          "rpc_url": "https://bsc-rpc.publicnode.com",
+          "fallback_rpc_urls": [
+            "https://1rpc.io/bnb"
+          ]
+        }
+      },
+      "tokens": {
+        "usd1": {
+          "name": "USD1",
+          "symbol": "USD1",
+          "recommended_limits": {
+            "per_tx": "10",
+            "daily": "100",
+            "weekly": "700"
+          },
+          "chains": {
+            "bsc": {
+              "chain_id": 56,
+              "is_native": false,
+              "address": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d",
+              "decimals": 18
+            }
+          }
+        }
+      }
+    }
+  }
+}

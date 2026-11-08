@@ -1,7 +1,7 @@
 interface:
-  display_name: "Add AgentPay Plugin"
-  short_description: "Add a new agentpay plugin with shared CLI plumbing"
-  default_prompt: "Use $add-plugin to add or refactor a `agentpay <plugin>` integration by registering it under `src/plugins`, keeping plugin-specific API code in `src/lib/<plugin>`, reusing the shared Rust daemon signing path through `CliPluginContext`, and adding focused CLI tests."
+  display_name: "Add AgentPay Payment Feature"
+  short_description: "Add a payment feature family to the AgentPay payments service"
+  default_prompt: "Use $add-plugin to add or refactor an AgentPay payment feature family: define documented wire types and fixtures in `crates/agentpay-api`, add the spec entry to `docs/daemon-api.md`, run `cargo xtask gen-api`, implement the handler under `crates/agentpay-paymentd/src/features/<family>` with one route in `dispatch.rs`, sign only through the signer daemon as the calling agent, add a thin `agentpay` client command with `--json` output, and follow \"Adding a paymentd method\" in `docs/daemon-api.md`."
 
 policy:
   allow_implicit_invocation: true

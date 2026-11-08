@@ -1,0 +1,15 @@
+{
+  "method": "ReleaseSignedNonce",
+  "params": {
+    "request": {
+      "request_id": "4d3c2b1a-0f9e-4d8c-8b7a-695847362514",
+      "agent_key_id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+      "agent_auth_token": "8c1e5f0b2a7d4e3c9b6a1f8e2d7c4b0a.f3e2d1c0b9a8476594a3b2c1d0e9f8a7",
+      "chain_id": 56,
+      "nonce": 7,
+      "tx_hash_hex": "0xeea2f8bd120806cc3bdd89e0640411ed04e47d11b01305059fd0948e887eaeaf",
+      "requested_at": [2026, 309, 12, 0, 1, 0, 0, 0, 0],
+      "expires_at": [2026, 309, 12, 2, 1, 0, 0, 0, 0]
+    }
+  }
+}

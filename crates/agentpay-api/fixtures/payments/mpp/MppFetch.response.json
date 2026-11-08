@@ -1,0 +1,50 @@
+{
+  "type": "MppResponse",
+  "data": {
+    "response": {
+      "url": "https://llm.example.com/v1/complete",
+      "status": 200,
+      "headers": [
+        {"name": "content-type", "value": "application/json"},
+        {"name": "payment-receipt", "value": "eyJtZXRob2QiOiJ0ZW1wbyIsImludGVudCI6InNlc3Npb24iLCJzdGF0dXMiOiJzdWNjZXNzIiwidGltZXN0YW1wIjoiMjAyNi0xMS0wNVQxMjozMDowMFoiLCJyZWZlcmVuY2UiOiIweDZiMGYzYzJkMWU5YThiN2M2ZDVlNGYzYTJiMWMwZDllOGY3YTZiNWM0ZDNlMmYxYTBiOWM4ZDdlNmY1YTRiM2MiLCJjaGFsbGVuZ2VJZCI6ImtNOXhQcVIyc1Q0dVY2d1g4eVowYUIiLCJjaGFubmVsSWQiOiIweDZiMGYzYzJkMWU5YThiN2M2ZDVlNGYzYTJiMWMwZDllOGY3YTZiNWM0ZDNlMmYxYTBiOWM4ZDdlNmY1YTRiM2MiLCJhY2NlcHRlZEN1bXVsYXRpdmUiOiI3NTAwMCIsInNwZW50IjoiNzUwMDAifQ"}
+      ],
+      "body": {"type": "text", "data": "{\"text\":\"Hi!\"}"},
+      "body_truncated": false
+    },
+    "payment": {
+      "challenge_id": "kM9xPqR2sT4uV6wX8yZ0aB",
+      "realm": "llm.example.com",
+      "method": "tempo",
+      "intent": "session",
+      "session_protocol": "v2",
+      "chain_id": 42431,
+      "network": "tempo-testnet",
+      "currency": "0x20c0000000000000000000000000000000000000",
+      "recipient": "0x742d35cc6634c0532925a3b844bc9e7595f8fe00",
+      "amount": "25000",
+      "charge": null,
+      "session": {
+        "session_key": "llm-example",
+        "channel_id": "0x6b0f3c2d1e9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c",
+        "opened": false,
+        "deposit": "1000000",
+        "topped_up": "0",
+        "cumulative_amount": "75000",
+        "vouchers": 1,
+        "closed": false,
+        "close_receipt": null
+      },
+      "receipt": {
+        "method": "tempo",
+        "intent": "session",
+        "status": "success",
+        "timestamp": "2026-11-05T12:30:00Z",
+        "reference": "0x6b0f3c2d1e9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c",
+        "challengeId": "kM9xPqR2sT4uV6wX8yZ0aB",
+        "channelId": "0x6b0f3c2d1e9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b9c8d7e6f5a4b3c",
+        "acceptedCumulative": "75000",
+        "spent": "75000"
+      }
+    }
+  }
+}

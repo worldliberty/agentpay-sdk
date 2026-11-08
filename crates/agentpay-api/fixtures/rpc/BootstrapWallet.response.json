@@ -1,0 +1,76 @@
+{
+  "type": "WalletBootstrap",
+  "data": {
+    "outcome": "created",
+    "vault_key": {
+      "id": "5e0b7c1a-2d3f-4a5b-9c6d-7e8f9a0b1c2d",
+      "source": "Generated",
+      "algorithm": "secp256k1",
+      "public_key_hex": "044e3b81af9c2234cad09d679ce6035ed1392347ce64ce405f5dcd36228a25de6e47fd35c4215d1edf53e6f83de344615ce719bdb0fd878f6ed76f06dd277956de",
+      "created_at": [2026, 309, 11, 59, 0, 0, 0, 0, 0]
+    },
+    "evm_address": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+    "solana_address": "9fijMemJYwXS5QD85Qxsq7iKqvSebgb6LvpGftgkeigk",
+    "agent_credentials": {
+      "agent_key": {
+        "id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "vault_key_id": "5e0b7c1a-2d3f-4a5b-9c6d-7e8f9a0b1c2d",
+        "policies": {
+          "PolicySet": ["b1c2d3e4-0000-4000-8000-000000000001", "b1c2d3e4-0000-4000-8000-000000000002", "b1c2d3e4-0000-4000-8000-000000000003", "b1c2d3e4-0000-4000-8000-000000000004", "b1c2d3e4-0000-4000-8000-000000000005", "b1c2d3e4-0000-4000-8000-000000000006", "b1c2d3e4-0000-4000-8000-000000000007", "b1c2d3e4-0000-4000-8000-000000000008"]
+        },
+        "created_at": [2026, 309, 11, 59, 5, 0, 0, 0, 0]
+      },
+      "auth_token": "8c1e5f0b2a7d4e3c9b6a1f8e2d7c4b0a.f3e2d1c0b9a8476594a3b2c1d0e9f8a7"
+    },
+    "spending_limits": {
+      "agent_key_id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+      "limits": [
+        {
+          "limit": {
+            "chain_id": 56,
+            "asset": {
+              "kind": "native_eth"
+            },
+            "per_tx_max_wei": "10000000000000000",
+            "daily_max_wei": "50000000000000000",
+            "weekly_max_wei": "100000000000000000"
+          },
+          "policy_ids": ["b1c2d3e4-0000-4000-8000-000000000006", "b1c2d3e4-0000-4000-8000-000000000007", "b1c2d3e4-0000-4000-8000-000000000008"],
+          "usage": {
+            "spent_24h_wei": "0",
+            "spent_7d_wei": "0",
+            "tx_count_24h": 0,
+            "remaining_24h_wei": "50000000000000000",
+            "remaining_7d_wei": "100000000000000000",
+            "available_now_wei": "10000000000000000"
+          }
+        },
+        {
+          "limit": {
+            "chain_id": 56,
+            "asset": {
+              "kind": "erc20",
+              "value": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d"
+            },
+            "per_tx_max_wei": "100000000000000000000",
+            "daily_max_wei": "500000000000000000000",
+            "weekly_max_wei": "1000000000000000000000",
+            "max_gas_per_tx_wei": "2000000000000000"
+          },
+          "policy_ids": ["b1c2d3e4-0000-4000-8000-000000000001", "b1c2d3e4-0000-4000-8000-000000000002", "b1c2d3e4-0000-4000-8000-000000000003", "b1c2d3e4-0000-4000-8000-000000000004"],
+          "usage": {
+            "spent_24h_wei": "0",
+            "spent_7d_wei": "0",
+            "tx_count_24h": 0,
+            "remaining_24h_wei": "500000000000000000000",
+            "remaining_7d_wei": "1000000000000000000000",
+            "available_now_wei": "100000000000000000000"
+          }
+        }
+      ],
+      "other_policy_ids": [],
+      "as_of": [2026, 309, 11, 59, 5, 0, 0, 0, 0]
+    },
+    "replaced_vault_key_ids": []
+  }
+}

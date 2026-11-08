@@ -1,0 +1,12 @@
+{
+  "type": "AgentCredentials",
+  "data": {
+    "agent_key": {
+      "id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+      "vault_key_id": "5e0b7c1a-2d3f-4a5b-9c6d-7e8f9a0b1c2d",
+      "policies": "AllPolicies",
+      "created_at": [2026, 309, 11, 59, 5, 0, 0, 0, 0]
+    },
+    "auth_token": "8c1e5f0b2a7d4e3c9b6a1f8e2d7c4b0a.f3e2d1c0b9a8476594a3b2c1d0e9f8a7"
+  }
+}

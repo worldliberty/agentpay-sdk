@@ -1,0 +1,7 @@
+{
+  "method": "CreateVaultKey",
+  "params": {
+    "auth": "peer_credentials",
+    "request": "Generate"
+  }
+}

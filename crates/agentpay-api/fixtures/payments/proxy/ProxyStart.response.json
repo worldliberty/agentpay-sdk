@@ -1,0 +1,21 @@
+{
+  "type": "ProxyStarted",
+  "data": {
+    "status": {
+      "running": true,
+      "address": "127.0.0.1:8402",
+      "agent_key_id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+      "allowed_hosts": ["api.example.com", "llm.example.com"],
+      "max_amount": "100000",
+      "currency": "0x20c0000000000000000000000000000000000000",
+      "deposit": "1000000",
+      "max_deposit": "5000000",
+      "requests": 0,
+      "payments": 0,
+      "failed_payments": 0
+    },
+    "token": "3f9a1c7e5b2d8f4a6c0e9b1d3f5a7c9e2b4d6f8a0c1e3b5d7f9a2c4e6b8d0f1a",
+    "proxy_url": "http://agentpay:3f9a1c7e5b2d8f4a6c0e9b1d3f5a7c9e2b4d6f8a0c1e3b5d7f9a2c4e6b8d0f1a@127.0.0.1:8402",
+    "ca_certificate_pem": "-----BEGIN CERTIFICATE-----\nMIIBdjCCARygAwIBAgIUQ2xpZW50LXByb3h5LWNhLWV4YW1wbGUwCgYIKoZIzj0E\nAwIwIjEgMB4GA1UEAwwXQWdlbnRQYXkgcGF5aW5nIHByb3h5IENBMCAXDTc1MDEw\n...\n-----END CERTIFICATE-----\n"
+  }
+}

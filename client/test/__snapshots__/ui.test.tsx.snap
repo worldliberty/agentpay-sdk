@@ -1,0 +1,19 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`design system > screen frame with callout and error snapshot 1`] = `
+"
+  AgentPay · Receive USD1
+
+  Step 1 of 3  ● ○ ○  Welcome
+
+  ╭────────────────────────────╮
+  │ ! Important things to know │
+  │ • Only send USD1 on BSC.   │
+  ╰────────────────────────────╯
+
+  ✗ It broke.
+    Next: Try again.
+
+  esc back
+"
+`;

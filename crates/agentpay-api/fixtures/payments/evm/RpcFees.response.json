@@ -1,0 +1,10 @@
+{
+  "type": "EvmFees",
+  "data": {
+    "network": "bsc",
+    "chain_id": 56,
+    "gas_price_wei": "1000000000",
+    "max_fee_per_gas_wei": "3000000000",
+    "max_priority_fee_per_gas_wei": "1000000000"
+  }
+}

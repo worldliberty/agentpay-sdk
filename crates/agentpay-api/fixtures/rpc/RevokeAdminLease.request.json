@@ -1,0 +1,12 @@
+{
+  "method": "RevokeAdminLease",
+  "params": {
+    "auth": {
+      "lease": {
+        "lease_id": "c3d2e1f0-5a6b-4c7d-8e9f-0a1b2c3d4e5f",
+        "lease_secret": "3f9a6c1e8b2d47f0a5c3e9b1d7f2a4c6e8b0d2f4a6c8e0b2d4f6a8c0e2b4d6f8"
+      }
+    },
+    "lease_id": "c3d2e1f0-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+  }
+}

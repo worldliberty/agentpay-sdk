@@ -1,0 +1,34 @@
+[package]
+name = "agentpay-signer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+bs58.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+k256.workspace = true
+rand.workspace = true
+schemars.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+time.workspace = true
+ts-rs.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+agentpay-domain = { path = "../agentpay-domain" }
+
+
+# Linux TPM backend requires tokio for spawn_blocking, serde_json for sealed
+# blob serialization, and sha2 for the SRK/seal auth domain separators.
+[target.'cfg(target_os = "linux")'.dependencies]
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tokio.workspace = true

@@ -1,0 +1,29 @@
+{
+  "type": "SolanaTransfer",
+  "data": {
+    "network": "solana",
+    "chain_id": 900000001,
+    "fee_payer": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+    "transfer": {
+      "kind": "spl",
+      "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "recipient_owner": "3D34zRx4vQzu1hMJsk9kMSduU6pNwDeSxEg95DMNMZGG",
+      "source_token_account": "F4YA4H7HeXLCvjLRKdh56FgE4cyHpPqLP1VCM6fEqEmX",
+      "destination_token_account": "H7U1xjt75A8UGZPvreRaAFaUCRb1kB93WX3pARfcHQQC",
+      "token_program": "token",
+      "decimals": 6,
+      "amount_wei": "2500000"
+    },
+    "recent_blockhash": "2GacFrCmYvGb6juhAXp2Tt4otSJrtzrbGTtpb4k1nUGe",
+    "durable_nonce": {
+      "account": "HNttzqyo9wN9AEjVbStaouHXc3LRsfnVpyze4arAVN3B",
+      "managed": false
+    },
+    "compute_unit_limit": 30000,
+    "compute_unit_price_micro_lamports": 5000,
+    "signature": "2iFVmhjdYvV7ABLGiXcrGXAofEKwUHZc82w7vdg3kDeeezKUMxoAG3HZ8hfnKhiZ1NdzgsN5b5EiTkn9nA6mdEaG",
+    "broadcast": {
+      "status": "submitted"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "method": "CreateAgentKey",
+  "params": {
+    "auth": "peer_credentials",
+    "vault_key_id": "5e0b7c1a-2d3f-4a5b-9c6d-7e8f9a0b1c2d",
+    "attachment": "AllPolicies"
+  }
+}

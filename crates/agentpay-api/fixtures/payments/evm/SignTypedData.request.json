@@ -1,0 +1,11 @@
+{
+  "method": "SignTypedData",
+  "params": {
+    "auth": {
+      "agent_key_id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+      "agent_auth_token": "8c1e5f0b2a7d4e3c9b6a1f8e2d7c4b0a.f3e2d1c0b9a8476594a3b2c1d0e9f8a7"
+    },
+    "typed_data_json": "{\"types\":{\"EIP712Domain\":[{\"name\":\"name\",\"type\":\"string\"},{\"name\":\"version\",\"type\":\"string\"},{\"name\":\"chainId\",\"type\":\"uint256\"},{\"name\":\"verifyingContract\",\"type\":\"address\"}],\"Order\":[{\"name\":\"buyer\",\"type\":\"address\"},{\"name\":\"amount\",\"type\":\"uint256\"},{\"name\":\"nonce\",\"type\":\"uint256\"}]},\"primaryType\":\"Order\",\"domain\":{\"name\":\"Example Shop\",\"version\":\"1\",\"chainId\":56,\"verifyingContract\":\"0x1111111111111111111111111111111111111111\"},\"message\":{\"buyer\":\"0x2c7536e3605d9c16a7a3d7b1898e529396a65c23\",\"amount\":\"1000000000000000000\",\"nonce\":1}}",
+    "approval_wait_secs": 60
+  }
+}

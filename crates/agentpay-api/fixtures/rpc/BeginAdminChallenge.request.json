@@ -1,0 +1,7 @@
+{
+  "method": "BeginAdminChallenge",
+  "params": {
+    "credential_id": "6f1c2a9e-3b4d-4e5f-8a7b-9c0d1e2f3a4b",
+    "purpose": "admin-session"
+  }
+}

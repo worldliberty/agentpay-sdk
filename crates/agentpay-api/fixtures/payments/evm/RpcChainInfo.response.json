@@ -1,0 +1,8 @@
+{
+  "type": "EvmChainInfo",
+  "data": {
+    "network": "bsc",
+    "chain_id": 56,
+    "block_number": 45000123
+  }
+}

@@ -1,0 +1,34 @@
+//! Daemon behavior tests, grouped by feature.
+
+mod activity;
+mod admin_auth;
+mod agent_policies;
+mod api_examples;
+mod approvals;
+mod approvals_policy;
+mod auth;
+mod broadcast;
+mod keys;
+mod nonce_limits;
+mod nonce_release;
+mod nonce_reserve;
+mod nonce_signed_release;
+mod permit2;
+mod persistent_store;
+mod policy;
+mod recovery;
+mod rpc;
+mod signing;
+mod solana;
+mod solana_payment;
+mod spend_limits;
+mod support;
+mod tempo;
+mod tx_policy;
+mod typed_data;
+mod validation;
+mod wallet_backup;
+mod wallet_bootstrap;
+mod wallet_limits;
+mod wallet_list;
+mod wallet_names;

@@ -1,0 +1,12 @@
+{
+  "type": "ProxyStatus",
+  "data": {
+    "running": false,
+    "address": null,
+    "agent_key_id": null,
+    "allowed_hosts": [],
+    "requests": 12,
+    "payments": 3,
+    "failed_payments": 1
+  }
+}
