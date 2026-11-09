@@ -12,6 +12,20 @@ export interface CacheClientOptions {
 
 let singletonClient: Redis | null = null;
 
+export const parseCachePort = (value: string | undefined): number => {
+  const normalized = value?.trim() || '6379';
+  if (!/^(0|[1-9][0-9]*)$/u.test(normalized)) {
+    throw new Error('CACHE_PORT must be an integer between 1 and 65535');
+  }
+
+  const port = Number(normalized);
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    throw new Error('CACHE_PORT must be an integer between 1 and 65535');
+  }
+
+  return port;
+};
+
 const getDefaultCacheUrl = (): string => {
   const explicitUrl = process.env.CACHE_URL?.trim();
   if (explicitUrl) {
@@ -19,7 +33,7 @@ const getDefaultCacheUrl = (): string => {
   }
 
   const host = process.env.CACHE_HOST?.trim() || '127.0.0.1';
-  const port = Number(process.env.CACHE_PORT?.trim() || '6379');
+  const port = parseCachePort(process.env.CACHE_PORT);
 
   return `redis://${host}:${port}`;
 };
