@@ -1,90 +1,159 @@
 # Capabilities
 
-## Use These Commands
+Exact commands, flags, and output. `agentpay <command> --help` wins if anything here disagrees.
 
-- One-click bootstrap: `curl -fsSL https://wlfi.sh | bash`
-- One-click skills only: `curl -fsSL https://wlfi.sh | bash -s -- --skills-only`
-- One-click update: rerun `curl -fsSL https://wlfi.sh | bash`
-- One-click packaged runtime bundles are available on macOS and Linux. Managed wallet setup is supported on both platforms after install.
-- Source install or update: `pnpm install && npm run build && npm run install:cli-launcher && npm run install:rust-binaries`
-- Show config: `agentpay config show --json`
-- Reuse wallet: `agentpay wallet --json`
-- Set up wallet on macOS or Linux: `agentpay admin setup`
-- Reuse existing wallet during setup recovery: `agentpay admin setup --reuse-existing-wallet`
-- Restore wallet from encrypted backup: `agentpay admin setup --restore-wallet-from <PATH>`
-- Export encrypted wallet backup: `agentpay admin wallet-backup export --output <PATH>`
-- Verify encrypted wallet backup: `agentpay admin wallet-backup verify <PATH>`
-- Open policy TUI on macOS or Linux: `agentpay admin tui`
-- Check native balance: `agentpay rpc balance --address <ADDRESS> --rpc-url <RPC_URL> --json`
-- Check ERC-20 balance: `agentpay rpc balance --address <ADDRESS> --token <TOKEN> --rpc-url <RPC_URL> --json`
-- Generate funding QR payload: `node scripts/prepare-funding-request.mjs --address <ADDRESS> --chain-id <CHAIN_ID> --network-name <NAME> [--qr-url] --json` (the gas token symbol is derived from the chain id; `--qr-url` adds a third-party hosted QR link)
-- Set default token policy and sync the live daemon attachment when wallet metadata exists: `agentpay admin token set-chain <tokenKey> <chainKey> --per-tx <amount> --daily <amount> --weekly <amount> [--vault-password-stdin] [--non-interactive]`
-- Add manual approval policy: `agentpay admin add-manual-approval-policy --network <id> --min-amount-wei <wei> --max-amount-wei <wei> ...`
-- List manual approval requests: `agentpay admin list-manual-approval-requests`
-- Approve manual approval request: `agentpay admin approve-manual-approval-request`
-- Resume approved broadcast-backed manual approval request: `agentpay admin resume-manual-approval-request --approval-request-id <UUID>`
-- Reject manual approval request: `agentpay admin reject-manual-approval-request`
-- Native transfer: `agentpay transfer-native --network <name> --to <address> --amount <amount>`
-- ERC-20 transfer: `agentpay transfer --network <name> --token <address> --to <address> --amount <amount>`
-- Approve allowance: `agentpay approve --network <name> --token <address> --spender <address> --amount <amount>`
-- x402 exact/EIP-3009 request: `agentpay x402 <url>`
-- MPP one-shot charge or persisted session request: `agentpay mpp <url> [--amount <amount>] [--deposit <amount>] [--session-state-file <path>] [--close-session] [--method <method>] [--header 'Name: value'] [--data <text> | --json-body <json>]`
-- Policy-checked raw tx request: `agentpay broadcast --network <name> --to <address> --value-wei <wei> ...`
-- Explicit sign and send: `agentpay tx broadcast --network <name> --rpc-url <url> --from <address> --to <address> --value-wei <wei> ...`
+## Common Options
 
-## Hard Rules
+Every agent command accepts:
 
-- Never ask the user to paste `VAULT_PASSWORD` into chat.
-- Never ask the user to paste a wallet backup password into chat.
-- Do not ask the user for a vault password before policy or admin mutations.
-- For setup and agent-auth admin flows, use a local secure prompt.
-- For policy changes, default to `agentpay admin tui`.
-- `agentpay admin token set-chain ...` is the non-TUI path for default per-token limits. It updates saved config and attempts to refresh the live daemon attachment for the existing wallet.
-- `agentpay admin token set-chain ...` needs a local secure prompt or `--vault-password-stdin`. If the apply step fails, do not claim the saved config or daemon policy changed.
-- `agentpay admin setup` should be run locally so the CLI can prompt securely if needed.
-- `agentpay wallet --json` is the wallet reuse check.
-- If the wallet exists and the user wants to preserve it while re-running setup, use `agentpay admin setup --reuse-existing-wallet`.
-- If the machine is new or the local wallet is gone and the user has a backup, use `agentpay admin setup --restore-wallet-from <PATH>`.
-- If the user does not specify network or asset for a payment, default to `USD1` on `bsc`.
-- If a request enters manual approval, say it is pending user approval instead of saying it failed.
-- For manual approval, prefer the local admin CLI approval commands.
-- For `transfer --broadcast`, `transfer-native --broadcast`, `approve --broadcast`, and `bitrefill buy --broadcast`, tell the user to keep the original command running after they approve locally.
-- If the original broadcast command is already gone after approval, use `agentpay admin resume-manual-approval-request --approval-request-id <UUID>`.
-- `transfer-native`, `transfer`, and `approve` use `--amount`, not `--amount-wei`.
-- `mpp` accepts an optional `--amount` to verify the expected charge amount before broadcasting. When omitted, the CLI pays the server's challenge amount automatically.
-- `mpp` charge resolves the payment chain from the server challenge and works on any EVM-compatible network (standard ERC-20 transfer; Tempo chains use TIP-20 with attribution memo).
-- `mpp --deposit` only applies to session mode (Tempo-only) and overrides the initial channel deposit; without it, the CLI defaults to the challenge amount.
-- `mpp --session-state-file` persists a session channel for later reuse, and `mpp --close-session` closes and removes that persisted session after the paid response.
-- `mpp` supports generic HTTP request shaping with `--method`, repeatable `--header`, `--data`, and `--json-body`.
-- `mpp` text mode handles session event streams, including automatic top-up and voucher replenishment on `payment-need-voucher` events.
-- `mpp --json` includes a decoded `Payment-Receipt` under `payment.receipt` when the server returns one.
-- `mpp --json` also includes `payment.closeReceipt` for one-shot session flows when the automatic close step returns a receipt.
-- `mpp --json` is intended for non-streaming responses; event-stream handling targets text mode.
-- `broadcast` and `tx broadcast` use wei-denominated fields such as `--value-wei`.
-- `transfer-native`, `transfer`, `approve`, and `bitrefill buy` can also broadcast immediately with `--broadcast`.
-- `x402` supports exact/EIP-3009 payment requirements.
-- `mpp` supports charge on any EVM chain and session on Tempo chains.
-- For Bitrefill quote and preview output, `amount` is the raw onchain base-unit integer, not a human-decimal amount. Example: ETH base units are wei, and `amount: 1000000` with `decimals: 6` means `1 USDC`.
-- Destination overrides still belong to `agentpay admin tui`.
-- If the user only asks what the skill can do, answer directly from the skill instead of probing the machine.
+| Option | Meaning |
+|---|---|
+| `--json` | print exactly one JSON document on stdout (results, pending approvals, and errors) |
+| `--agent-key-id <uuid>` | act as this agent key (default: the one saved by setup) |
+| `--agent-auth-token-stdin` | read the agent auth token from stdin instead of the keychain |
 
-## Secure Paths
+Payment commands also accept `--approval-wait <secs>`: how long to wait for a manual approval
+before returning (default 300 with `--broadcast`, else 0; max 600).
 
-- Setup on macOS or Linux: `agentpay admin setup`
-- Setup recovery with the same vault: `agentpay admin setup --reuse-existing-wallet`
-- Policy editing on macOS or Linux: `agentpay admin tui`
-- Manual approval: `agentpay admin list-manual-approval-requests`
+## Exit Codes
+
+| Code | Meaning | What to do |
+|---|---|---|
+| `0` | success | |
+| `1` | failure | read `error.message` and follow `error.next_action` |
+| `2` | usage error | fix the flags (`agentpay <command> --help`) |
+| `3` | waiting for manual approval | see the Manual Approval Rule in `SKILL.md` |
+| `4` | AgentPay is not installed, or this user has no agent credentials | the user runs `agentpay setup` |
+
+Errors with `--json`:
+
+```json
+{"error": {"code": "Policy", "message": "…", "next_action": "…"}}
+```
+
+`code` is the daemon error kind (for example `Policy`, `ChainRpc`, `Merchant`,
+`ManualApprovalPending`) or a client code (`usage`, `socket_missing`, `sudo_required`, …). A pending
+approval error also carries `approval_request_id`.
+
+## Wallet And Health
+
+| Command | Result |
+|---|---|
+| `agentpay wallet --json` | `agent_key_id`, `evm_address`, `solana_address`, `default_network`, `default_asset`, `balances[]` (`network`, `chain_id`, `asset`, `symbol`, `kind`, `token`, `decimals`, `balance`, `balance_base_units`, `error`) |
+| `agentpay status --json` | service and signer versions, `can_spend`, per-chain reachability, spending policy summary, `warnings[]` |
+| `agentpay fund [--network <net>] [--asset <asset>] [--amount <amount>] [--qr] --json` | `address`, `network`, `chain_id`, `symbol`, `token`, `uri` (EIP-681 or Solana Pay), `gas` (`symbol`, `note`) for token funding, `qr.terminal` with `--qr`, `instructions` |
+| `agentpay config show --json` | `default_network`, `default_asset`, `chains`, `tokens` |
+
+A balance entry whose chain did not answer has `balance: null` and an `error`; the rest are still
+returned.
+
+## EVM Payments
+
+| Command | Required | Optional |
+|---|---|---|
+| `agentpay transfer` | `--to`, `--amount` | `--token`/`--asset` (default `usd1`), `--network` (default `bsc`) |
+| `agentpay transfer-native` | `--to`, `--amount` | `--network` |
+| `agentpay approve` | `--spender`, `--amount` | `--token`/`--asset`, `--network` |
+| `agentpay broadcast` | `--to` | `--value-wei`, `--data-hex`, `--network` |
+| `agentpay sign-typed-data` | `--typed-data <json>` or `--typed-data-file <path>` | |
+
+Shared transaction options: `--broadcast`, `--no-wait`, `--receipt-timeout <secs>` (max 120),
+`--nonce`, `--gas-limit`, `--max-fee-per-gas-wei`, `--max-priority-fee-per-gas-wei`.
+
+- `--amount` is decimal whole units (`1.5`); `--value-wei` is wei.
+- Without `--broadcast`, `transfer`, `transfer-native`, and `approve` return a signature only, and
+  `broadcast` returns a signed transaction (`raw_tx_hex`) without sending it. Signatures count
+  toward spending limits either way.
+- With `--broadcast` the result includes `tx_hash`, `nonce`, fees, and `receipt` (`success`,
+  `block_number`) unless `--no-wait`. A reverted transaction exits `1`.
+
+## Solana
+
+| Command | Required | Optional |
+|---|---|---|
+| `agentpay transfer-sol` | `--network`, `--to`, `--amount` or `--amount-base-units` | |
+| `agentpay transfer-spl` | `--network`, `--to`, `--mint`, `--amount` or `--amount-base-units` | |
+
+Shared options: `--broadcast`, `--no-wait`, `--nonce <auto|recent|managed|<nonce account>>`,
+`--compute-unit-limit`, `--compute-unit-price`, `--reveal-raw-tx`. Networks: `solana-mainnet`,
+`solana-devnet`, `solana-testnet`. Manual approval on Solana needs a durable nonce (the default
+when broadcasting).
+
+## Manual Approval Results
+
+A payment held for approval prints (exit code `3`):
+
+```json
+{
+  "status": "manual_approval_pending",
+  "approval_request_id": "…",
+  "method": "Transfer",
+  "network": "bsc",
+  "chain_id": 56,
+  "payment": {"…": "…"},
+  "action": {"…": "…"},
+  "next_action": "Approve it with: agentpay admin approve <id>. Then finish the payment with: agentpay resume --approval-request-id <id>"
+}
+```
+
+`agentpay resume --approval-request-id <UUID> --json` finishes an approved EVM or Solana payment by
+resending the stored action unchanged.
+
+## Paid HTTP
+
+| Command | Options |
+|---|---|
+| `agentpay x402 <url>` | `--max-amount <base units>`, `--expected-amount <base units>` |
+| `agentpay mpp <url>` | `--amount`, `--deposit`, `--max-deposit` (base units), `--currency <token address>`, `--session-key <name>`, `--session-state-file <path>`, `--close-session` |
+
+Both accept `--method`, `--header "Name: value"` (repeatable), `--data <text>` or
+`--json-body <json>`, and `--approval-wait`. The result has `protocol`, `url`, `status`, `ok`,
+`headers`, `body` (parsed JSON when the response is JSON), `body_truncated`, and `payment` (`null`
+when nothing was paid). See [mpp-services.md](./mpp-services.md).
+
+## Paying Proxy
+
+| Command | Result |
+|---|---|
+| `agentpay proxy start [--port <port>] [--allow-host <host>]… [--max-amount <base units>] --json` | proxy `status`, the secret `proxy_url` and `token`, `env_file` (`~/.agentpay/proxy.env`, `HTTP(S)_PROXY` plus CA bundle variables), and `ca_file` (`~/.agentpay/proxy-ca.pem`). Never echo `proxy_url` or `token` into chat; load `env_file` into the child process instead |
+| `agentpay proxy status --json` | whether a proxy runs and its settings |
+| `agentpay proxy stop --json` | stops it |
+
+## Configuration And Telemetry
+
+- `agentpay config show --json`
+- `agentpay config set <key> <value>` with `default_network`, `default_asset`,
+  `chains.<network>.rpc_url`, or `agent_key_id`
+- `agentpay config agent-auth set --agent-key-id <uuid> --agent-auth-token-stdin` /
+  `agentpay config agent-auth clear`
+- `agentpay telemetry status|enable|disable`
+
+## Admin Commands (User-Run)
+
+These need Touch ID or the Mac password (macOS with Touch ID enabled) or `sudo`:
+
+- `agentpay admin approvals [--all]`
+- `agentpay admin approve <UUID> [--yes]`
+- `agentpay admin reject <UUID> [--reason <text>] [--yes]`
+- `agentpay admin limits` and `agentpay admin limits set <asset> --network <net> [--per-tx <amount>] [--daily <amount>] [--weekly <amount>] [--exclude]`
+- `agentpay admin wallet-backup export --output <PATH>` (passphrase entered locally, or
+  `--passphrase-stdin`; at least 12 characters)
+- `agentpay admin wallet-backup verify <PATH>`
+- `agentpay admin touch-id enable|status|disable`
 
 ## Built-In Defaults
 
-- built-in chain: `bsc` -> chain id `56` -> default RPC `https://bsc.drpc.org`
-- built-in token: `bnb` -> native BSC asset
-- built-in token: `usd1` -> mapped on `eth` and `bsc`
-- default payment asset when unspecified: `usd1` on `bsc` -> `0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d`
+- Networks: `bsc` (56), `eth` (1), `tempo` (4217), `tempo-testnet` (42431), `solana-mainnet`,
+  `solana-devnet`, `solana-testnet`
+- Tokens: `usd1` (bsc, eth, tempo), `bnb`, `eth`, `sol`, `usdc` (Solana), `usdc.e`, `pathusd`, `usd`
+  (Tempo)
+- Default payment: `usd1` on `bsc`
 
 ## Do Not Say
 
-- Do not claim the wallet address can always be reconstructed from config alone.
-- Do not claim the SDK knows how to buy app-specific assets without another app skill.
-- Do not claim destination overrides were applied unless the TUI path was actually used.
-- Do not keep trying to send when native gas is missing.
+- Do not mention a vault password; there is none.
+- Do not suggest `agentpay admin setup`, `agentpay admin tui`, `--reuse-existing-wallet`,
+  `--restore-wallet-from`, or `admin resume-manual-approval-request`; they are replaced by
+  `agentpay setup`, `agentpay admin limits`, the setup wizard choices, and `agentpay resume`.
+- Do not offer Stripe Link, Bitrefill, or private transfers; they are not part of AgentPay.
+- Do not pass agent tokens, passphrases, or proxy URLs as command-line arguments.

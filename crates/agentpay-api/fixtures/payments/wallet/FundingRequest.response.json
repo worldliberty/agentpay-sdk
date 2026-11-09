@@ -1,0 +1,25 @@
+{
+  "type": "FundingRequest",
+  "data": {
+    "network": "bsc",
+    "chain_id": 56,
+    "chain_name": "BSC",
+    "family": "evm",
+    "asset": "usd1",
+    "symbol": "USD1",
+    "kind": "erc20",
+    "token": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d",
+    "decimals": 18,
+    "address": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+    "amount": "25",
+    "amount_base_units": "25000000000000000000",
+    "uri": "ethereum:0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d@56/transfer?address=0x2c7536e3605d9c16a7a3d7b1898e529396a65c23&uint256=25000000000000000000",
+    "qr": null,
+    "gas": {
+      "asset": "bnb",
+      "symbol": "BNB",
+      "note": "USD1 transfers pay network fees in BNB; send a little BNB on BSC too."
+    },
+    "instructions": "Please send at least 25 USD1 to 0x2c7536e3605d9c16a7a3d7b1898e529396a65c23 on BSC (chain 56), plus a little BNB for network fees, then say when the transfer is confirmed."
+  }
+}

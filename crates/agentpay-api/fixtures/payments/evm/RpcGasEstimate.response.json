@@ -1,0 +1,8 @@
+{
+  "type": "EvmGasEstimate",
+  "data": {
+    "network": "bsc",
+    "chain_id": 56,
+    "gas_limit": 34512
+  }
+}

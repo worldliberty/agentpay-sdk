@@ -2,6 +2,152 @@
 
 All notable changes to AgentPay SDK are documented in this file.
 
+## [1.0.0] - 2026-11-08
+
+AgentPay 1.0.0 is a rewrite. All product logic moves into two Rust daemons with a documented API,
+and the TypeScript CLI is replaced by a small Ink client. Changes are relative to 0.5.0; the 0.6.0
+development line was never released and is folded into this release.
+
+### Architecture
+
+- `agentpay-daemon` (signer daemon, root) keeps keys, policies, spending limits, manual approvals,
+  and nonces, as before, but its state is now encrypted (HKDF-SHA256 + XChaCha20-Poly1305) under a
+  random machine secret stored root-only: the System Keychain on macOS, a `0600` root file on Linux
+- new `agentpay-paymentd` payments service, running as an unprivileged service account
+  (`_agentpay` / `agentpay`), does all network work: EVM (alloy) and Solana RPC, transaction
+  building, verification, and broadcast, x402, MPP, the paying proxy, balances, funding requests,
+  and telemetry. It holds no keys and asks the signer daemon for every signature as the calling
+  agent
+- new `agentpay` client (TypeScript + Ink): the command line with `--json` output and the terminal
+  UI (setup wizard, home, receive, approvals, limits, security). It contains no payment logic
+- new `agentpay-setup` installer, run under sudo: installs binaries, the machine secret, the
+  payments service account, and launchd/systemd units for both services; idempotent; `uninstall
+  [--keep-state]`
+- new `agentpay-auth` helper (macOS, Swift/CryptoKit): a Secure Enclave P-256 admin key that
+  signs the signer daemon's admin challenges after Touch ID or the Mac login password
+- `crates/agentpay-api`: the public daemon API contract, published as API `1.1.0`, with
+  `docs/daemon-api.md`, a JSON Schema (`docs/api/schema.json`), and generated TypeScript types
+  (`cargo xtask gen-api`)
+- Rust crates renamed from `vault-*` to `agentpay-*`; the repository is one Cargo workspace plus
+  `client/` (npm), with `just` recipes and `cargo xtask` tooling instead of pnpm, turbo, and tsup
+
+### Added
+
+- setup wizard (`agentpay setup`): create, restore, or keep a wallet; Touch ID; spending limits;
+  encrypted backup. Keeping a wallet shows its address, and asks which one when the machine has
+  several
+- `agentpay admin wallets [--json]` lists the wallets on the machine (signer daemon `ListWallets`:
+  addresses, creation time, agent keys; no secrets); `agentpay admin wallet-backup export
+  --wallet <vault-key-id|address>` picks the wallet to back up when there are several
+- spending limits per network and asset (per payment, rolling 24 hours, rolling 7 days), deny by
+  default: an asset without a limit cannot be spent. `agentpay admin limits` (interactive) and
+  `agentpay admin limits set`
+- admin approvals with Touch ID or the Mac password (`agentpay admin touch-id enable`), or `sudo`
+  on Linux, over SSH, or when Touch ID is off
+- `agentpay resume --approval-request-id <id>` finishes an EVM or Solana payment that waited for
+  manual approval by resending the stored action unchanged
+- `agentpay proxy start|stop|status`: a loopback HTTP proxy that pays x402 and MPP `402` answers for
+  any HTTP client, with a per-run token and certificate authority, `--allow-host`, and
+  `--max-amount`
+- `agentpay fund [--qr]`: funding address, EIP-681 or Solana Pay URI, gas hint, and a terminal QR
+  code rendered by the payments service
+- `agentpay status`: service, signer, chain, and limit health with warnings
+- built-in Arbitrum, Arbitrum Sepolia, Base, Base Sepolia, Optimism, and Polygon networks with
+  public RPC endpoints and backups, native USDC and ETH on each (POL on Polygon); paymentd adds
+  them to a stored configuration once when it loads it, without changing existing entries, and a
+  network removed afterwards stays removed
+- built-in tokens: USDC on Ethereum and BSC, and USD1 on Solana and on Tempo (the TIP-20
+  `0x20c0…e910f0f`), added to stored configurations once like new networks
+- MPP charges on any configured EVM network: `evm` (`draft-evm-charge-00`, BNB Chain's MPP SDK)
+  and `arbitrum` (`@arbitrum/mpp`), paid with the first credential the merchant accepts in the
+  order `authorization` (EIP-3009), `permit2` (a Permit2 witness permit, with a one-time Permit2
+  approval per token and chain), `hash`, `transaction`, so the agent pays no gas when it can;
+  split payments are paid with `permit2`
+- MPP `solana` charges (`draft-solana-charge-00`, `@solana/pay-kit`) in pull mode, including
+  merchant-paid fees, splits, and `externalId` memos
+- `agentpay mpp` and `agentpay proxy start` take `--network`, and `--currency` takes an EVM
+  token, a Solana mint, or `sol`
+- `examples/sample-llm`: an example third-party tool that streams LLM answers from an MPP merchant
+  through `agentpay proxy` and reports what it was charged
+- Tempo MPP sessions on TIP-1034 reserve channels (sessions v2), with `--session-key`,
+  `--max-deposit`, `--currency`, and `--close-session`; channels are bound to the opening agent key
+  and vouchers are capped at the deposited total
+- exit codes: `0` success, `1` failure, `2` usage error, `3` waiting for manual approval, `4` not
+  installed or no agent credentials; `--json` errors are `{"error": {"code", "message",
+  "next_action"}}`
+
+### Changed
+
+- `agentpay setup` replaces `agentpay admin setup`; reusing (`--reuse-existing-wallet`) and
+  restoring (`--restore-wallet-from`) a wallet are choices in the setup wizard
+- `agentpay admin approvals`, `approve <id>`, and `reject <id>` replace the
+  `*-manual-approval-request` commands; `agentpay admin limits` replaces `agentpay admin tui` for
+  limits
+- `agentpay mpp` and `agentpay x402` amounts (`--amount`, `--deposit`, `--max-deposit`,
+  `--max-amount`) are integer base units, as in the merchant challenge
+- `agentpay mpp --session-state-file <path>` maps to a session key; session state is kept by the
+  payments service instead of a client file
+- wallet backups (`agentpay admin wallet-backup export|verify`) are written and read inside the
+  signer daemon (format v2: scrypt N=2^18 + AES-256-GCM); the passphrase needs at least 12
+  characters
+- telemetry (Mixpanel usage analytics, Sentry crash reports) is sent by the payments service under
+  the same privacy rules; `agentpay telemetry disable` turns it off
+- `u128` amounts, counts, and limits are decimal strings everywhere on the wire
+- MPP challenge ranking puts challenges the wallet cannot pay last (balances are read before
+  choosing), then prefers payments that need no native coin for gas; a transaction the wallet
+  cannot pay the gas for is refused before anything is signed
+- one MPP request pays at most one charge: a merchant that answers a charge credential with
+  another `402` does not get a second one
+
+### Removed
+
+- the TypeScript CLI (`src/`), its npm package and `./link` export, and the pnpm/turbo/tsup
+  monorepo
+- the vault password: no prompts, no `--vault-password-stdin`, no password lockout
+- Railgun private transfers (`private-balance` and related commands, the prover and vector
+  generator apps)
+- the relay and web approval console (`apps/relay`, `apps/web`) and `set-relay-config` /
+  `get-relay-config`
+- Stripe Link (`agentpay link …`) and Bitrefill (`agentpay bitrefill …`)
+- MPP sessions v1 (legacy escrow channels) and the TypeScript MPP implementation
+- plaintext private key export (`export-vault-private-key`, `--print-vault-private-key`)
+- the XPC transport, the Windows TPM backend, and the Secure Enclave wallet backend
+- the old `agentpay-admin` and `agentpay-agent` binaries
+- the bash one-click installer and its Node.js/Homebrew bootstrap and skill-pack installation;
+  `curl -fsSL https://wlfi.sh | sh` now runs `scripts/install.sh`, which installs the release into
+  `~/.agentpay` without sudo
+
+### Security
+
+- calldata the policy engine does not recognize is denied by default; value-bearing EIP-712 data
+  cannot bypass spending limits; an attachment with no enabled policies denies
+- manual-approval policies no longer mask hard limits
+- the signer daemon reconstructs every Tempo session payload from structured fields before signing
+- capped nonce skipping and the number of pending manual-approval requests
+- secrets travel only on stdin, pipes, or the daemon sockets, never in arguments or environment
+  variables
+- the payments service runs unprivileged and is on the signer daemon's agent allowlist only
+- Permit2: permits are signed only as the policy-checked `Permit2WitnessTransfer` action (the sum
+  of the entries counts against limits, with the spender as the recipient); generic EIP-712 data
+  bound to the Permit2 contract is always refused (`Permit2TypedDataDenied`); an approval of
+  Permit2 has a policy amount of 0 but otherwise needs a policy for its network and token, like
+  any payment
+- upgrades keep working when a new release replaces the keychain helper that sealed the machine
+  secret, and an interrupted setup restarts the services on the next run
+
+### Migration
+
+- `agentpay setup` (through `agentpay-setup install`) migrates a vault-password install
+  automatically: it stores a new machine secret, re-encrypts the daemon state under it, and only
+  then deletes the stored vault password. The wallet and its addresses are unchanged
+- encrypted wallet backups from earlier releases (formats v1 and v2) restore in the setup wizard
+- agents that used `agentpay admin setup`, `admin tui`, or the `*-manual-approval-request` commands
+  must switch to the commands above; the updated skills in `skills/agentpay-sdk` do this
+- open MPP sessions v1 channels cannot be used or closed by 1.0.0; close them with an earlier
+  release before upgrading
+
+Detailed release notes: [releases/v1.0.0.md](releases/v1.0.0.md)
+
 ## [0.5.1] - 2026-10-23
 
 ### Breaking

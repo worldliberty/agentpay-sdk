@@ -1,0 +1,11 @@
+{
+  "type": "PolicyExplanation",
+  "data": {
+    "attached_policy_ids": ["a1b2c3d4-0000-4000-8000-000000000001", "a1b2c3d4-0000-4000-8000-000000000002"],
+    "applicable_policy_ids": ["a1b2c3d4-0000-4000-8000-000000000001", "a1b2c3d4-0000-4000-8000-000000000002"],
+    "evaluated_policy_ids": ["a1b2c3d4-0000-4000-8000-000000000001", "a1b2c3d4-0000-4000-8000-000000000002"],
+    "decision": {
+      "decision": "allow"
+    }
+  }
+}

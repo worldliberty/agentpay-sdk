@@ -1,0 +1,156 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Approvals > lists requests, opens the detail rows, and approves with Touch ID 1`] = `
+"
+  AgentPay · Review request
+
+  Action     Send
+  To         0x5aeda56215b167893e80b4fe645ba6d5bab767de
+  Amount     1 USD1
+  Network    BSC
+  Agent      9a8b7c6d…7c6d
+  Requested  5 min ago
+  Why        A policy asks for your approval
+
+  › Approve with Touch ID
+    Reject
+    Back
+
+  ↑↓ select · enter confirm · esc back
+"
+`;
+
+exports[`Backup form > validates the passphrase, requires the acknowledgement, then exports 1`] = `
+"An encrypted backup lets you restore this wallet if this machine is lost.
+
+  Save to
+  /home/me/backup.json
+
+  Passphrase
+  •••••••••••••••••••••••••••
+  At least 12 characters
+
+  Repeat passphrase
+  •••••••••••••••••••••••••••
+
+╭────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ ! Before you continue                                                                          │
+│ • If you forget this passphrase, the backup cannot be opened. Nobody, including AgentPay, can  │
+│ recover it.                                                                                    │
+│ • Anyone with the backup file and the passphrase controls your funds.                          │
+│ • Store the file offline, away from this machine.                                              │
+│                                                                                                │
+│ › [ ] I understand that a lost passphrase cannot be recovered                                  │
+╰────────────────────────────────────────────────────────────────────────────────────────────────╯"
+`;
+
+exports[`Home > shows the address, balances, pending approvals, and actions 1`] = `
+"
+  AgentPay · Home   0x2c75…5c23
+
+  EVM address     0x2c7536e3605d9c16a7a3d7b1898e529396a65c23
+  Solana address  9fijMemJYwXS5QD85Qxsq7iKqvSebgb6LvpGftgkeigk
+
+  Balances
+  BSC   25.5 USD1
+           2 BNB
+  ETH  ✗ The RPC cannot be reached
+  ! 1 network cannot be read. Next: Use your own RPC: \`agentpay config set chains.eth.rpc_url
+  <URL>\` (backups: \`chains.eth.fallback_rpc_urls\`).
+
+  ! 1 request waiting for your approval
+
+  › Receive          Add funds to this wallet
+    Send             Pay someone from this wallet
+    Approvals (1)    Requests waiting for you
+    Activity         Recent payments and what waits for you
+    Spending limits  What agents may spend without asking
+    Wallet           Which wallet your agents use
+    Security         Touch ID, alerts, and backups
+    Quit
+
+  ↑↓ select · enter open · r refresh · t test networks · q quit
+"
+`;
+
+exports[`Limits > shows per-asset rows with usage, edits with steppers, and saves 1`] = `
+"
+  AgentPay · Spending limits
+
+  Agents pay on their own up to these limits. Anything beyond waits for your approval.
+
+    Asset     Network         Per payment   Per day       Per week      Status
+  › BNB       BSC             −     0.01 +  −     0.05 +  −      0.1 +  Custom
+    USD1      BSC             −      100 +  −      500 +  −    1,000 +  Custom
+    USDC      BSC                   —             —             —       Blocked
+    ETH       Arbitrum              —             —             —       Blocked
+    USDC      Arbitrum              —             —             —       Blocked
+    ETH       Arbitrum Sepol…       —             —             —       Blocked
+    USDC      Arbitrum Sepol…       —             —             —       Blocked
+    ETH       Base                  —             —             —       Blocked
+    USDC      Base                  —             —             —       Blocked
+    ETH       Base Sepolia          —             —             —       Blocked
+    USDC      Base Sepolia          —             —             —       Blocked
+    ETH       ETH                   —             —             —       Blocked
+    USD1      ETH                   —             —             —       Blocked
+    USDC      ETH                   —             —             —       Blocked
+    ETH       Optimism              —             —             —       Blocked
+    USDC      Optimism              —             —             —       Blocked
+    POL       Polygon               —             —             —       Blocked
+    USDC      Polygon               —             —             —       Blocked
+    SOL       Solana                —             —             —       Blocked
+    USD1      Solana                —             —             —       Blocked
+    USDC      Solana                —             —             —       Blocked
+    USDC      Solana Devnet         —             —             —       Blocked
+    PATH/USD  Tempo                 —             —             —       Blocked
+    USD1      Tempo                 —             —             —       Blocked
+    USDC.e    Tempo                 —             —             —       Blocked
+    PATH/USD  Tempo Testnet …       —             —             —       Blocked
+    USDC.e    Tempo Testnet …       —             —             —       Blocked
+    ░░░░░░░░░░░░░░░░░░░░ 0 of 0.05 BNB used · 0.05 BNB left · rolling 24 h
+    ░░░░░░░░░░░░░░░░░░░░ 0 of 0.1 BNB used · 0.1 BNB left · rolling 7 days
+
+  ✓ Every asset has a limit or is blocked.
+
+  ↑↓ select · ←→ field · 0-9 or +/- amount · x block · a add token · enter save changes · esc back
+"
+`;
+
+exports[`Receive > shows the QR, address, network, and important things to know 1`] = `
+"
+  AgentPay · Receive USD1
+
+  █▀▀▀▀▀█ ▄ █▀▀▀▀▀█
+  █ ███ █ ▀ █ ███ █
+
+  Address  0x2c7536e3605d9c16a7a3d7b1898e529396a65c23
+  Network  BSC (chain 56)
+  Asset    USD1 · 0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d
+
+  ╭─────────────────────────────────────────────────────────────────────────╮
+  │ ! Important things to know                                              │
+  │ • Only send USD1 on BSC to this address.                                │
+  │ • Assets sent on another network may be lost.                           │
+  │ • USD1 transfers pay network fees in BNB; send a little BNB on BSC too. │
+  ╰─────────────────────────────────────────────────────────────────────────╯
+
+  esc back
+"
+`;
+
+exports[`Security > turns Touch ID on 1`] = `
+"
+  AgentPay · Security
+
+  Touch ID approvals  Off: admin actions use sudo
+  Approval alerts     Off
+  Wallet backup       Export an encrypted offline backup
+
+  › Turn on Touch ID
+    Turn on approval alerts
+    Export a backup
+    Back
+
+  ↑↓ select · enter confirm · esc back
+"
+`;

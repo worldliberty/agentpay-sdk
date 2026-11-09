@@ -1,58 +1,87 @@
 ---
 name: add-plugin
-description: Use this skill when the user wants to add, refactor, or generalize a `agentpay <plugin>` integration like Bitrefill. Follow the shared plugin registration path under `src/plugins`, keep plugin-specific API or scraping code under `src/lib/<plugin>` or `src/lib/<plugin>/`, reuse the existing Rust daemon signing and policy path through the shared CLI plugin context instead of reimplementing signing, and add focused CLI tests for the new plugin.
+description: Use this skill when the user wants to add a new payment feature family to AgentPay (a new merchant protocol, chain flow, or paid-API integration) or generalize an existing one. Features live in the unprivileged payments service (`crates/agentpay-paymentd/src/features/<family>`), are exposed through documented methods in `crates/agentpay-api`, sign only through the signer daemon as the calling agent, and get a thin `agentpay` client command. Follow "Adding a paymentd method" in `docs/daemon-api.md`.
 ---
 
-# Add Plugin
+# Add A Payments Feature Family
 
-Use this skill when the task is "add another plugin like Bitrefill" or "make plugin onboarding more reusable."
+Use this skill for tasks like "add support for merchant protocol X" or "add a new chain flow".
 
 ## Ground Truth
 
-- `src/cli.ts` is the main CLI entrypoint, but plugin-specific command trees should not be wired inline there.
-- `src/plugins/types.ts` defines the shared `CliPluginContext` and the generic plugin registrar shape.
-- `src/plugins/index.ts` is the registry for built-in plugins.
-- `src/plugins/bitrefill.ts` is the reference implementation for a plugin that owns its own command tree.
-- Plugin-specific HTTP or browser/bootstrap code belongs in `src/lib/<plugin>.ts` or `src/lib/<plugin>/`.
-- Signing, policy checks, manual approval handling, and raw transaction broadcast plumbing stay on the existing AgentPay path exposed through `CliPluginContext`.
+- All payment logic lives in `agentpay-paymentd`, which runs as an unprivileged service account,
+  holds no keys, and does all network I/O. The client (`client/`) only parses flags, calls the
+  service through the generated types, and renders output.
+- The wire contract is `crates/agentpay-api` (`#![deny(missing_docs)]`), documented in
+  `docs/daemon-api.md`. It is a public, versioned contract (API `1.x`): new methods, optional fields,
+  and new error kinds are minor additions; anything else is a major change.
+- Every signature comes from the signer daemon through the agent's own credentials, so its policies,
+  spending limits, and manual approvals apply. Never sign in paymentd, never add a key, and never
+  call signer admin methods from paymentd.
+- The step-by-step recipe is "Adding a paymentd method" in `docs/daemon-api.md`. Follow it exactly.
 
-## Default Architecture
+## Layout
 
-1. Create `src/plugins/<plugin>.ts`.
-2. Register the plugin in `src/plugins/index.ts`.
-3. Keep plugin-local API normalization, transports, cookies, scraping, or challenge handling in `src/lib/<plugin>*`.
-4. Keep `src/cli.ts` responsible only for assembling shared dependencies and calling `registerBuiltinCliPlugins(...)`.
-5. Reuse `context.agent.runJson(...)` plus `context.broadcast.*` for any payment flow that reaches the daemon.
+| Piece | Location |
+|---|---|
+| Wire types and docs | `crates/agentpay-api/src/payments/<family>.rs`, variants in `payments/mod.rs` |
+| Fixtures | `crates/agentpay-api/fixtures/payments/<family>/<Method>.{request,response}.json` |
+| Spec | a `#### <Method>` entry under "Payments methods" in `docs/daemon-api.md` |
+| Handler | `crates/agentpay-paymentd/src/features/<family>.rs` or `features/<family>/` |
+| Route | one arm in `crates/agentpay-paymentd/src/dispatch.rs` |
+| Chain access | a `ChainProvider` under `crates/agentpay-paymentd/src/chains/` |
+| Paid HTTP helpers | `features/http.rs` (merchant client), `features/payer.rs` (`Payer`) |
+| Client command | `client/src/commands/<group>.ts`, wording in `client/src/copy/` |
 
-## Implementation Rules
-
-- Do not add another large inline `.command('<plugin>')` block to `src/cli.ts`.
-- Do not reimplement signing, nonce management, or policy logic in the plugin.
-- If the plugin needs onchain payment, default to preview-first behavior and make live payment explicit with `--broadcast`.
-- If the plugin only needs a quote plus an optional live payment path, prefer one `buy`-style command over a redundant separate `price` command.
-- Keep plugin-specific error handling inside the plugin module when possible.
-- If a remote API needs browser bootstrap, Cloudflare handling, or cookies, isolate that behind the plugin's transport/client layer instead of leaking it into the shared CLI.
-- Pass only shared helpers through `CliPluginContext`; keep plugin business logic inside the plugin module.
+Reference implementations: `features/x402/` (paid HTTP with a structured EIP-3009 signature),
+`features/mpp/` (charges, sessions, persisted state), `features/evm/` (transactions, nonces,
+manual-approval resume), `features/solana/`.
 
 ## Deterministic Workflow
 
-1. Inspect `src/plugins/bitrefill.ts` to copy the current plugin structure and command style.
-2. Add or extend the plugin client under `src/lib/<plugin>*`.
-3. Add a new `CliPlugin` implementation under `src/plugins/<plugin>.ts`.
-4. Register it in `src/plugins/index.ts`.
-5. If the plugin needs signing or broadcast, use `context.config`, `context.agent`, and `context.broadcast` instead of shelling around the shared flow.
-6. Add a focused CLI test file or extend the closest existing one under `test/`.
-7. Run the plugin-focused tests and at least one `agentpay <plugin> --help` smoke check.
+1. Read "Adding a paymentd method" and "Manual approval in payment flows" in `docs/daemon-api.md`,
+   then the closest reference family above.
+2. Define the wire types, request and response variants, and error kinds in `agentpay-api`, with
+   rustdoc covering access, auth, units, side effects, idempotency, and errors.
+3. Add request and response fixtures, register them in `src/tests/payments.rs`, and add the spec
+   entry with the fixtures verbatim.
+4. Run `cargo xtask gen-api` to regenerate `docs/api/schema.json` and `client/src/generated/`.
+5. Implement the handler under `features/<family>`; route it with one arm in `dispatch.rs`.
+6. If the feature needs a new signed action, add it to `agentpay-domain` and `agentpay-policy`
+   first, so the signer daemon can reconstruct and policy-check it from structured fields. Never ask
+   the signer daemon to sign an opaque hash.
+7. Add the client command (`--json` output, exit codes `0`/`1`/`2`/`3`/`4`, all text in `copy/`).
+8. Update `skills/agentpay-sdk` (SKILL.md and references) with the new command.
+9. Verify (below).
+
+## Implementation Rules
+
+- Amounts on the wire are `DecimalU128` strings; say whether a field is base units or whole units.
+- Validate every merchant input before signing; check every signature signerd returns before it
+  leaves the process.
+- Manual approval: either resend the exact stored action (`ResumeApproved`) or document why the
+  flow cannot be resumed, as for x402 and MPP.
+- Secrets (tokens, merchant credentials, passphrases) never go in logs, error messages, arguments,
+  or environment variables; wipe them after use with `zeroize`.
+- No `unwrap` outside tests. Every file stays under 1,000 lines.
+- Third-party protocols: reuse an existing crate where it exposes open traits for signing (as
+  `x402-types` and `mpp` do) rather than reimplementing the protocol.
 
 ## Testing Rule
 
-- Prefer mocked CLI/integration tests over live third-party dependencies.
-- Cover command registration, happy path output, unsupported modes, and any explicit challenge or approval state.
-- If the plugin supports `--broadcast`, cover both preview-only and broadcast-backed flows.
+- Unit-test handlers with `signer::testing::InProcessSigner` (a real in-memory signer daemon with
+  policies) and `ScriptedSigner`; use mock RPC servers and the scripted merchant in
+  `features/http/merchant.rs`. Never hit live third-party services in tests.
+- Cover policy denial, manual approval, malformed merchant answers, and the "nothing was signed"
+  guarantee for rejected inputs.
+- Extend `crates/agentpay-paymentd/tests/e2e.rs` for an end-to-end check over real sockets.
+- Client: Vitest tests against the fake daemon (`client/test/helpers/fake-daemon.ts`) using the API
+  fixtures.
 
-## References
+## Verify
 
-- Read `src/plugins/types.ts` for the shared context contract.
-- Read `src/plugins/index.ts` for plugin registration.
-- Read `src/plugins/bitrefill.ts` for the current plugin pattern.
-- Read the matching `src/lib/<plugin>*` module only when implementing that plugin's remote API behavior.
+```bash
+just lint     # fmt, clippy -D warnings, file length, no JavaScript, gen-api --check, API docs
+just test
+just client-test && just client-lint
+```

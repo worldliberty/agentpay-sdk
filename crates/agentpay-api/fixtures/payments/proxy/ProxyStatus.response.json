@@ -1,0 +1,13 @@
+{
+  "type": "ProxyStatus",
+  "data": {
+    "running": true,
+    "address": "127.0.0.1:8402",
+    "agent_key_id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+    "allowed_hosts": ["api.example.com", "llm.example.com"],
+    "max_amount": "100000",
+    "requests": 12,
+    "payments": 3,
+    "failed_payments": 1
+  }
+}

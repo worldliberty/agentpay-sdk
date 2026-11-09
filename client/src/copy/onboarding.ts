@@ -1,0 +1,167 @@
+/** Onboarding wizard wording (one focused step per screen). */
+export const onboarding = {
+  steps: ['Welcome', 'Protect your wallet', 'Spending limits', 'Create wallet', 'Back up', 'Done'],
+  welcome: {
+    title: 'Welcome to AgentPay',
+    body: 'AgentPay gives your AI agents a wallet they can pay from, within limits you set. Your keys stay on this machine.',
+    create: 'Create a new wallet',
+    createHint: 'Start fresh with a new self-custodial wallet',
+    restore: 'Restore from a backup',
+    restoreHint: 'Use an encrypted backup file you exported before',
+    restorePath: 'Backup file',
+    restorePathHint: 'Path to the encrypted backup file',
+    restorePassphrase: 'Backup passphrase',
+    restorePassphraseHint: 'The passphrase you chose when you exported the backup',
+    reuse: 'Keep the existing wallet',
+    reuseHint: 'Run setup again without changing the wallet on this machine',
+    reuseHintMany: (count: number) => `${count} wallets on this machine; choose one next`,
+    checking: 'Looking for a wallet on this machine…',
+    nameLabel: 'Name this wallet (optional)',
+    nameHint: 'For example Trading bot. Press enter to skip.',
+    nameRestoreHint: 'Press enter to keep the name saved in the backup.',
+  },
+  overwrite: {
+    title: 'A wallet already exists',
+    checking: 'Reading the wallets on this machine…',
+    body: (count: number) =>
+      count > 1
+        ? `This machine already has ${count} AgentPay wallets. Nothing has been changed yet.`
+        : 'This machine already has an AgentPay wallet. Nothing has been changed yet.',
+    warningTitle: 'Replacing it cannot be undone',
+    warnings: [
+      'The existing wallet key is deleted from this machine, with its agent credentials, spend history, and pending approvals.',
+      'Funds in it can then be reached only with a backup of it. If you have none, keep the wallet and export a backup first.',
+    ],
+    keep: 'Keep the existing wallet',
+    keepHint: 'Recommended: nothing is deleted',
+    replaceWithNew: 'Delete it and create a new wallet',
+    replaceWithBackup: 'Delete it and restore the backup',
+    confirmWord: 'OVERWRITE',
+    confirmLabel: 'Type OVERWRITE to delete the existing wallet',
+    confirmHint: 'Press esc to go back',
+    confirmMismatch: 'Type OVERWRITE exactly, or press esc to keep the wallet.',
+  },
+  pickWallet: {
+    title: 'Choose the wallet to keep',
+    body: (count: number) =>
+      `This machine has ${count} AgentPay wallets. Choose the one your agents should use; the others stay on this machine unchanged.`,
+    listedBy:
+      'The wallet list could not be read, so wallets are shown by key id. Setup shows the address of the one you keep.',
+    wallet: (position: number) => `Wallet ${position}`,
+    inUse: 'used by your agents',
+    backupTitle: 'Choose the wallet to back up',
+    backupBody: (count: number) =>
+      `This machine has ${count} AgentPay wallets. Choose the one to back up.`,
+  },
+  touchId: {
+    title: 'Protect your wallet',
+    body: 'Admin actions, like approving a large payment or changing limits, need your approval.',
+    benefits: [
+      'Approve with Touch ID or your Mac password instead of typing sudo commands.',
+      'The key lives in this Mac’s Secure Enclave and never leaves it.',
+      'You can turn it off any time in Security.',
+    ],
+    enable: 'Turn on Touch ID (recommended)',
+    skip: 'Not now, use sudo',
+    unavailableTitle: 'Admin approvals use sudo',
+    unavailableBody:
+      'Touch ID is not available here, so admin actions ask for your password through sudo.',
+    continue: 'Continue',
+    enabling: 'Creating your Touch ID key…',
+    enrolled: 'Touch ID is on.',
+    sudoNote: 'Enrolling the key needs your password once (sudo).',
+  },
+  creating: {
+    title: 'Creating your wallet',
+    restoringTitle: 'Restoring your wallet',
+    reusingTitle: 'Reconnecting your wallet',
+    tasks: {
+      keys: 'Generating wallet keys',
+      restore: 'Restoring wallet keys from the backup',
+      reuse: 'Checking the existing wallet',
+      agent: 'Creating agent credentials and applying your limits',
+      store: 'Saving the credentials to your keychain',
+      tokens: 'Saving the tokens you added',
+    },
+    ready: 'Your wallet is ready.',
+    unsavedTokens: (tokens: string) =>
+      `Could not save ${tokens} to the configuration. Add it again from Spending limits (a).`,
+  },
+  tokens: {
+    title: 'Add a token',
+    network: 'Choose the network',
+    address: 'Contract address',
+    addressHint: '0x… on EVM networks',
+    mint: 'Mint address',
+    mintHint: 'The token’s mint on Solana',
+    symbol: 'Symbol',
+    symbolHint: 'For example USDT',
+    symbolOptionalHint: 'Leave empty to use the one on the network',
+    decimals: 'Decimals',
+    decimalsHint: 'Only needed when the network cannot be read',
+    looking: 'Reading the token from the network…',
+    lookupFailed: 'Fix the address (esc), or fill in the details below and press enter.',
+    found: (symbol: string, decimals: number, network: string, verified: boolean) =>
+      `Added ${symbol} on ${network} (${decimals} decimals${verified ? '' : ', entered by you'}). Give it a limit, or block it with x.`,
+    alreadyListed: (symbol: string, network: string) =>
+      `${symbol} on ${network} is already in the list.`,
+  },
+  limits: {
+    title: 'Set spending limits',
+    body: 'Agents pay on their own up to these limits. Anything beyond waits for your approval. An asset without a limit stays blocked.',
+    columns: {
+      asset: 'Asset',
+      network: 'Network',
+      perTx: 'Per payment',
+      daily: 'Per day',
+      weekly: 'Per week',
+      status: 'Status',
+    },
+    recommended: 'Recommended',
+    custom: 'Custom',
+    excluded: 'Blocked',
+    unset: 'Needs a choice',
+    remaining: (count: number) =>
+      count === 1
+        ? '1 asset needs a limit or must be blocked'
+        : `${count} assets need a limit or must be blocked`,
+    ready: 'Every asset has a limit or is blocked.',
+    invalidAmount: (symbol: string, decimals: number) =>
+      `Type an amount above 0 with at most ${decimals} decimal places of ${symbol}.`,
+    atLeastOne: 'Give at least one asset a limit; to stop all spending, revoke the agent instead.',
+    orderWarning: 'Per day should be at least per payment, and per week at least per day.',
+    saving: 'Saving limits…',
+  },
+  backup: {
+    title: 'Back up your wallet',
+    body: 'An encrypted backup lets you restore this wallet if this machine is lost.',
+    warningTitle: 'Before you continue',
+    warnings: [
+      'If you forget this passphrase, the backup cannot be opened. Nobody, including AgentPay, can recover it.',
+      'Anyone with the backup file and the passphrase controls your funds.',
+      'Store the file offline, away from this machine.',
+    ],
+    acknowledge: 'I understand that a lost passphrase cannot be recovered',
+    acknowledged: 'Acknowledged',
+    path: 'Save to',
+    passphrase: 'Passphrase',
+    passphraseHint: (min: number) => `At least ${min} characters`,
+    confirm: 'Repeat passphrase',
+    export: 'Export backup',
+    skip: 'Skip for now',
+    skipWarning: 'Without a backup, losing this machine means losing the funds in this wallet.',
+    exporting: 'Encrypting your backup…',
+    written: (path: string) => `Backup saved to ${path}.`,
+  },
+  done: {
+    title: 'You’re all set',
+    body: 'Your agents can now pay within your limits. Payments above them wait for your approval.',
+    address: 'Wallet address',
+    fund: 'Add funds',
+    finish: 'Finish',
+    nextSteps: [
+      'Check balances any time with `agentpay wallet`.',
+      'Review requests waiting for you with `agentpay admin approvals`.',
+    ],
+  },
+} as const;

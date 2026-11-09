@@ -1,0 +1,6 @@
+# Pinned toolchain for the whole workspace. Keep `rust-version` in the root Cargo.toml
+# [workspace.package] in sync; CI's MSRV job builds with that version.
+[toolchain]
+channel = "1.99.1"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

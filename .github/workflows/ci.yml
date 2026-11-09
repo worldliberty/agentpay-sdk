@@ -1,8 +1,11 @@
 name: CI
 
+# Pull requests run here; pushes only for main, so a PR branch push does not start a second run
+# that the concurrency group would then cancel (and show as failed).
 on:
   pull_request:
   push:
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.head.repo.full_name || github.repository }}-${{ github.head_ref || github.ref_name }}
@@ -14,104 +17,14 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+# The toolchain comes from rust-toolchain.toml; `rustup toolchain install` with no arguments
+# installs exactly that pinned version and its components.
+
 jobs:
   lint:
-    name: Lint (Biome)
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
-        with:
-          version: 10.6.3
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 20
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Install JavaScript dependencies
-        run: pnpm install --frozen-lockfile
-        env:
-          AGENTPAY_SKIP_RUST_INSTALL: '1'
-
-      - name: Run Biome
-        run: npm run lint
-
-  typecheck:
-    name: Typecheck
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    permissions:
-      contents: read
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
-        with:
-          version: 10.6.3
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 20
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Install JavaScript dependencies
-        run: pnpm install --frozen-lockfile
-        env:
-          AGENTPAY_SKIP_RUST_INSTALL: '1'
-
-      - name: Run TypeScript type checks
-        run: npm run typecheck
-
-  js-unit:
-    name: JS unit tests
-    runs-on: macos-15
-    timeout-minutes: 15
-    permissions:
-      contents: read
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
-        with:
-          version: 10.6.3
-
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 20
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
-
-      - name: Install JavaScript dependencies
-        run: pnpm install --frozen-lockfile
-        env:
-          AGENTPAY_SKIP_RUST_INSTALL: '1'
-
-      - name: Run JS unit tests
-        run: pnpm turbo run test:unit
-
-  js-e2e:
-    name: JS e2e and integration tests (${{ matrix.os }})
+    name: Lint (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 30
     permissions:
       contents: read
     strategy:
@@ -125,27 +38,48 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - name: Install Rust toolchain (rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          version: 10.6.3
+          shared-key: rust-lint-${{ matrix.os }}
 
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 20
-          cache: pnpm
-          cache-dependency-path: pnpm-lock.yaml
+      - name: Check formatting
+        run: cargo fmt --all --check
 
-      - name: Install JavaScript dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Run clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Check source file length
+        run: cargo xtask check-file-length
+
+      - name: Check that no JavaScript is tracked
+        run: cargo xtask check-no-js
+
+      # The installer (scripts/install.sh) and the release launcher must stay POSIX sh and
+      # shellcheck-clean. shellcheck is installed explicitly rather than relied on from the image.
+      - name: Install shellcheck
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q shellcheck
+          shellcheck --version
+
+      - name: Check shell scripts (shellcheck)
+        if: runner.os == 'Linux'
+        run: shellcheck --shell=sh scripts/install.sh crates/xtask/src/dist/agentpay.sh
+
+      - name: Check generated API schema and TypeScript types
+        run: cargo xtask gen-api --check
+
+      - name: Check daemon API docs
         env:
-          AGENTPAY_SKIP_RUST_INSTALL: '1'
-
-      - name: Run JS e2e tests
-        run: pnpm test:ts
-        env:
-          AGENTPAY_TELEMETRY: '0'
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc -p agentpay-api --no-deps --locked
 
   rust:
     name: Rust tests (${{ matrix.os }})
@@ -164,15 +98,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 20
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-09)
-        with:
-          toolchain: stable
+      - name: Install Rust toolchain (rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustup show active-toolchain
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -180,10 +109,27 @@ jobs:
           shared-key: rust-tests-${{ matrix.os }}
 
       - name: Run Rust tests
-        run: node ./scripts/run-tests-isolated.mjs -- cargo test --workspace --locked
+        run: cargo test --workspace --locked
+
+      # Runs scripts/install.sh against a synthetic release served from a temp directory, in
+      # throwaway homes, under the runner's /bin/sh (dash on Ubuntu, bash on macOS).
+      - name: Test the installer
+        run: cargo xtask test-install
+
+      # The macOS admin-auth helper is Swift (native/macos/AgentPayAuth.swift). Build it
+      # universal to prove both slices compile, then run the end-to-end checks that need no
+      # Secure Enclave. The Secure Enclave checks stay skipped: hosted runners have no Secure
+      # Enclave, and they only run with AGENTPAY_SE_TESTS=1.
+      - name: Build macOS admin-auth helper (universal)
+        if: runner.os == 'macOS'
+        run: cargo xtask build-macos-auth --arch arm64 --arch x86_64
+
+      - name: Test macOS admin-auth helper
+        if: runner.os == 'macOS'
+        run: cargo xtask test-macos-auth
 
   rust-msrv:
-    name: Rust MSRV check (1.89.0)
+    name: Rust MSRV check
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -193,10 +139,25 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - name: Install Rust 1.89.0 (workspace rust-version)
-        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-09)
-        with:
-          toolchain: 1.89.0
+      - name: Read workspace rust-version and check it matches the pinned toolchain
+        run: |
+          msrv="$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          pinned="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml | head -n 1)"
+          if [ -z "$msrv" ] || [ -z "$pinned" ]; then
+            echo "::error::could not read rust-version ($msrv) or the pinned channel ($pinned)"
+            exit 1
+          fi
+          case "$pinned" in
+            "$msrv" | "$msrv".*) ;;
+            *)
+              echo "::error::rust-toolchain.toml pins $pinned but Cargo.toml rust-version is $msrv"
+              exit 1
+              ;;
+          esac
+          echo "MSRV=$msrv" >> "$GITHUB_ENV"
+
+      - name: Install Rust ${{ env.MSRV }} (workspace rust-version)
+        run: rustup toolchain install "$MSRV" --profile minimal
 
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -204,4 +165,48 @@ jobs:
           shared-key: rust-msrv
 
       - name: Check the workspace compiles on the MSRV
-        run: cargo check --workspace --tests --locked
+        run: cargo +"$MSRV" check --workspace --all-targets --locked
+
+  # The TypeScript + Ink client (client/). npm with the committed package-lock.json; the Node
+  # version comes from client/.nvmrc.
+  client:
+    name: Client (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-15
+          - ubuntu-24.04
+    defaults:
+      run:
+        working-directory: client
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Node.js (client/.nvmrc)
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: client/.nvmrc
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint (Biome)
+        run: npm run lint
+
+      - name: Test (Vitest)
+        run: npm test
+
+      - name: Build
+        run: npm run build

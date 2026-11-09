@@ -1,0 +1,43 @@
+{
+  "type": "ManualApprovalRequests",
+  "data": [
+    {
+      "id": "e7d6c5b4-a392-4817-b6f5-e4d3c2b1a090",
+      "agent_key_id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+      "vault_key_id": "5e0b7c1a-2d3f-4a5b-9c6d-7e8f9a0b1c2d",
+      "request_payload_hash_hex": "b6f0c4a1e9d27f3c58a0e4b2d6c8f1a3e5b7d9f0c2a4e6b8d0f2a4c6e8b0d2f4",
+      "action": {
+        "kind": "Transfer",
+        "chain_id": 56,
+        "token": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d",
+        "to": "0x5aeda56215b167893e80b4fe645ba6d5bab767de",
+        "amount_wei": "1000000000000000000"
+      },
+      "chain_id": 56,
+      "asset": {
+        "kind": "erc20",
+        "value": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d"
+      },
+      "recipient": {
+        "kind": "evm",
+        "value": "0x5aeda56215b167893e80b4fe645ba6d5bab767de"
+      },
+      "amount_wei": "1000000000000000000",
+      "created_at": [2026, 309, 12, 0, 0, 0, 0, 0, 0],
+      "updated_at": [2026, 309, 12, 0, 0, 0, 0, 0, 0],
+      "status": "pending",
+      "triggered_by_policy_ids": ["a1b2c3d4-0000-4000-8000-000000000002"],
+      "reasons": [
+        {
+          "limit": "policy",
+          "policy_id": "a1b2c3d4-0000-4000-8000-000000000002",
+          "max": "100000000000000000000",
+          "used": null,
+          "requested_amount_wei": "1000000000000000000"
+        }
+      ],
+      "completed_at": null,
+      "rejection_reason": null
+    }
+  ]
+}

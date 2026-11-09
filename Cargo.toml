@@ -1,81 +1,120 @@
 [workspace]
 members = [
-    "crates/vault-domain",
-    "crates/vault-policy",
-    "crates/vault-signer",
-    "crates/vault-daemon",
-    "crates/vault-transport-unix",
-    "crates/vault-sdk-agent",
-    "crates/vault-cli-admin",
-    "crates/vault-cli-agent",
-    "crates/vault-cli-daemon",
-    "crates/vault-transport-xpc",
+    "crates/agentpay-api",
+    "crates/agentpay-domain",
+    "crates/agentpay-policy",
+    "crates/agentpay-signer",
+    "crates/agentpay-signerd",
+    "crates/agentpay-signerd-cli",
+    "crates/agentpay-paymentd",
+    "crates/agentpay-transport",
+    "crates/agentpay-agent-sdk",
+    "crates/agentpay-setup",
+    "crates/xtask",
+    "examples/sample-llm",
 ]
 resolver = "2"
 
 [workspace.package]
 edition = "2021"
 license = "MIT"
-version = "0.5.1"
-rust-version = "1.89"
+version = "1.0.0"
+rust-version = "1.99"
 authors = ["AgentPay SDK Team"]
 
 [profile.release]
 overflow-checks = true
 
+# Wallet backups use scrypt with N = 2^18 (256 MiB); unoptimized it takes many seconds,
+# which would make debug builds and tests crawl.
+[profile.dev.package.scrypt]
+opt-level = 3
+
+[profile.dev.package.salsa20]
+opt-level = 3
+
+[profile.dev.package.pbkdf2]
+opt-level = 3
+
 [workspace.dependencies]
-aes = "0.8"
+# EVM RPC in the payments service (alloy 2.x line; see the MPP note below).
+alloy-consensus = { version = "2.5", default-features = false, features = ["std", "k256", "serde"] }
+alloy-eips = { version = "2.5", default-features = false, features = ["std"] }
+alloy-network = { version = "2.5", default-features = false }
+alloy-provider = { version = "2.5", default-features = false, features = ["reqwest", "reqwest-rustls-tls"] }
+alloy-rpc-client = { version = "2.5", default-features = false, features = ["reqwest"] }
+alloy-rpc-types-eth = { version = "2.5", default-features = false, features = ["std", "serde"] }
+alloy-transport = { version = "2.5", default-features = false }
+alloy-transport-http = { version = "2.5", default-features = false, features = ["reqwest", "reqwest-rustls-tls"] }
+alloy-dyn-abi = { version = "1.7", features = ["eip712"] }
+alloy-primitives = "1.7"
+alloy-sol-types = "1.7"
+# Encrypted offline wallet backups (format v2: scrypt + AES-256-GCM), in the signer daemon.
 aes-gcm = "0.10"
-alloy-chains = "0.2.33"
-alloy-dyn-abi = { version = "0.8.26", features = ["eip712"] }
-alloy-primitives = "0.8"
-alloy-sol-types = "0.8"
 anyhow = "1"
-ark-bn254 = "0.5"
-ark-ec = "0.5"
-ark-ed-on-bn254 = "0.5"
-ark-ff = { version = "0.5", features = ["std"] }
-ark-serialize = "0.5"
 argon2 = "0.5"
 async-trait = "0.1"
 base64 = "0.22"
-bech32 = "0.11"
 bincode = "1.3"
-bip39 = { version = "2", default-features = false, features = ["std"] }
-blake512-hash = "0.1"
-block = "0.1"
 bs58 = "0.5"
+bytes = "1"
 chacha20poly1305 = "0.10"
 clap = { version = "4.5", features = ["derive", "env"] }
 core-foundation = "0.10"
-crossterm = "0.28"
-curve25519-dalek = { version = "4", features = ["digest"] }
 ed25519-dalek = { version = "3.0.0-pre.6", features = ["rand_core"] }
-generic-array = "0.14"
-ghash = "0.5"
 hex = "0.4"
 hkdf = "0.12"
-hmac = "0.12"
+http-body-util = "0.1"
+# Local paying HTTP proxy in the payments service (HTTP/1 server, TLS interception for paid hosts).
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
 k256 = { version = "0.13", features = ["ecdsa"] }
 libc = "0.2"
-light-poseidon = "0.4"
-pbkdf2 = "0.12"
+# MPP (Tempo charge/session, fetch middleware, paying proxy). Shares the single alloy 2.x /
+# alloy-core 1.x line with the crates above; keep their versions in step.
+mpp = { version = "0.19", default-features = false, features = ["client", "tempo", "middleware", "forward-proxy", "reqwest-rustls-tls"] }
+nix = { version = "0.30", features = ["user", "socket", "fs"] }
+p256 = { version = "0.13", features = ["ecdsa"] }
+# Funding QR codes (paymentd); rendering is done in paymentd, no image backends.
+qrcode = { version = "0.14", default-features = false }
 rand = "0.9"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-ratatui = "0.29"
-rpassword = "7"
+rcgen = "0.14"
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+schemars = { version = "1.2.3", features = ["uuid1"] }
+scrypt = { version = "0.11", default-features = false }
 security-framework = { version = "3.7", features = ["OSX_10_15"] }
 security-framework-sys = "2.17"
+# Crash and error reports from paymentd. No built-in transport: paymentd sends envelopes
+# itself over its reqwest 0.13 client (bounded, async, best effort). 0.46 is the newest line
+# whose sentry-types accepts the pinned `time = "=0.3.36"` (0.48+ needs time 0.3.47).
+sentry = { version = "0.46", default-features = false, features = ["panic"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
+solana-nonce = { version = "3.2.0", features = ["serde"] }
+# Solana JSON-RPC client for paymentd. 4.3.x is the line built on the solana-sdk 4 /
+# solana-transaction 4 types that agentpay-signerd signs with; keep them in step.
+solana-rpc-client = { version = "~4.3.2", default-features = false }
+solana-rpc-client-api = "~4.3.2"
 solana-sdk = "4.0.1"
-spl-associated-token-account = "8.0.0"
-spl-token = "9.0.0"
+solana-system-interface = { version = "3.2.0", features = ["bincode"] }
+# `no-entrypoint`: we only use the instruction builders; two on-chain entrypoints in one
+# binary fail to link on Linux ("duplicate symbol: entrypoint").
+spl-associated-token-account = { version = "8.0.0", features = ["no-entrypoint"] }
+spl-token = { version = "9.0.0", features = ["no-entrypoint"] }
 spl-token-2022-interface = "2.1.0"
+subtle = "2.6"
+# Tempo transaction types for MPP sessions (the tempo-* line `mpp` 0.19 uses).
+tempo-alloy = { version = "1.11", default-features = false }
 thiserror = "2"
 time = { version = "=0.3.36", features = ["macros", "serde", "formatting", "parsing"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "net", "io-util", "time", "signal"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+ts-rs = { version = "12.0.1", features = ["uuid-impl"] }
+url = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
+# x402 client (exact EIP-3009 scheme backed by signerd).
+x402-types = "2.0.2"
 zeroize = "1"
-x25519-dalek = { version = "2", features = ["static_secrets", "zeroize"] }

@@ -1,0 +1,9 @@
+{
+  "type": "EvmNonce",
+  "data": {
+    "network": "bsc",
+    "chain_id": 56,
+    "address": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+    "nonce": 8
+  }
+}

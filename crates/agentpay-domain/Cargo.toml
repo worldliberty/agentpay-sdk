@@ -1,0 +1,21 @@
+[package]
+name = "agentpay-domain"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+alloy-dyn-abi.workspace = true
+alloy-primitives.workspace = true
+alloy-sol-types.workspace = true
+bs58.workspace = true
+hex.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+time.workspace = true
+ts-rs.workspace = true
+uuid.workspace = true
+zeroize.workspace = true

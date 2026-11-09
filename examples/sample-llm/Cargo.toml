@@ -1,0 +1,19 @@
+[package]
+name = "sample-llm"
+description = "Example third-party tool: stream an LLM answer paid per request with MPP through AgentPay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+base64.workspace = true
+clap.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+# The public wire contract: `agentpay --json` prints these types.
+agentpay-api = { path = "../../crates/agentpay-api" }

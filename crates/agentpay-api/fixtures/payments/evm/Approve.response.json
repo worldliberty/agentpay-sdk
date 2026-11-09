@@ -1,0 +1,35 @@
+{
+  "type": "ManualApprovalPending",
+  "data": {
+    "approval_request_id": "e7d6c5b4-a392-4817-b6f5-e4d3c2b1a090",
+    "method": "Approve",
+    "network": "bsc",
+    "chain_id": 56,
+    "payment": {
+      "asset": {
+        "key": "usd1",
+        "symbol": "USD1",
+        "decimals": 18,
+        "token": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d"
+      },
+      "counterparty": "0x10ed43c718714eb63d5aa57b78b54704e256024e",
+      "amount": "100",
+      "amount_wei": "100000000000000000000"
+    },
+    "action": {
+      "kind": "BroadcastTx",
+      "tx": {
+        "chain_id": 56,
+        "nonce": 8,
+        "to": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d",
+        "value_wei": "0",
+        "data_hex": "0x095ea7b300000000000000000000000010ed43c718714eb63d5aa57b78b54704e256024e0000000000000000000000000000000000000000000000056bc75e2d63100000",
+        "gas_limit": 60000,
+        "max_fee_per_gas_wei": "1000000000",
+        "max_priority_fee_per_gas_wei": "1000000000",
+        "tx_type": 2,
+        "delegation_enabled": false
+      }
+    }
+  }
+}

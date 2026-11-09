@@ -1,0 +1,26 @@
+{
+  "type": "SolanaTransfer",
+  "data": {
+    "network": "solana-devnet",
+    "chain_id": 900000002,
+    "fee_payer": "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin",
+    "transfer": {
+      "kind": "sol",
+      "to": "3D34zRx4vQzu1hMJsk9kMSduU6pNwDeSxEg95DMNMZGG",
+      "amount_wei": "1500000"
+    },
+    "recent_blockhash": "GX3RiF2msGtyjBWRjFaZasYoVWnnpRvqzTDtwcdjXbd1",
+    "durable_nonce": {
+      "account": "GFB4F5gNLxVxShmbud4BpcYBuH2h6fbzu8TcDhUt5gna",
+      "managed": true,
+      "created_signature": "4C5GRqZ4Xmqwvc2tnwAmwVGPRWoczV8G4A5U3aD8TCGpAPxKw1KFfrCAKr3LPbgLku28ZHWqiS3BH5akj8rvTqVW"
+    },
+    "compute_unit_limit": 5000,
+    "compute_unit_price_micro_lamports": 2000,
+    "signature": "59Q8GrLkSFXeiZBppEJqVpVEsgiCMMH8foHRybR49ZYv5oSVxcsddszwxxrcDm9cyBWnRQ8u8tB67fMQgYesgJMg",
+    "broadcast": {
+      "status": "confirmed",
+      "slot": 412345678
+    }
+  }
+}

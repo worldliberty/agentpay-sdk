@@ -1,0 +1,14 @@
+[
+  {"kind": "AgentAuthenticationFailed"},
+  {"kind": "SignerUnavailable", "data": "failed to connect to /Library/AgentPay/run/daemon.sock: No such file or directory"},
+  {"kind": "Signer", "data": {"kind": "Policy", "data": {"PerTxLimitExceeded": {"policy_id": "a1b2c3d4-0000-4000-8000-000000000001", "max_amount_wei": "100000000000000000000", "requested_amount_wei": "250000000000000000000"}}}},
+  {"kind": "ManualApprovalPending", "data": {"approval_request_id": "e7d6c5b4-a392-4817-b6f5-e4d3c2b1a090"}},
+  {"kind": "InvalidConfig", "data": "default_asset 'usd1' has no entry for default_network 'eth'"},
+  {"kind": "Persistence", "data": "failed to write config.json"},
+  {"kind": "InvalidRequest", "data": "the recipient's associated token account for this mint does not exist; create it before sending"},
+  {"kind": "ChainRpc", "data": "Solana RPC getLatestBlockhash failed: connection refused"},
+  {"kind": "SignedTransactionMismatch", "data": "signed Solana transaction SOL amount 2000000 lamports does not match expected 1500000"},
+  {"kind": "UnknownPendingApproval", "data": "e7d6c5b4-a392-4817-b6f5-e4d3c2b1a090"},
+  {"kind": "Merchant", "data": "the merchant answered 402 with no x402 or MPP challenge; nothing was signed"},
+  {"kind": "Internal", "data": "configuration lock poisoned"}
+]

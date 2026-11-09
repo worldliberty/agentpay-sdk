@@ -1,0 +1,32 @@
+{
+  "method": "BootstrapWallet",
+  "params": {
+    "auth": "peer_credentials",
+    "mode": {
+      "kind": "create",
+      "replace_existing": false
+    },
+    "limits": [
+      {
+        "chain_id": 56,
+        "asset": {
+          "kind": "erc20",
+          "value": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d"
+        },
+        "per_tx_max_wei": "100000000000000000000",
+        "daily_max_wei": "500000000000000000000",
+        "weekly_max_wei": "1000000000000000000000",
+        "max_gas_per_tx_wei": "2000000000000000"
+      },
+      {
+        "chain_id": 56,
+        "asset": {
+          "kind": "native_eth"
+        },
+        "per_tx_max_wei": "10000000000000000",
+        "daily_max_wei": "50000000000000000",
+        "weekly_max_wei": "100000000000000000"
+      }
+    ]
+  }
+}

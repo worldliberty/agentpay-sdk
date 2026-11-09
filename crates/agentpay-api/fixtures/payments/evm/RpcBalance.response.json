@@ -1,0 +1,16 @@
+{
+  "type": "EvmBalance",
+  "data": {
+    "network": "bsc",
+    "chain_id": 56,
+    "address": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+    "asset": {
+      "key": "usd1",
+      "symbol": "USD1",
+      "decimals": 18,
+      "token": "0x8d0d000ee44948fc98c9b98a4fa4921476f08b0d"
+    },
+    "balance_wei": "25500000000000000000",
+    "balance": "25.5"
+  }
+}

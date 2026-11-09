@@ -1,0 +1,8 @@
+{
+  "type": "AdminChallenge",
+  "data": {
+    "challenge_id": "0b8e4f2a-7c1d-4a3e-9b5f-6d2c8e1a4f70",
+    "message_hex": "6167656e747061792d61646d696e2d6368616c6c656e67652d7631001a2b3c4d5e6f40718293a4b5c6d7e8f96f1c2a9e3b4d4e5f8a7b9c0d1e2f3a4b0b8e4f2a7c1d4a3e9b5f6d2c8e1a4f705f3a1e7c9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a000d61646d696e2d73657373696f6e000000006aec7038",
+    "expires_at": [2026, 309, 12, 2, 0, 0, 0, 0, 0]
+  }
+}

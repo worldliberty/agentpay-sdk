@@ -1,0 +1,21 @@
+{
+  "type": "EvmTransaction",
+  "data": {
+    "network": "bsc",
+    "chain_id": 56,
+    "payment": null,
+    "from": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+    "to": "0x5aeda56215b167893e80b4fe645ba6d5bab767de",
+    "value_wei": "10000000000000000",
+    "data_hex": "0x",
+    "nonce": 9,
+    "gas_limit": 21000,
+    "max_fee_per_gas_wei": "1000000000",
+    "max_priority_fee_per_gas_wei": "1000000000",
+    "tx_hash": "0x1df188baac172aea61551550edd687ab693ca8239efb227b5287e277ab5f23b8",
+    "raw_tx_hex": "0x02f8713809843b9aca00843b9aca00825208945aeda56215b167893e80b4fe645ba6d5bab767de872386f26fc1000080c080a09576686159d5823255751fdd03cf5ea440a40bd2ee0db14d60569da2107be3bea00b5fa0ae36a1b270251a0c77a0a34ed71d196c8e61c6a4bfa281d72b711c522f",
+    "broadcast": false,
+    "receipt": null,
+    "receipt_timed_out": false
+  }
+}

@@ -2,130 +2,93 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Build & Development Commands
+## What this is
+
+AgentPay is a self-custodial, policy-gated payments service for AI agents on macOS and Linux: a
+root signer daemon, an unprivileged payments daemon, and a small TypeScript Ink client that talks
+to them over a documented JSON-RPC API (API `1.1.0`). Architecture overview:
+`docs/architecture.md`.
+
+## Workspace (`crates/`)
+
+| Crate | Responsibility |
+|---|---|
+| `agentpay-api` | The public wire contract (JSON-RPC methods, types, errors, `api_version`). No I/O. Generates `docs/api/schema.json` and `client/src/generated/*.ts`. Spec: `docs/daemon-api.md`. |
+| `agentpay-domain` | Domain model: actions (EVM, Solana, Tempo, EIP-712/3009), policies, keys, addresses, approvals. |
+| `agentpay-policy` | Policy evaluation engine over domain types. |
+| `agentpay-signer` | Signer backends: software (k256, ed25519) and Linux TPM seal/unseal. |
+| `agentpay-signerd` | Transport-agnostic daemon core: authorization, policy checks, signing, nonces, manual approvals, admin auth (root peer, Secure Enclave challenge, leases), encrypted state (HKDF-SHA256 + XChaCha20-Poly1305) keyed by the machine state secret; Argon2 is only used to open legacy vault-password files during migration. |
+| `agentpay-signerd-cli` | Daemon binaries `agentpay-daemon` and `agentpay-system-keychain` (binary names are fixed by the install layout). |
+| `agentpay-paymentd` | Unprivileged payments service (runs as `_agentpay`/`agentpay`, refuses root): own socket, config (`config.json` in its state dir), delegated agent auth via signerd `AuthenticateAgent`, `AgentSigner` (nonces, signing, bounded manual-approval wait). Feature families plug in as `features/<family>.rs` + one arm in `dispatch.rs`; see "Adding a paymentd method" in `docs/daemon-api.md`. |
+| `agentpay-transport` | Unix socket server/client for any `RpcService` (signerd, paymentd), length-prefixed framing, peer-uid checks, root- and service-owned socket trust. |
+| `agentpay-agent-sdk` | Agent-side client (`AgentOperations` / `AgentSdk`) over any `KeyManagerDaemonApi`. |
+| `agentpay-setup` | Privileged installer run under `sudo`: binaries, machine secret, service account, launchd/systemd units for signerd and paymentd (paymentd's uid on signerd's agent allowlist), migration from vault-password installs. |
+| `xtask` | Repo tooling (`cargo xtask ...`). |
+
+Other directories: `examples/sample-llm` (an example third-party tool: streams LLM answers from an MPP merchant through `agentpay proxy`, decoding the CLI's `--json` with `agentpay-api`; a workspace member, see its README), `native/macos/AgentPayAuth.swift` (the `agentpay-auth` Secure Enclave admin
+credential helper, built by xtask), `client/` (the `agentpay` Ink client and CLI; see
+`client/README.md`), `docs/` (architecture, API spec and schema), `scripts/launchd`,
+`scripts/systemd` (service runner scripts), `skills/` (agent skill packs and adapters).
+
+## Commands
 
 ```bash
-# Install dependencies (also builds Rust binaries via postinstall when cargo is on PATH;
-# without cargo, postinstall warns and exits 0 unless AGENTPAY_REQUIRE_RUST_INSTALL=1)
-pnpm install
-
-# Build everything (Turbo + tsup CLI bundle)
-npm run build
-
-# Full check (cargo test compile + turbo typecheck)
-npm run check
-
-# TypeScript type checking
-npm run typecheck
-
-# Lint (Biome)
-npm run lint
-npm run lint:fix          # auto-fix
-
-# Run all TypeScript integration tests (isolated HOME/AGENTPAY_HOME/TMPDIR sandbox under the
-# system temp dir; sudo, launchctl, and systemctl are stubbed out)
-npm run test:ts
-
-# Run a single TypeScript test through the same isolated harness (tsx, not --experimental-strip-types)
-node scripts/run-ts-tests.mjs test/<file>.test.mjs
-
-# Run Rust tests
-cargo test --workspace
-
-# Run a single Rust crate's tests
-cargo test -p vault-domain
-
-# Build/install Rust binaries to ~/.agentpay/bin
-npm run install:rust-binaries
-
-# Package-specific commands (vitest)
-pnpm --filter @worldlibertyfinancial/agent-relay test:unit
-pnpm --filter @worldlibertyfinancial/agent-web test:unit
-
-# Relay deployment: these scripts are fail-closed stubs (scripts/unsupported-release-surface.mjs)
-# that print "unsupported in this release" and exit 1. Relay deployment is not supported.
-pnpm --filter @worldlibertyfinancial/agent-relay deploy:local
-pnpm --filter @worldlibertyfinancial/agent-relay deploy:development
-pnpm --filter @worldlibertyfinancial/agent-relay deploy:production
+just build              # cargo build --workspace
+just test               # cargo test --workspace
+just lint               # fmt --check, clippy -D warnings, file-length, no-JS, gen-api --check, API docs
+just dev                # fmt, lint, test
+cargo test -p agentpay-signerd               # one crate
+cargo xtask gen-api [--check]                # regenerate (or drift-check) schema + TS types
+cargo xtask check-file-length                # every .rs/.ts/.tsx file <= 1000 lines
+cargo xtask check-no-js                      # no .js/.mjs/.cjs/.jsx outside build output
+cargo xtask build-macos-auth                 # build agentpay-auth (Swift) into target/
+cargo xtask test-macos-auth                  # its end-to-end checks; AGENTPAY_SE_TESTS=1 adds Secure Enclave checks
+RUSTDOCFLAGS="-D warnings" cargo doc -p agentpay-api --no-deps
+just client-install && just client-test && just client-lint   # client: npm ci, tsc + Vitest, Biome
 ```
 
-## Architecture
-
-This is a monorepo for a macOS/Linux signing CLI built around a self-custodial local daemon. The system has two language layers: Rust handles cryptography, policy evaluation, and daemon operations; TypeScript handles CLI orchestration, configuration, and web interfaces.
-
-### How the layers interact (daemon mode)
-
-The TypeScript CLI (`src/cli.ts`) is the user-facing entry point (`agentpay`). It spawns Rust binaries (`vault-cli-admin`, `vault-cli-agent`, `vault-cli-daemon`) as child processes for security-critical operations. The Rust daemon runs persistently and communicates via Unix domain sockets (or macOS XPC). The relay server bridges external requests to the daemon, and the web UI provides a manual approval console.
-
-```
-TypeScript CLI (src/cli.ts)
-    │ spawns Rust binaries
-    ▼
-Rust CLIs (vault-cli-*)
-    │ Unix socket / XPC
-    ▼
-Daemon (vault-daemon) ← Relay (apps/relay, tRPC/Hono) ← Web UI (apps/web, Next.js)
-```
-
-### Rust crates (crates/)
-
-Organized in dependency layers:
-
-- **Domain** (`vault-domain`): Core types — `AgentAction`, `SignRequest`, `SpendingPolicy`, `ManualApprovalRequest`. No transport or IO dependencies.
-- **Policy** (`vault-policy`): Policy evaluation engine consuming domain types.
-- **Signer** (`vault-signer`): Signing backends — macOS Secure Enclave, software, TEE. Uses k256 for ECDSA.
-- **Daemon** (`vault-daemon`): Authorization pipeline, encrypted state persistence (Argon2), nonce management. Transport-agnostic.
-- **Transport** (`vault-transport-unix`, `vault-transport-xpc`): Wire protocols. Unix socket has 256KB max body.
-- **SDK** (`vault-sdk-agent`): Agent-side client with `AgentOperations` trait (`approve()`, `transfer()`, `broadcast_tx()`).
-- **CLIs** (`vault-cli-admin`, `vault-cli-agent`, `vault-cli-daemon`): Binary entry points using clap.
-
-### TypeScript packages (packages/)
-
-- **config** (`@worldlibertyfinancial/agent-config`): Chain/network configuration, token profiles, RPC URLs
-- **rpc** (`@worldlibertyfinancial/agent-rpc`): Blockchain RPC via Viem — balance queries, tx broadcast, fee estimation
-- **ui** (`@worldlibertyfinancial/agent-ui`): Shared React components (Tailwind CSS) for web app
-- **cache** (`@worldlibertyfinancial/agent-cache`): Redis/Valkey client abstraction (ioredis)
-- **railgun-engine-fork** (`@worldlibertyfinancial/railgun-engine-fork`): Vendored Railgun engine fork used by the Railgun privacy flows
-- **typescript** (`@worldlibertyfinancial/agent-typescript`): Shared TypeScript configuration presets
-
-### Applications (apps/)
-
-- **relay** (`@worldlibertyfinancial/agent-relay`): Hono + tRPC server, routes: daemon, admin, public. Backed by Valkey cache. Its `deploy:*` scripts are fail-closed stubs; deployment is unsupported in this release.
-- **web** (`@worldlibertyfinancial/agent-web`): Next.js 16 + React 19. Approval console (`/approvals`), daemon management (`/daemons`). Uses @noble crypto libs for client-side encryption.
-- **railgun-prover** (`@worldlibertyfinancial/agent-railgun-prover`): Railgun proof generation service used by the privacy transfer flows.
-- **railgun-vector-generator** (`@worldlibertyfinancial/railgun-vector-generator`): Deterministic Railgun engine test-vector generator. Dumps a JSON fixture that the Rust crypto port cross-checks bit-for-bit. Dev-only; never imported by the daemon or the CLI.
-
-### CLI library (src/lib/)
-
-62 TypeScript modules organizing CLI functionality: admin setup/reset, agent authentication (auth/rotate/revoke/migrate), asset broadcast, bootstrap, config management, macOS/Linux integration (launchd, systemd, keychain, Secure Enclave), wallet status/repair, MPP and Link payments, Railgun, Solana transfers, telemetry. The `rust.ts` module handles spawning Rust binaries.
-
-Imports inside `src/` use `.js` specifiers (for example `./lib/rust.js`) that tsup, tsx, and TypeScript's `moduleResolution: Bundler` resolve to the `.ts` sources. There are no `.js` shim files in `src/`; do not add any.
-
-## Monorepo Tooling
-
-- **pnpm 10.6** workspaces (`packages/*`, `apps/*`)
-- **Turbo** for task orchestration with caching (`turbo.json`)
-- **tsup** bundles the CLI to `dist/cli.cjs` (CJS, node20 target, with shebang, no sourcemaps)
-- **Cargo** workspace for Rust crates (`[profile.release]` keeps `overflow-checks = true`)
-- **Biome** for formatting/linting (line width 100, single quotes, 2-space indent, trailing commas); `skills/agentpay-sdk/scripts/vendor/` is vendored and excluded from linting
-- **Rust 1.89.0+** minimum required (`rust-version` in the Cargo workspace; CI has an MSRV job pinned to 1.89.0)
+The toolchain is pinned in `rust-toolchain.toml`; keep `rust-version` in the root `Cargo.toml` in
+sync (CI checks it). CI (`.github/workflows/ci.yml`) runs lint and tests on macOS and Linux.
 
 ## Testing
 
-- **TypeScript integration tests** (`test/`): Node.js built-in `test` module (not vitest), run through `scripts/run-ts-tests.mjs` -> `scripts/run-tests-isolated.mjs`. The harness gives every run a throwaway `HOME`, `AGENTPAY_HOME`, and `TMPDIR` under the system temp directory and blocks `sudo`, `launchctl`, and `systemctl`. When spawning the CLI from a test, set `AGENTPAY_TELEMETRY=0`.
-- **Package/app unit tests**: vitest (relay, web, cache).
-- **Rust tests**: Standard `cargo test`. Domain model, policy engine, and signer tests.
-- **Installer tests**: `test/setup-agentpay-script.test.mjs` drives `scripts/installer.sh` against fixture bundles, including SHA-256 verification, protected install-directory refusal, and shell rc handling.
+- Every crate has its own unit tests (`cargo test --workspace`); `xtask` tests its own helpers.
+- `agentpay-api` fixtures under `crates/agentpay-api/fixtures/` are checked against the Rust
+  types and reproduced by the daemon in `agentpay-signerd`'s `api_examples` tests.
+- `agentpay-setup` runs its step logic against an in-memory fake `System`; no root needed.
+- Secure Enclave checks never run on CI (no Secure Enclave) and never prompt.
+- The client (`client/`) uses Vitest with `ink-testing-library` and a fake daemon that answers
+  with the `agentpay-api` fixtures.
 
-## Key Conventions
+## Conventions
 
-- The CLI output is `dist/cli.cjs` — a single CJS bundle despite the project being ESM (`"type": "module"`)
-- Rust binaries install to `~/.agentpay/bin/`
-- macOS-specific: LaunchDaemon management, System Keychain storage, Secure Enclave signing; Linux uses systemd units and a password helper
-- Security-sensitive memory uses `zeroize` in Rust
-- Web app enforces strict CSP and security headers
-- `agentpay admin approve-manual-approval-request` and `agentpay admin reject-manual-approval-request` display the pending request and ask for confirmation before acting; pass `--yes` for non-interactive use
-- The one-click installer (`scripts/installer.sh`) verifies the downloaded bundle's SHA-256 against the digest templated in at release time (`SHA256SUMS` is published with every release) before extracting it, and refuses `$HOME`, `/`, `/usr*`, `/opt`, and unrecognized non-empty directories as install or skill-pack destinations
+- **No JavaScript.** Only `.rs`, `.ts` and `.tsx`; repo tooling goes in `xtask`.
+- **Files stay under 1,000 lines.** Split into modules instead; there are no exceptions.
+- **`agentpay-api` is a public contract.** `#![deny(missing_docs)]`; document purpose, units,
+  permissions, errors and side effects. Update `docs/daemon-api.md` and run
+  `cargo xtask gen-api` with every change.
+- **Secrets only travel on stdin or pipes**, never in arguments or environment variables. Use
+  `zeroize` for secret memory. No `unwrap` in daemon code paths.
+- **No vault password.** Daemon state is keyed by a machine secret that `agentpay-setup` creates.
+  Admin auth on macOS is a Secure Enclave key (`.userPresence`: Touch ID or login password)
+  through `agentpay-auth`; the daemon verifies its challenge signatures with p256. Everywhere
+  else (Linux, SSH) admin auth is `sudo`: the daemon trusts peer euid 0. The legacy
+  vault-password state is only read for one-time migration.
+- Keep the `agentpay-auth` key reload on CryptoKit; reloading through `SecKeyCreateWithData`
+  skips the access-control check (`test-macos-auth` guards this).
+- `clippy -D warnings` and rustfmt are enforced.
+
+## Status
+
+- **The rewrite is done** (release 1.0.0, API 1.0.0; API 1.1.0 adds `AddToken`): Railgun, XPC, Windows TPM, Secure Enclave
+  wallet, relay/web, the TypeScript CLI, and the legacy Rust CLIs are removed; signerd, paymentd
+  (chains, x402, MPP, paying proxy, wallet and funding, telemetry), `agentpay-setup`,
+  `agentpay-auth`, and the Ink client are in place.
+- The workspace is on one alloy line (alloy 2.x / alloy-core 1.7, the one `mpp` 0.19 and
+  `x402-types` 2.0 use); keep them in step.
+- Stripe Link and Bitrefill are removed; there are no `link` or `bitrefill` commands.
+- The API is a published contract: follow the versioning and deprecation policy in
+  `docs/daemon-api.md` for every wire change.
 
 ## Instructions
 

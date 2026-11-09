@@ -31,20 +31,40 @@ Please redact private keys, seed phrases, access tokens, and personal data.
 - Please do not disclose publicly until a fix is released and maintainers confirm disclosure timing.
 - Once fixed, we may publish a security advisory and release notes.
 
+## Supported versions
+
+Security fixes are made on the latest release line. AgentPay 1.0.0 replaced the TypeScript CLI,
+the relay and web console, and the vault password; reports against 0.x releases are accepted when
+the issue also affects 1.x or a supported migration path.
+
+## Security model
+
+The trust boundaries are described in [docs/architecture.md](docs/architecture.md) and the API's
+[security notes](docs/daemon-api.md#security-notes-for-integrators). In short:
+
+- only the signer daemon runs as root; it holds every key and enforces policy, spending limits, and
+  manual approvals;
+- the payments service runs as an unprivileged account, holds no keys, and is on the signer
+  daemon's agent allowlist only;
+- admin actions need a root peer (`sudo`) or a short-lived lease from a Secure Enclave key
+  (Touch ID or the Mac password);
+- secrets travel only on stdin, pipes, or the daemon sockets.
+
+Bypasses of any of these boundaries are in scope, for example: signing outside an agent's policies
+or limits, reaching admin methods without admin authority, impersonating a daemon socket, leaking
+agent tokens, lease secrets, backup passphrases, or the machine secret, or the payments service
+signing or sending something other than what the signer daemon approved.
+
 ## Telemetry
 
-The CLI sends anonymous usage analytics and crash diagnostics by default. See
-[Telemetry and privacy](README.md#telemetry-and-privacy) for exactly what is and is not collected,
-and for the three supported ways to disable it.
+The payments service sends anonymous usage analytics and crash reports by default. See
+[Telemetry and privacy](README.md#telemetry-and-privacy) for what is and is not collected and how
+to turn it off.
 
-Telemetry is keyed to a random install id, never to a wallet address. Crash reports never contain
-output from the Rust signing binaries: it is replaced with the binary name and exit code before the
-report is built, not scrubbed.
-
-Reports that telemetry transmits a secret, a wallet address, a recipient address, a transaction
-hash, an exact amount, an RPC URL path or key, or anything else that could link an analytics
-identity to an on-chain identity are in scope and should be reported through the private channels
-above.
+Telemetry is keyed to a random install id, never to a wallet address. Reports that telemetry
+transmits a secret, a wallet or recipient address, a transaction hash, an exact amount, an RPC or
+merchant URL path or key, or anything else that could link an analytics identity to an on-chain
+identity are in scope and should be reported through the private channels above.
 
 ## Scope notes
 
@@ -52,7 +72,7 @@ Security reports may include, but are not limited to:
 
 - key management and secret handling
 - signing, approval, and policy-bypass issues
-- privilege escalation in daemon/CLI flows
+- privilege escalation in the daemons, the installer (`agentpay-setup`), or the client
 - insecure defaults, auth bypass, replay, or injection paths
 - supply-chain and dependency risks with practical impact
 

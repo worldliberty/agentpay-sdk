@@ -1,0 +1,34 @@
+{
+  "type": "X402Response",
+  "data": {
+    "response": {
+      "url": "https://api.example.com/weather?city=Lisbon",
+      "status": 200,
+      "headers": [
+        {"name": "content-type", "value": "application/json"},
+        {"name": "payment-response", "value": "eyJzdWNjZXNzIjp0cnVlLCJ0cmFuc2FjdGlvbiI6IjB4OWQ0ZjNiMmExYzBlOGQ3ZjZhNWI0YzNkMmUxZjBhOWI4YzdkNmU1ZjRhM2IyYzFkMGU5ZjhhN2I2YzVkNGUzZiIsIm5ldHdvcmsiOiJlaXAxNTU6ODQ1MzIiLCJwYXllciI6IjB4MmM3NTM2ZTM2MDVkOWMxNmE3YTNkN2IxODk4ZTUyOTM5NmE2NWMyMyJ9"}
+      ],
+      "body": {"type": "text", "data": "{\"city\":\"Lisbon\",\"temperature_c\":21}"},
+      "body_truncated": false
+    },
+    "payment": {
+      "x402_version": 2,
+      "scheme": "exact",
+      "network": "eip155:84532",
+      "chain_id": 84532,
+      "asset": "0x036cbd53842c5426634e7929541ec2318f3dcf7e",
+      "pay_to": "0x209693bc6afc0c5328ba36faf03c514ef312287c",
+      "amount": "1000",
+      "from": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23",
+      "valid_after": 1793990400,
+      "valid_before": 1793991060,
+      "nonce_hex": "0x5f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+      "payment_response": {
+        "success": true,
+        "transaction": "0x9d4f3b2a1c0e8d7f6a5b4c3d2e1f0a9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f",
+        "network": "eip155:84532",
+        "payer": "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23"
+      }
+    }
+  }
+}

@@ -1,0 +1,143 @@
+name: Release
+
+# Builds the release tarballs on each platform and publishes them, with SHA256SUMS and the
+# installer, to the GitHub release for the pushed tag. See docs/releasing.md.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+# Release builds use no caches, so nothing a pull request wrote can end up in a release.
+# The toolchain comes from rust-toolchain.toml; Node.js for building the client comes from
+# client/.nvmrc (the runtime shipped inside the release is pinned in crates/xtask).
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          # GitHub's hosted arm64 Linux runner (public repositories).
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Check that the tag matches the workspace and client versions
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          client="$(sed -n 's/^  "version": "\(.*\)",$/\1/p' client/package.json | head -n 1)"
+          if [ "$TAG" != "v$version" ] || [ "$client" != "$version" ]; then
+            echo "::error::tag $TAG, Cargo.toml $version and client/package.json $client must agree"
+            exit 1
+          fi
+
+      - name: Install Rust toolchain (rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustup target add ${{ matrix.target }}
+          rustup show active-toolchain
+
+      - name: Install Node.js (client/.nvmrc)
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version-file: client/.nvmrc
+
+      - name: Build the release tarball
+        run: cargo xtask dist --target ${{ matrix.target }}
+
+      - name: Install the tarball with scripts/install.sh in a throwaway home
+        run: cargo xtask test-install --dist dist
+
+      - name: Upload the tarball
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-${{ matrix.target }}
+          path: |
+            dist/agentpay-*.tar.gz
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Download the tarballs
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          path: artifacts
+
+      - name: Merge and verify SHA256SUMS
+        run: |
+          mkdir release
+          cp artifacts/*/agentpay-*.tar.gz release/
+          cat artifacts/*/SHA256SUMS | sort -k 2 > release/SHA256SUMS
+          count="$(ls release/agentpay-*.tar.gz | wc -l)"
+          if [ "$count" -ne 4 ] || [ "$(wc -l < release/SHA256SUMS)" -ne 4 ]; then
+            echo "::error::expected 4 tarballs and 4 checksums"
+            exit 1
+          fi
+          (cd release && sha256sum --check --strict SHA256SUMS)
+          cp scripts/install.sh release/install.sh
+          cat release/SHA256SUMS
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          notes="releases/$TAG.md"
+          if [ -f "$notes" ]; then
+            set -- --notes-file "$notes"
+          else
+            set -- --generate-notes
+          fi
+          case "$TAG" in
+            *-*) set -- "$@" --prerelease ;;
+          esac
+          # Assets are uploaded before the release is published, so `latest` never points at
+          # a release without its tarballs.
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "AgentPay ${TAG#v}" "$@" \
+            release/agentpay-*.tar.gz release/SHA256SUMS release/install.sh

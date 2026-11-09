@@ -1,0 +1,94 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`onboarding wizard > walks welcome → Touch ID → limits → creating → backup → done without timers > done 1`] = `
+"
+  AgentPay · You’re all set
+
+  Step 6 of 6  ● ● ● ● ● ●  Done
+
+  Your agents can now pay within your limits. Payments above them wait for your approval.
+
+  Wallet address  0x2c7536e3605d9c16a7a3d7b1898e529396a65c23
+  Solana address  9fijMemJYwXS5QD85Qxsq7iKqvSebgb6LvpGftgkeigk
+
+  Check balances any time with \`agentpay wallet\`.
+  Review requests waiting for you with \`agentpay admin approvals\`.
+
+  › Add funds
+    Finish
+
+  ↑↓ select · enter confirm
+"
+`;
+
+exports[`onboarding wizard > walks welcome → Touch ID → limits → creating → backup → done without timers > protect your wallet 1`] = `
+"
+  AgentPay · Protect your wallet
+
+  Step 2 of 6  ● ● ○ ○ ○ ○  Protect your wallet
+
+  Admin actions, like approving a large payment or changing limits, need your approval.
+
+  ✓ Approve with Touch ID or your Mac password instead of typing sudo commands.
+  ✓ The key lives in this Mac’s Secure Enclave and never leaves it.
+  ✓ You can turn it off any time in Security.
+
+  › Turn on Touch ID (recommended)
+    Not now, use sudo
+
+  ↑↓ select · enter confirm
+"
+`;
+
+exports[`onboarding wizard > walks welcome → Touch ID → limits → creating → backup → done without timers > spending limits 1`] = `
+"
+  AgentPay · Set spending limits
+
+  Step 3 of 6  ● ● ● ○ ○ ○  Spending limits
+
+  Agents pay on their own up to these limits. Anything beyond waits for your approval. An asset
+  without a limit stays blocked.
+
+    Asset     Network         Per payment   Per day       Per week      Status
+  › BNB       BSC             −     0.01 +  −      0.2 +  −      1.4 +  Recommended
+    USD1      BSC             −       10 +  −      100 +  −      700 +  Recommended
+    USDC      BSC             −       10 +  −      100 +  −      700 +  Recommended
+    ETH       Arbitrum        −        — +  −        — +  −        — +  Needs a choice
+    USDC      Arbitrum        −       10 +  −      100 +  −      700 +  Recommended
+    ETH       Base            −        — +  −        — +  −        — +  Needs a choice
+    USDC      Base            −       10 +  −      100 +  −      700 +  Recommended
+    ETH       ETH             −        — +  −        — +  −        — +  Needs a choice
+    USD1      ETH             −       10 +  −      100 +  −      700 +  Recommended
+    USDC      ETH             −       10 +  −      100 +  −      700 +  Recommended
+    ETH       Optimism        −        — +  −        — +  −        — +  Needs a choice
+    USDC      Optimism        −       10 +  −      100 +  −      700 +  Recommended
+    POL       Polygon         −       20 +  −      400 +  −    2,800 +  Recommended
+    USDC      Polygon         −       10 +  −      100 +  −      700 +  Recommended
+    SOL       Solana          −     0.05 +  −        1 +  −        7 +  Recommended
+    USD1      Solana          −       10 +  −      100 +  −      700 +  Recommended
+    USDC      Solana          −       10 +  −      100 +  −      700 +  Recommended
+    PATH/USD  Tempo           −       10 +  −      100 +  −      700 +  Recommended
+    USD1      Tempo           −       10 +  −      100 +  −      700 +  Recommended
+    USDC.e    Tempo           −       10 +  −      100 +  −      700 +  Recommended
+
+  4 assets need a limit or must be blocked
+
+  ↑↓ select · ←→ field · 0-9 or +/- amount · x block · X block rest · a add token · enter continue
+"
+`;
+
+exports[`onboarding wizard > walks welcome → Touch ID → limits → creating → backup → done without timers > welcome 1`] = `
+"
+  AgentPay · Welcome to AgentPay
+
+  Step 1 of 6  ● ○ ○ ○ ○ ○  Welcome
+
+  AgentPay gives your AI agents a wallet they can pay from, within limits you set. Your keys stay
+  on this machine.
+
+  › Create a new wallet    Start fresh with a new self-custodial wallet
+    Restore from a backup  Use an encrypted backup file you exported before
+
+  ↑↓ select · enter continue
+"
+`;

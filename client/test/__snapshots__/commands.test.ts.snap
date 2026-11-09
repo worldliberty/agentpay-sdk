@@ -1,0 +1,20 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`agent commands (--json) > text output of wallet is aligned and short 1`] = `
+"Wallet
+  EVM address: 0x2c7536e3605d9c16a7a3d7b1898e529396a65c23
+  Solana address: 9fijMemJYwXS5QD85Qxsq7iKqvSebgb6LvpGftgkeigk
+  Default payment: USD1 on BSC
+
+Balances
+  BSC  25.5 USD1
+          2 BNB
+  ETH  ✗ The RPC cannot be reached
+
+Test networks
+  Solana Devnet  0.001 SOL
+                  12.5 USDC
+
+1 network cannot be read. Next: Use your own RPC: \`agentpay config set chains.eth.rpc_url <URL>\` (backups: \`chains.eth.fallback_rpc_urls\`).
+"
+`;

@@ -1,0 +1,13 @@
+{
+  "type": "PolicySummaries",
+  "data": [
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000001",
+      "enabled": true
+    },
+    {
+      "id": "a1b2c3d4-0000-4000-8000-000000000002",
+      "enabled": false
+    }
+  ]
+}

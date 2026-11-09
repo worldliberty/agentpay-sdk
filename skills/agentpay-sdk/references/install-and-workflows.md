@@ -1,497 +1,171 @@
 # Install And Workflows
 
+## Install AgentPay
+
+```bash
+curl -fsSL https://wlfi.sh | sh
+agentpay setup
+```
+
+- The installer downloads the release for the OS and CPU, verifies its SHA-256 against the
+  release's `SHA256SUMS`, installs it into `~/.agentpay`, and puts `agentpay` on `PATH`. It never
+  uses sudo. Options go after `sh -s --`: `--yes`, `--verbose`, `--no-modify-path`;
+  `AGENTPAY_VERSION` pins a release.
+- `agentpay setup` asks for the user's password once (sudo) to install the signer daemon and the
+  payments service (launchd on macOS, systemd on Linux), then opens the setup wizard.
+- The wizard is interactive. The user runs it in their own terminal; an agent cannot complete it.
+- Supported: macOS 13 or later, and Linux with systemd.
+
+To update, rerun the installer and then `agentpay setup` (choose "Keep the existing wallet").
+
 ## Install The Skill
 
-Fastest packaged bootstrap on macOS or Linux:
+Copy the `agentpay-sdk/` folder into the agent's skill directory, for example:
 
 ```bash
-curl -fsSL https://wlfi.sh | bash
+mkdir -p ~/.claude/skills && cp -R /path/to/skills/agentpay-sdk ~/.claude/skills/agentpay-sdk
+mkdir -p ~/.codex/skills && cp -R /path/to/skills/agentpay-sdk ~/.codex/skills/agentpay-sdk
+mkdir -p ~/.openclaw/skills && cp -R /path/to/skills/agentpay-sdk ~/.openclaw/skills/agentpay-sdk
 ```
 
-That installer can:
-
-- choose an install directory
-- download a prebuilt macOS or Linux AgentPay SDK runtime bundle instead of compiling locally
-- bootstrap missing Node 20+ when the machine does not already have it
-- install `agentpay`
-- auto-detect and preselect supported agent destinations that already exist
-- let the user toggle preset destinations and add custom skill-pack or adapter paths
-- install the AgentPay skill pack into Codex, Claude, Cline, Goose, Windsurf, OpenClaw, portable `.config/agents`, legacy `.agents`, and matching workspace skill directories
-- install workspace adapters for `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, `.github/copilot-instructions.md`, `.clinerules/agentpay-sdk.md`, and Cursor
-- stop after installation so the user can run `agentpay admin setup` separately
-- support managed wallet setup on macOS with `launchd` and on Linux with system `systemd`
-- do not configure browser-based relay or web approval services
-
-If the user only wants the skill pack and editor adapters, use:
-
-```bash
-curl -fsSL https://wlfi.sh | bash -s -- --skills-only
-```
-
-That path skips the AgentPay SDK runtime install and only writes the AI skill targets.
-It reuses the standard AgentPay SDK bundle, so release publishing only needs the normal installer assets.
-
-Useful workspace overrides:
-
-- `AGENTPAY_SETUP_WORKSPACE=/path/to/repo` for workspace adapters such as `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, Copilot, or project-local skill directories
-- `AGENTPAY_SETUP_CURSOR_WORKSPACE=/path/to/repo` for the Cursor `.cursor/rules/agentpay-sdk.mdc` adapter
-
-OpenClaw should consume the `agentpay-sdk/` folder directly as a skill pack.
-
-Codex / local install:
-
-```bash
-mkdir -p ~/.codex/skills
-cp -R /path/to/agentpay-sdk ~/.codex/skills/agentpay-sdk
-```
-
-OpenClaw / local install:
-
-```bash
-mkdir -p ~/.openclaw/skills
-cp -R /path/to/agentpay-sdk ~/.openclaw/skills/agentpay-sdk
-```
-
-Claude Code / local install:
-
-```bash
-mkdir -p ~/.claude/skills
-cp -R /path/to/agentpay-sdk ~/.claude/skills/agentpay-sdk
-```
-
-Cursor root adapter:
-
-```bash
-mkdir -p /path/to/repo/.cursor/rules
-cp /path/to/agentpay-sdk/agents/cursor-agentpay-sdk.mdc /path/to/repo/.cursor/rules/agentpay-sdk.mdc
-cp /path/to/agentpay-sdk/agents/AGENTS.md /path/to/repo/AGENTS.md
-```
-
-## Install Or Update From Source
-
-From a repo checkout:
-
-Source installs build and install the CLI/runtime binaries on macOS and Linux. Windows does not yet support the Rust daemon/runtime from source in this repo. If you only need the JavaScript workspace on Windows, install with `AGENTPAY_SKIP_RUST_INSTALL=1 pnpm install`.
-
-```bash
-pnpm install
-pnpm run build
-pnpm run install:cli-launcher
-pnpm run install:rust-binaries
-```
-
-One-click updates use the same bootstrap entrypoint:
-
-```bash
-curl -fsSL https://wlfi.sh | bash
-```
-
-If the runtime has already been refreshed and the user only needs to reconnect the existing local vault, use:
-
-```bash
-agentpay admin setup --reuse-existing-wallet
-```
-
-Managed wallet bootstrap commands such as `agentpay admin setup`, `agentpay admin tui`, `agentpay admin reset`, and `agentpay admin uninstall` are supported on macOS and Linux. The managed daemon uses `launchd` on macOS and system `systemd` on Linux. Agent auth storage uses macOS Keychain on macOS and Linux Secret Service on Linux.
-
-## Default Payment Assumption
-
-If the user asks to send money and does not name a network or asset, use these defaults:
-
-- network: `bsc`
-- asset: `USD1`
-- token address: `0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d`
-
-This default removes two unnecessary clarification steps. The agent should still ask for the amount and recipient if those are missing.
+Workspace adapters live in `agents/`: `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`,
+`copilot-instructions.md` (`.github/`), `cline-agentpay-sdk.md` (`.clinerules/`), and
+`cursor-agentpay-sdk.mdc` (`.cursor/rules/`).
 
 ## Wallet Reuse vs Setup
-
-Start here:
-
-```bash
-agentpay config show --json
-```
-
-Then try:
 
 ```bash
 agentpay wallet --json
 ```
 
-Interpret the result like this:
-
-- If `wallet --json` works, reuse the existing wallet.
-- If it fails with `wallet metadata is unavailable`, the agent should treat that as "wallet setup is not in a reusable state yet" and move to setup.
-- If `wallet --json` works but the user needs to re-run setup while preserving the same vault, use `agentpay admin setup --reuse-existing-wallet`.
+- Exit `0`: the wallet exists; reuse it. Note `evm_address` and `solana_address`.
+- Exit `4`: AgentPay is not installed or this user has no agent credentials. Tell the user to run
+  `agentpay setup` locally.
+- Exit `1` with `socket_untrusted`, `connect_failed`, or a `SignerUnavailable` error: the services
+  are installed but unhealthy. `agentpay status --json` shows what is wrong; rerunning
+  `agentpay setup` and choosing "Keep the existing wallet" repairs the install without changing the
+  wallet.
 
 ## First-Run Setup
 
-Do not ask the user to paste `VAULT_PASSWORD` into chat.
+The user runs `agentpay setup`. The wizard steps:
 
-Run on macOS or Linux:
+1. **Welcome**: create a new wallet, restore from a backup, or keep the existing wallet.
+2. **Protect your wallet** (macOS): turn on Touch ID for admin approvals, or skip and use sudo.
+3. **Spending limits**: every seeded asset gets per-payment, daily, and weekly limits, or is
+   blocked. Assets without a limit cannot be spent.
+4. **Create wallet**: keys, agent credentials (saved to the keychain), and limits.
+5. **Back up**: export an encrypted backup (passphrase of at least 12 characters).
+6. **Done**: shows the wallet address and how to add funds.
 
-```bash
-agentpay admin setup
-```
-
-The command:
-
-- installs or refreshes the managed daemon
-- creates the vault key and agent key
-- imports the agent auth token into the local credential store
-- prints the wallet address
-- prompts securely in the local terminal if it needs vault input
-
-Capture these values immediately:
-
-- wallet address
-- vault key id
-- agent key id
-- daemon socket
-- state file
-
-Do not discard the wallet address. The skill should remember it and use it for future funding prompts.
-
-After a fresh setup, create and verify an encrypted offline wallet backup immediately:
+If the user skipped the backup, recommend:
 
 ```bash
-agentpay admin wallet-backup export --output ~/agentpay-backups/agentpay-wallet-backup.json
-agentpay admin wallet-backup verify ~/agentpay-backups/agentpay-wallet-backup.json
+agentpay admin wallet-backup export --output ~/agentpay-backup.json
+agentpay admin wallet-backup verify ~/agentpay-backup.json
 ```
 
-If the user skips the backup prompt during interactive setup, bring them back to this command pair before treating the wallet as safely recoverable.
+The passphrase is entered in the local prompt. Never ask for it in chat.
 
-## Reuse Existing Wallet During Setup Recovery
+## Re-Run Setup Without Changing The Wallet
 
-Use this when the local vault still exists but the user needs to recover the managed daemon, fix root-owned setup state, or refresh local credentials without creating a new wallet.
-
-```bash
-agentpay admin setup --reuse-existing-wallet
-```
-
-Important behavior:
-
-- interactive mode asks for `REUSE`
-- non-interactive mode still needs `--yes`
-- the command preserves the current vault instead of generating a fresh one
+The user runs `agentpay setup` and chooses **Keep the existing wallet**. This reinstalls or upgrades
+the services, keeps the wallet key and spend history, rotates the agent token, and applies the
+limits chosen in the wizard.
 
 ## Restore A Wallet From Backup
 
-Use this when the original machine is gone, local wallet metadata was lost, or the user is intentionally rebuilding the same wallet on a new machine and has an encrypted backup file.
+On the new machine the user installs AgentPay, runs `agentpay setup`, and chooses **Restore from a
+backup**, then enters the backup file path and passphrase locally. Backups from earlier AgentPay
+releases (formats v1 and v2) restore.
 
-```bash
-agentpay admin setup --restore-wallet-from /path/to/agentpay-wallet-backup.json
-```
+## Upgrading From A Vault-Password Install
 
-Important behavior:
-
-- the CLI asks locally for the backup password
-- the restored wallet keeps the same address
-- the managed daemon and local agent credentials are recreated on the new machine
-- if the user does not have the backup file, this restore path is unavailable
+Running `agentpay setup` on a machine set up by an earlier release migrates the daemon state from
+the old vault password to a machine secret automatically. The wallet and its address stay the same.
+No password is needed afterwards.
 
 ## Funding A Wallet Before Sending Money
 
-For outbound actions, always decide the network first.
+1. `agentpay wallet --json` and read the `balances` entry for the network and asset.
+2. For ERC-20 payments also read the native coin entry for gas (BNB on BSC, ETH on Ethereum).
+   Tempo needs no native gas.
+3. If either is short, stop and run:
 
-Built-in practical examples in the current SDK:
+   ```bash
+   agentpay fund --network bsc --asset usd1 --amount 25 --json
+   ```
 
-- `bsc` -> chain id `56`, default RPC `https://bsc.drpc.org`
-- `eth` -> chain id `1`
-- `usd1` has built-in token mappings on `eth` and `bsc`
-- `bnb` is the built-in native asset for `bsc`
-- default settlement path for unspecified payments: `USD1` on `bsc`
+4. Give the user the `address`, the network and `chain_id`, the asset (`symbol`, `token`), the gas
+   asset from `gas`, and the `uri`. Add `--qr` to show a QR code in the terminal.
+5. Wait for the user to confirm funding, then check `agentpay wallet --json` again.
 
-Native balance check:
+## Spending Limits
 
-```bash
-agentpay rpc balance \
-  --address <ADDRESS> \
-  --rpc-url <RPC_URL> \
-  --json
-```
+- Interactive (default): the user runs `agentpay admin limits`.
+- Exact command, when the user asks for one:
 
-ERC-20 balance check:
+  ```bash
+  agentpay admin limits set usd1 --network bsc --per-tx 10 --daily 50 --weekly 200
+  agentpay admin limits set eth --network eth --exclude
+  ```
 
-```bash
-agentpay rpc balance \
-  --address <ADDRESS> \
-  --token <TOKEN_ADDRESS> \
-  --rpc-url <RPC_URL> \
-  --json
-```
-
-If native balance is zero or obviously too low for the requested action, stop and ask the user to fund the wallet first.
-
-For the default `USD1 on bsc` flow:
-
-- check `USD1` balance for the transfer value
-- check `BNB` balance for gas
-- if both are missing, tell the user to send the requested amount of `USD1` to the wallet on BSC and add a small amount of `BNB` for gas
-- if only gas is missing, ask for `BNB` only
-- if only token balance is missing, ask for `USD1` only
-
-Generate a funding request payload:
-
-```bash
-node scripts/prepare-funding-request.mjs \
-  --address <ADDRESS> \
-  --chain-id <CHAIN_ID> \
-  --network-name <NETWORK_NAME> \
-  --amount-wei <SUGGESTED_TOP_UP_WEI> \
-  --token-symbol <SYMBOL> \
-  --json
-```
-
-That helper returns:
-
-- the raw address
-- a human-readable network label
-- an `ethereum:` funding URI
-- a local SVG data URI for image rendering
-- a QR URL fallback
-- a ready-to-send reminder sentence
-
-Default to the rendered QR image in chat. Use the QR URL if the host strips data-URI images.
-
-## Policy Setup
-
-Do not ask the user to paste `VAULT_PASSWORD` into chat for policy work.
-
-Default path:
-
-```bash
-agentpay admin tui
-```
-
-Use the TUI when the user wants to:
-
-- change default token limits
-- add manual approval rules
-- add destination-specific rules
-- review or resolve approval requests
-
-When guiding the user, keep it concrete:
-
-- tell them to open `agentpay admin tui`
-- tell them which network and token to edit
-- tell them the exact ceilings or approval thresholds to enter
-
-## Policy CLI Reference
-
-Only use the raw commands below if the user explicitly asks for exact CLI commands instead of the TUI.
-
-`agentpay admin token set-chain ...` writes the saved shared config and, when reusable wallet metadata exists, immediately tries to sync those per-token limits to the live daemon attachment for the existing wallet. The CLI prompts locally for the vault password unless `--vault-password-stdin` is supplied. If the live apply step fails, the command restores the previous saved config and exits.
-
-### Native or Token Default Limits
-
-Use this when the user gives concrete spending ceilings.
-
-Example for BNB on BSC:
-
-```bash
-agentpay admin token set-chain bnb bsc \
-  --native \
-  --decimals 18 \
-  --per-tx 0.01 \
-  --daily 0.2 \
-  --weekly 1.4 \
-  --json
-```
-
-Example for USD1 on BSC:
-
-```bash
-agentpay admin token set-chain usd1 bsc \
-  --address 0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d \
-  --decimals 18 \
-  --per-tx 10 \
-  --daily 100 \
-  --weekly 700 \
-  --json
-```
-
-### Manual Approval Overlay
-
-Use this when the user wants risky or high-value payments paused for review.
-
-Native example:
-
-```bash
-agentpay admin add-manual-approval-policy \
-  --network 56 \
-  --allow-native-eth \
-  --recipient 0x1111111111111111111111111111111111111111 \
-  --min-amount-wei 1000000000000000 \
-  --max-amount-wei 5000000000000000
-```
-
-ERC-20 example:
-
-```bash
-agentpay admin add-manual-approval-policy \
-  --network 56 \
-  --token 0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d \
-  --recipient 0x2222222222222222222222222222222222222222 \
-  --min-amount-wei 1000000000000000000 \
-  --max-amount-wei 10000000000000000000
-```
-
-### Recipient-Specific Overrides
-
-Current CLI exposes recipient-specific overrides through the TUI rather than a direct non-interactive command.
-
-Only do that when a human is actively present in the terminal and has explicitly asked for destination-specific rules.
+- Show current limits and usage: `agentpay admin limits --json` (admin authority needed).
+- Limits are per network and asset; daily and weekly are rolling 24 hours and 7 days. Per day
+  should be at least per payment, and per week at least per day.
+- Admin authority: Touch ID or Mac password on macOS with Touch ID enabled; otherwise `sudo`
+  (`sudo agentpay admin limits set …`).
 
 ## Manual Approval Flow
 
-If a payment hits a manual approval rule, do not describe it as a failed send.
-
-Tell the user:
-
-- the request was created and is waiting for approval
-- they should use the local admin CLI approval commands
-- for `transfer --broadcast`, `transfer-native --broadcast`, `approve --broadcast`, and `bitrefill buy --broadcast`, they should keep the original command running instead of rerunning it after approval
-- if that original broadcast command is already gone after approval, they should use `agentpay admin resume-manual-approval-request --approval-request-id <UUID>`
-
-If they explicitly want CLI commands, use:
-
-```bash
-agentpay admin list-manual-approval-requests
-agentpay admin approve-manual-approval-request --approval-request-id <UUID>
-agentpay admin resume-manual-approval-request --approval-request-id <UUID>
-agentpay admin reject-manual-approval-request --approval-request-id <UUID> --rejection-reason "user rejected"
-```
+1. A payment returns or waits with `manual_approval_pending` and an `approval_request_id`.
+2. Tell the user it is waiting for their approval and give them:
+   - `agentpay admin approve <UUID>` (or review everything with `agentpay admin approvals`)
+   - `agentpay admin reject <UUID> --reason "<text>"` to refuse
+3. If the original EVM or Solana `--broadcast` command is still running, it finishes on its own
+   once approved. Do not rerun it.
+4. If it already exited with code `3`, run `agentpay resume --approval-request-id <UUID> --json`
+   after approval.
+5. For `x402` and `mpp`, rerunning creates a new approval request. Use `--approval-wait <secs>` so
+   the call waits while the user decides.
 
 ## Send Money
 
-Native asset request:
-
 ```bash
-agentpay transfer-native \
-  --network bsc \
-  --to 0x1111111111111111111111111111111111111111 \
-  --amount 0.001 \
-  --json
+# USD1 on BSC (defaults)
+agentpay transfer --to 0xRecipient --amount 5 --broadcast --json
+
+# Native coin
+agentpay transfer-native --network bsc --to 0xRecipient --amount 0.01 --broadcast --json
+
+# Another ERC-20 by key or address
+agentpay transfer --network eth --token 0xTokenAddress --to 0xRecipient --amount 12.5 --broadcast --json
+
+# Allowance
+agentpay approve --network bsc --token usd1 --spender 0xSpender --amount 100 --broadcast --json
+
+# Agent-built transaction (calldata the policy engine does not recognize is refused)
+agentpay broadcast --network bsc --to 0xContract --data-hex 0x… --broadcast --json
+
+# Solana
+agentpay transfer-sol --network solana-mainnet --to <address> --amount 0.25 --broadcast --json
+agentpay transfer-spl --network solana-mainnet --mint <mint> --to <address> --amount 10 --broadcast --json
 ```
 
-ERC-20 request:
+Check the result's `receipt.success` (EVM) before telling the user the payment landed.
+
+## Uninstall
 
 ```bash
-agentpay transfer \
-  --network bsc \
-  --token 0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d \
-  --to 0x2222222222222222222222222222222222222222 \
-  --amount 1 \
-  --json
+agentpay admin wallet-backup export --output <PATH>   # first, unless a verified backup exists
+sudo ~/.agentpay/bin/agentpay-setup uninstall              # removes services and wallet state
+sudo ~/.agentpay/bin/agentpay-setup uninstall --keep-state # keeps encrypted state and machine secret
+rm -rf ~/.agentpay                                         # removes the client
 ```
 
-Approve allowance:
+## Not Available In This Version
 
-```bash
-agentpay approve \
-  --network bsc \
-  --token 0x8d0D000Ee44948FC98c9B98A4FA4921476f08B0d \
-  --spender 0x3333333333333333333333333333333333333333 \
-  --amount 1 \
-  --json
-```
-
-x402 exact/EIP-3009 request:
-
-```bash
-agentpay x402 https://api.example.com/paid --json
-```
-
-MPP one-shot payment (auto-accept server amount):
-
-```bash
-agentpay mpp \
-  https://parallelmpp.dev/api/search \
-  --method POST \
-  --header 'Content-Type: application/json' \
-  --json-body '{"query":"latest AI news","numResults":5}' \
-  --json
-```
-
-MPP with explicit amount verification:
-
-```bash
-agentpay mpp \
-  https://parallelmpp.dev/api/search \
-  --amount 0.005 \
-  --method POST \
-  --header 'Content-Type: application/json' \
-  --json-body '{"query":"latest AI news","numResults":5}' \
-  --json
-```
-
-MPP one-shot session request (Tempo only):
-
-```bash
-# Replace with a current session-capable endpoint discovered from
-# https://mpp.dev/services/llms.txt
-agentpay mpp \
-  https://api.example.com/mpp-session \
-  --method POST \
-  --header 'Content-Type: application/json' \
-  --json-body '{"prompt":"hello"}' \
-  --json
-```
-
-Persist and reuse the session across commands:
-
-```bash
-agentpay mpp \
-  https://api.example.com/mpp-session \
-  --session-state-file ~/.agentpay/tempo-session.json \
-  --method POST \
-  --header 'Content-Type: application/json' \
-  --json-body '{"prompt":"hello"}' \
-  --json
-```
-
-Reuse the saved session and close it after this request:
-
-```bash
-agentpay mpp \
-  https://api.example.com/mpp-session \
-  --session-state-file ~/.agentpay/tempo-session.json \
-  --close-session \
-  --method POST \
-  --header 'Content-Type: application/json' \
-  --json-body '{"prompt":"follow up"}' \
-  --json
-```
-
-Optionally override the initial session deposit:
-
-```bash
-agentpay mpp \
-  https://api.example.com/mpp-session \
-  --deposit 2 \
-  --session-state-file ~/.agentpay/tempo-session.json \
-  --method POST \
-  --header 'Content-Type: application/json' \
-  --json-body '{"prompt":"hello"}' \
-  --json
-```
-
-If the user wants the signed transaction actually sent to the network in the same step, add `--broadcast` for `transfer`, `transfer-native`, `approve`, or `bitrefill buy`, or use `agentpay tx broadcast`.
-
-For `mpp`, `--amount` is optional. When omitted, the CLI pays the server's challenge amount automatically. When provided, the CLI verifies the challenge amount matches before paying. The charge flow determines the payment chain from the server challenge and supports any EVM-compatible network; on Tempo chains it uses TIP-20 transfers with attribution memo, on other chains it uses standard ERC-20 transfers. Session mode (`--deposit`, `--session-state-file`, `--close-session`) is Tempo-only and uses on-chain escrow channels. Use `--session-state-file` to persist and reuse a session channel across multiple CLI invocations, and add `--close-session` when you want the paid request to close and delete that saved session afterward. Without a session state file, the CLI keeps session in one-shot open/request/close mode. In text mode, session event streams handle `payment-need-voucher` automatically, including top-up plus voucher replenishment when the stream requests more cumulative spend. The command also supports `--method`, repeatable `--header`, `--data`, and `--json-body`, and `--json` output includes a decoded `Payment-Receipt` under `payment.receipt` when present plus `payment.closeReceipt` for session closes. `--json` is still intended for non-streaming responses. For `x402`, the amount comes from the server challenge and the CLI supports exact/EIP-3009 requirements.
-
-For live MPP service discovery, use `https://mpp.dev/services/llms.txt` and pick a currently listed endpoint.
-
-For Bitrefill quote and preview output, `amount` is the raw onchain base-unit integer, not a human-decimal amount. Example: ETH base units are wei, and `amount: 1000000` with `decimals: 6` means `1 USDC`.
-
-## Unsupported Features
-
-Browser-based relay and web approval are unsupported in this release.
-
-Legacy relay config commands remain present only for compatibility and return `unsupported`:
-
-```bash
-agentpay admin set-relay-config
-agentpay admin get-relay-config
-```
+- Stripe Link card payments and Bitrefill (removed; there are no `link` or `bitrefill` commands)
+- Private (Railgun) transfers
+- MPP sessions v1 (legacy escrow channels)
+- Browser relay and web approval console
