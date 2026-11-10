@@ -63,7 +63,7 @@ clap = { version = "4.5", features = ["derive", "env"] }
 core-foundation = "0.10"
 ed25519-dalek = { version = "3.0.0-pre.6", features = ["rand_core"] }
 hex = "0.4"
-hkdf = "0.12"
+hkdf = "0.13"
 http-body-util = "0.1"
 # Local paying HTTP proxy in the payments service (HTTP/1 server, TLS interception for paid hosts).
 hyper = { version = "1", features = ["server", "http1"] }
