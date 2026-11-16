@@ -102,7 +102,7 @@ solana-system-interface = { version = "3.2.0", features = ["bincode"] }
 # binary fail to link on Linux ("duplicate symbol: entrypoint").
 spl-associated-token-account = { version = "8.0.0", features = ["no-entrypoint"] }
 spl-token = { version = "9.0.0", features = ["no-entrypoint"] }
-spl-token-2022-interface = "2.1.0"
+spl-token-2022-interface = "3.1.2"
 subtle = "2.6"
 # Tempo transaction types for MPP sessions (the tempo-* line `mpp` 0.19 uses).
 tempo-alloy = { version = "1.11", default-features = false }
