@@ -139,7 +139,10 @@ fn hello_example_is_what_the_service_advertises() {
     let PaymentsRpcResponse::Hello(hello) = response("Hello") else {
         panic!("Hello example must be a Hello response");
     };
-    assert_eq!(hello, HelloResponse::for_payments_service("1.0.0"));
+    assert_eq!(
+        hello,
+        HelloResponse::for_payments_service(env!("CARGO_PKG_VERSION"))
+    );
     assert_eq!(hello.capabilities, payments_capabilities());
     for capability in PaymentsRpcRequest::METHOD_NAMES
         .iter()

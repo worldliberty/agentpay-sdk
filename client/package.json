@@ -1,6 +1,6 @@
 {
   "name": "@worldlibertyfinancial/agentpay",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AgentPay command-line client and terminal UI for the AgentPay daemons",
   "license": "MIT",
   "private": true,

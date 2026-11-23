@@ -421,11 +421,15 @@ pub(super) fn select<'a>(
         }
     }
     if let Some(record) = preferences.persisted {
+        // The persisted channel decides which *session* challenges can be paid (no new channel
+        // is opened behind the caller's back). One-time charges never touch the channel, so a
+        // merchant that also offers a charge (on Tempo, another EVM chain, or Solana) is still
+        // payable, e.g. a proxy restricted to `--network solana-mainnet` against an origin where
+        // an earlier session channel was opened.
         let before = offers.len();
-        offers.retain(|(_, offer)| {
-            offer
-                .tempo()
-                .is_some_and(|offer| matches_channel(offer, record))
+        offers.retain(|(_, offer)| match offer.tempo() {
+            Some(tempo) if tempo.intent == Intent::Session => matches_channel(tempo, record),
+            _ => true,
         });
         if offers.is_empty() && before > 0 {
             reasons.push(format!(

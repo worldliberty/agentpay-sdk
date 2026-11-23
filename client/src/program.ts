@@ -16,7 +16,7 @@ import { registerWalletCommands } from './commands/wallet.js';
 import { copy } from './copy/index.js';
 import { EXIT, UsageError } from './errors.js';
 
-export const VERSION = '1.0.0';
+export const VERSION = '1.0.1';
 
 export function buildProgram(env: CommandEnv): Command {
   const io = env.context.io;

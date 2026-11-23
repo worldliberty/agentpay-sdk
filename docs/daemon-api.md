@@ -231,7 +231,7 @@ Errors: none.
   "type": "Hello",
   "data": {
     "api_version": "1.1.0",
-    "daemon_version": "1.0.0",
+    "daemon_version": "1.0.1",
     "capabilities": ["Hello", "EnrollAdminCredential", "SignForAgent", "admin_challenge.v1", "amounts.decimal_string"]
   }
 }
@@ -2201,7 +2201,7 @@ Returns the API version, the service release, and the capabilities: every paymen
   "type": "Hello",
   "data": {
     "api_version": "1.1.0",
-    "daemon_version": "1.0.0",
+    "daemon_version": "1.0.1",
     "capabilities": ["Hello", "GetConfig", "SetConfig", "TransferSol", "TransferSpl", "Transfer", "TransferNative", "Approve", "Broadcast", "SignTypedData", "ResumeApproved", "RpcChainInfo", "RpcBlockNumber", "RpcBalance", "RpcNonce", "RpcFees", "RpcGasEstimate", "RpcTx", "RpcReceipt", "RpcCode", "X402Fetch", "MppFetch", "ProxyStart", "ProxyStop", "ProxyStatus", "WalletSummary", "WalletBalance", "FundingRequest", "Status", "TelemetryStatus", "SetTelemetry", "AddToken", "LookupToken", "Activity", "amounts.decimal_string", "mpp.evm_charge", "mpp.solana_charge"]
   }
 }
@@ -4036,12 +4036,12 @@ Errors: `AgentAuthenticationFailed`, `SignerUnavailable`, `Signer`.
   "data": {
     "service": {
       "api_version": "1.1.0",
-      "service_version": "1.0.0"
+      "service_version": "1.0.1"
     },
     "signer": {
       "reachable": true,
       "api_version": "1.1.0",
-      "daemon_version": "1.0.0",
+      "daemon_version": "1.0.1",
       "compatible": true
     },
     "agent": {

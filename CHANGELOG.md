@@ -2,6 +2,23 @@
 
 All notable changes to AgentPay SDK are documented in this file.
 
+## [1.0.1] - 2026-11-22
+
+### Fixed
+
+- MPP: a persisted session channel no longer blocks one-time charges. The paying proxy keeps one
+  channel per origin, so after a Tempo session with a merchant, a charge from the same merchant (on
+  Tempo, an EVM network, or Solana, for example with `proxy start --network solana-mainnet`) failed
+  with "no session challenge matches the persisted channel". The persisted channel now filters only
+  session challenges; charges never touch it
+
+### Changed
+
+- releases also publish the installer as `installer.sh` (the asset name 0.x releases used), so
+  `curl -fsSL https://wlfi.sh | sh` installs the latest release whichever name it serves
+
+Detailed release notes: [releases/v1.0.1.md](releases/v1.0.1.md)
+
 ## [1.0.0] - 2026-11-08
 
 AgentPay 1.0.0 is a rewrite. All product logic moves into two Rust daemons with a documented API,
