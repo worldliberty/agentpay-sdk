@@ -201,6 +201,20 @@ async fn a_persisted_channel_filters_challenges_before_selection() {
     );
     assert_eq!(merchant.log(), ["open"]);
 
+    // A one-time charge never touches the channel: the same origin can still be paid by charge.
+    merchant.set_terms(Terms::charge(AMOUNT));
+    let paid = harness
+        .fetch(call())
+        .await
+        .expect("charge despite a persisted channel");
+    assert_eq!(paid.response.status, 200);
+    assert_eq!(merchant.log().last().map(String::as_str), Some("charge"));
+    let persisted = SessionStore::new(harness.dir(), &SessionLocks::default())
+        .load(harness.auth.agent_key_id, "shop")
+        .expect("load")
+        .expect("the channel is still persisted");
+    assert_eq!(persisted.cumulative, AMOUNT);
+
     // A different origin cannot use the key either.
     let other = MppMerchant::start(Terms::session(AMOUNT, None), harness.rpc.clone()).await;
     let mut params = harness.params(other.url("/x"));

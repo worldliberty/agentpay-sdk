@@ -120,6 +120,9 @@ jobs:
           fi
           (cd release && sha256sum --check --strict SHA256SUMS)
           cp scripts/install.sh release/install.sh
+          # The same installer under the name 0.x releases used, which
+          # `https://wlfi.sh` serves from the latest release.
+          cp scripts/install.sh release/installer.sh
           cat release/SHA256SUMS
 
       - name: Create the release
@@ -140,4 +143,4 @@ jobs:
           # a release without its tarballs.
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "AgentPay ${TAG#v}" "$@" \
-            release/agentpay-*.tar.gz release/SHA256SUMS release/install.sh
+            release/agentpay-*.tar.gz release/SHA256SUMS release/install.sh release/installer.sh

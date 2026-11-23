@@ -7,7 +7,7 @@ curl -fsSL https://wlfi.sh | sh
 agentpay setup
 ```
 
-`https://wlfi.sh` must serve [`scripts/install.sh`](../scripts/install.sh), either the copy in the repository or the `install.sh` asset of the latest release (`https://github.com/worldliberty/agentpay-sdk/releases/latest/download/install.sh`). The installer is POSIX `sh` now, so pipe it into `sh`, not `bash`.
+`https://wlfi.sh` must serve [`scripts/install.sh`](../scripts/install.sh), either the copy in the repository or the `install.sh` asset of the latest release (`https://github.com/worldliberty/agentpay-sdk/releases/latest/download/install.sh`). Every release also carries the same file as `installer.sh`, the asset name 0.x releases used, so a `wlfi.sh` that serves `releases/latest/download/installer.sh` keeps working. The installer is POSIX `sh` now, so pipe it into `sh`, not `bash` (it also runs under `bash`).
 
 ## What a release contains
 
@@ -59,7 +59,7 @@ To update Node, change `NODE_VERSION` and all four digests together, taking the 
    - checks that the tag, `Cargo.toml` and `client/package.json` agree;
    - runs `cargo xtask dist --target <triple>` on each platform runner, with no caches;
    - installs each tarball with `scripts/install.sh` in a throwaway home (`cargo xtask test-install --dist dist`);
-   - merges the per-platform `SHA256SUMS`, verifies every tarball against it, and creates the GitHub release with the four tarballs, `SHA256SUMS` and `install.sh`. Tags with a `-` (`v1.2.3-rc.1`) become pre-releases, which `latest` skips.
+   - merges the per-platform `SHA256SUMS`, verifies every tarball against it, and creates the GitHub release with the four tarballs, `SHA256SUMS`, `install.sh`, and the same installer as `installer.sh`. Tags with a `-` (`v1.2.3-rc.1`) become pre-releases, which `latest` skips.
 
 If a platform build fails, nothing is published. Fix it, delete the tag, and tag again.
 
