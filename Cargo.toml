@@ -52,7 +52,7 @@ alloy-sol-types = "1.7"
 # Encrypted offline wallet backups (format v2: scrypt + AES-256-GCM), in the signer daemon.
 aes-gcm = "0.10"
 anyhow = "1"
-argon2 = "0.5"
+argon2 = "0.6"
 async-trait = "0.1"
 base64 = "0.22"
 bincode = "1.3"
