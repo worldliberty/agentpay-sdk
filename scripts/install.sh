@@ -546,7 +546,11 @@ install_release() {
   # agentpay-setup (run as root) only copies binaries that nobody else can modify.
   chmod -R go-w "$STAGING_DIR"
   if [ "$OS" = macos ] && have xattr; then
-    xattr -dr com.apple.quarantine "$STAGING_DIR" 2>/dev/null || true
+    # Best effort and silent: curl does not quarantine downloads, and an older xattr without
+    # -r prints its usage to stdout, so fall back to one file at a time.
+    xattr -dr com.apple.quarantine "$STAGING_DIR" >/dev/null 2>&1 ||
+      find "$STAGING_DIR" -exec xattr -d com.apple.quarantine {} \; >/dev/null 2>&1 ||
+      true
   fi
   log "check $STAGING_DIR/bin/agentpay --version"
   if ! "$STAGING_DIR/bin/agentpay" --version >/dev/null 2>"$TMP_DIR/version.err"; then

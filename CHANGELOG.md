@@ -2,10 +2,19 @@
 
 All notable changes to AgentPay SDK are documented in this file.
 
-## [1.0.1] - 2026-11-22
+## [1.0.2] - 2026-11-23
+
+1.0.1 was prepared but never published; its changes are included here.
 
 ### Fixed
 
+- install: no more "option -r not recognized" and `xattr` usage text on older macOS. The installer
+  cleared the quarantine attribute with `xattr -dr`, whose usage error older `xattr` builds print
+  to stdout; the step is now silent and falls back to one file at a time
+- setup: creating a wallet no longer stops at the limits step until every ETH row is set or
+  blocked. ETH now has recommended limits like every other built-in token (0.005 per payment,
+  0.05 a day, 0.35 a week), and stored configurations get them once, without touching limits
+  someone set
 - MPP: a persisted session channel no longer blocks one-time charges. The paying proxy keeps one
   channel per origin, so after a Tempo session with a merchant, a charge from the same merchant (on
   Tempo, an EVM network, or Solana, for example with `proxy start --network solana-mainnet`) failed
@@ -14,10 +23,15 @@ All notable changes to AgentPay SDK are documented in this file.
 
 ### Changed
 
+- telemetry: usage analytics are no longer sent every 30 seconds. A batch goes out after a random
+  delay of up to an hour from its first event; pending events are still sent when the service
+  stops. Crash and error reports are still sent at once
+- telemetry: analytics carry Mixpanel's `$app_version_string` (the service version) next to
+  `service_version`; Sentry reports keep the `agentpay-paymentd@<version>` release
 - releases also publish the installer as `installer.sh` (the asset name 0.x releases used), so
   `curl -fsSL https://wlfi.sh | sh` installs the latest release whichever name it serves
 
-Detailed release notes: [releases/v1.0.1.md](releases/v1.0.1.md)
+Detailed release notes: [releases/v1.0.2.md](releases/v1.0.2.md)
 
 ## [1.0.0] - 2026-11-08
 

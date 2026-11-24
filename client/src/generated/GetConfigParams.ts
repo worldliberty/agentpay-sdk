@@ -181,7 +181,11 @@ import type { AgentAuth } from "./AgentAuth";
       "eth": {
         "name": "ETH",
         "symbol": "ETH",
-        "recommended_limits": null,
+        "recommended_limits": {
+          "per_tx": "0.005",
+          "daily": "0.05",
+          "weekly": "0.35"
+        },
         "chains": {
           "arbitrum": {
             "chain_id": 42161,

@@ -737,3 +737,37 @@ async fn a_retired_builtin_deployment_moves_to_the_current_contract() {
     let store = ConfigStore::open(dir.path()).expect("open");
     assert_eq!(store.get().await, edited);
 }
+
+#[tokio::test]
+async fn built_in_tokens_without_recommended_limits_get_them_once() {
+    // A 1.0.0 file: ETH had no recommended limits.
+    let dir = TempDir::new("cfg");
+    let mut stored = default_config();
+    stored
+        .tokens
+        .get_mut("eth")
+        .expect("eth")
+        .recommended_limits = None;
+    write_original_file(dir.path(), &stored);
+    let store = ConfigStore::open(dir.path()).expect("open");
+    assert_eq!(store.get().await, default_config(), "ETH gains its limits");
+    let reopened = ConfigStore::open(dir.path()).expect("reopen");
+    assert_eq!(reopened.get().await, default_config(), "saved");
+
+    // Limits someone set, and tokens that are not built in, are left alone.
+    let dir = TempDir::new("cfg");
+    let mut custom = default_config();
+    let eth = custom.tokens.get_mut("eth").expect("eth");
+    eth.recommended_limits = Some(agentpay_api::payments::TokenLimits {
+        per_tx: "1".into(),
+        daily: "2".into(),
+        weekly: "3".into(),
+    });
+    let mut added = custom.tokens["usdc"].clone();
+    added.symbol = "USDT".into();
+    added.recommended_limits = None;
+    custom.tokens.insert("usdt".into(), added);
+    write_original_file(dir.path(), &custom);
+    let store = ConfigStore::open(dir.path()).expect("open");
+    assert_eq!(store.get().await, custom);
+}

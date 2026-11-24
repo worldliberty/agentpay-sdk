@@ -53,14 +53,14 @@ exports[`onboarding wizard > walks welcome → Touch ID → limits → creating 
   › BNB       BSC             −     0.01 +  −      0.2 +  −      1.4 +  Recommended
     USD1      BSC             −       10 +  −      100 +  −      700 +  Recommended
     USDC      BSC             −       10 +  −      100 +  −      700 +  Recommended
-    ETH       Arbitrum        −        — +  −        — +  −        — +  Needs a choice
+    ETH       Arbitrum        −    0.005 +  −     0.05 +  −     0.35 +  Recommended
     USDC      Arbitrum        −       10 +  −      100 +  −      700 +  Recommended
-    ETH       Base            −        — +  −        — +  −        — +  Needs a choice
+    ETH       Base            −    0.005 +  −     0.05 +  −     0.35 +  Recommended
     USDC      Base            −       10 +  −      100 +  −      700 +  Recommended
-    ETH       ETH             −        — +  −        — +  −        — +  Needs a choice
+    ETH       ETH             −    0.005 +  −     0.05 +  −     0.35 +  Recommended
     USD1      ETH             −       10 +  −      100 +  −      700 +  Recommended
     USDC      ETH             −       10 +  −      100 +  −      700 +  Recommended
-    ETH       Optimism        −        — +  −        — +  −        — +  Needs a choice
+    ETH       Optimism        −    0.005 +  −     0.05 +  −     0.35 +  Recommended
     USDC      Optimism        −       10 +  −      100 +  −      700 +  Recommended
     POL       Polygon         −       20 +  −      400 +  −    2,800 +  Recommended
     USDC      Polygon         −       10 +  −      100 +  −      700 +  Recommended
@@ -71,7 +71,7 @@ exports[`onboarding wizard > walks welcome → Touch ID → limits → creating 
     USD1      Tempo           −       10 +  −      100 +  −      700 +  Recommended
     USDC.e    Tempo           −       10 +  −      100 +  −      700 +  Recommended
 
-  4 assets need a limit or must be blocked
+  ✓ Every asset has a limit or is blocked.
 
   ↑↓ select · ←→ field · 0-9 or +/- amount · x block · X block rest · a add token · enter continue
 "

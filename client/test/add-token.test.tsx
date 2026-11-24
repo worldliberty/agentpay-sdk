@@ -2,13 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createOnboardingServices } from '../src/app/services.js';
 import { PaymentsCallError } from '../src/errors.js';
 import type { SpendingLimit, TokenInfo } from '../src/generated/index.js';
-import { DEFAULT_PAYMENTS_CONFIG } from '../src/limits/default-config.js';
-import {
-  isTestnetRow,
-  rowsFromConfig,
-  toggleExcluded,
-  toSpendingLimits,
-} from '../src/limits/model.js';
+import { toggleExcluded, toSpendingLimits } from '../src/limits/model.js';
 import { LimitsScreen } from '../src/screens/Limits.js';
 import { OnboardingWizard } from '../src/screens/onboarding/OnboardingWizard.js';
 import type { NewToken } from '../src/screens/types.js';
@@ -51,17 +45,10 @@ describe('adding a token in the spending limits step', () => {
     const table = await waitFor(lastFrame, 'Added USDT on BSC (18 decimals)');
     expect(services.lookupToken).toHaveBeenCalledWith({ network: 'bsc', address: USDT });
     // The new row is selected, and setup cannot continue until it has a limit or is blocked.
+    // Every built-in token already has its recommended limits.
     expect(table).toContain('› USDT');
-    expect(table).toContain('5 assets need a limit or must be blocked');
+    expect(table).toContain('1 asset needs a limit or must be blocked');
     await press(stdin, '+');
-    // ETH still needs a decision: block it on Ethereum. The wizard shows main networks only, and
-    // the new token is the last row.
-    const shown = rowsFromConfig(DEFAULT_PAYMENTS_CONFIG).filter((row) => !isTestnetRow(row));
-    const fromUsdtToEth = shown.length - shown.findIndex((row) => row.id === 'eth@eth');
-    await press(stdin, ...Array.from({ length: fromUsdtToEth }, () => KEY.up), 'x');
-    await waitFor(lastFrame, '3 assets need a limit or must be blocked');
-    // Then on its other networks at once.
-    await press(stdin, 'X');
     await waitFor(lastFrame, 'Every asset has a limit or is blocked.');
     await press(stdin, KEY.enter);
 
@@ -121,7 +108,7 @@ describe('adding a token in the spending limits step', () => {
     await press(stdin, KEY.escape, KEY.escape, KEY.escape);
     const back = await waitFor(lastFrame, 'a add token');
     expect(back).toContain('Set spending limits');
-    expect(back).toContain('4 assets need a limit or must be blocked');
+    expect(back).toContain('Every asset has a limit or is blocked.');
   });
 });
 

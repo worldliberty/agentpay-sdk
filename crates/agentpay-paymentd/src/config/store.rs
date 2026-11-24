@@ -26,9 +26,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 use super::{
-    add_missing_builtin_deployments, add_missing_builtin_networks, default_config,
-    seeded_deployment_keys, upgrade_retired_defaults, upgrade_retired_deployments, validate,
-    NEW_SEEDED_DEPLOYMENTS, ORIGINAL_SEEDED_CHAINS, SEEDED_CHAINS,
+    add_missing_builtin_deployments, add_missing_builtin_networks, add_missing_recommended_limits,
+    default_config, seeded_deployment_keys, upgrade_retired_defaults, upgrade_retired_deployments,
+    validate, NEW_SEEDED_DEPLOYMENTS, ORIGINAL_SEEDED_CHAINS, SEEDED_CHAINS,
 };
 use crate::error::PaymentsError;
 
@@ -118,11 +118,12 @@ impl ConfigStore {
                 format!("{} is invalid after upgrade: {reason}", path.display())
             })?;
         }
-        let corrected = upgrade_retired_deployments(&mut current);
+        let mut corrected = upgrade_retired_deployments(&mut current);
+        corrected.extend(add_missing_recommended_limits(&mut current));
         if !corrected.is_empty() {
             tracing::info!(
                 deployments = %corrected.join(","),
-                "moved retired built-in token deployments to the current contracts"
+                "updated built-in token defaults (retired contracts, missing recommended limits)"
             );
             current = validate(&current).map_err(|reason| {
                 format!("{} is invalid after upgrade: {reason}", path.display())

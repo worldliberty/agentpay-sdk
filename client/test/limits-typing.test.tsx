@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DEFAULT_PAYMENTS_CONFIG } from '../src/limits/default-config.js';
 import { blockUndecided, rowsFromConfig, setRowField } from '../src/limits/model.js';
 import { LimitsScreen } from '../src/screens/Limits.js';
+import { withoutEthLimits } from './helpers/configs.js';
 import { KEY, press, render, waitFor } from './helpers/ink.js';
 import { fakeAppServices } from './helpers/services.js';
 
-const rows = rowsFromConfig(DEFAULT_PAYMENTS_CONFIG);
+// ETH without a recommendation, so its rows start undecided.
+const rows = rowsFromConfig(withoutEthLimits());
 const row = (id: string) => {
   const found = rows.find((r) => r.id === id);
   if (!found) {

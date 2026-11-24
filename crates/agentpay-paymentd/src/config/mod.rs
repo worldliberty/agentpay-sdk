@@ -16,10 +16,11 @@ mod store;
 mod validate;
 
 pub use builtin::{
-    add_missing_builtin_deployments, add_missing_builtin_networks, builtin_chain, default_config,
-    seeded_deployment_keys, upgrade_retired_defaults, upgrade_retired_deployments, BuiltinChain,
-    BUILTIN_CHAINS, BUILTIN_TOKENS, NEW_SEEDED_DEPLOYMENTS, ORIGINAL_SEEDED_CHAINS,
-    RETIRED_DEFAULT_DEPLOYMENTS, RETIRED_DEFAULT_RPC_URLS, SEEDED_CHAINS,
+    add_missing_builtin_deployments, add_missing_builtin_networks, add_missing_recommended_limits,
+    builtin_chain, default_config, seeded_deployment_keys, upgrade_retired_defaults,
+    upgrade_retired_deployments, BuiltinChain, BUILTIN_CHAINS, BUILTIN_TOKENS,
+    NEW_SEEDED_DEPLOYMENTS, ORIGINAL_SEEDED_CHAINS, RETIRED_DEFAULT_DEPLOYMENTS,
+    RETIRED_DEFAULT_RPC_URLS, SEEDED_CHAINS,
 };
 pub(crate) use store::{read_trusted, write_atomically};
 pub use store::{ConfigStore, CONFIG_FILE_NAME, CONFIG_SCHEMA};
