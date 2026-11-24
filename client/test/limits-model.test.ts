@@ -14,6 +14,7 @@ import {
   toSpendingLimits,
   undecidedCount,
 } from '../src/limits/model.js';
+import { withoutEthLimits } from './helpers/configs.js';
 import { fixtureData } from './helpers/fixtures.js';
 
 const byId = (rows: LimitRow[], id: string) => {
@@ -26,7 +27,7 @@ const byId = (rows: LimitRow[], id: string) => {
 
 describe('limit rows', () => {
   it('seeds one row per spendable deployment with the recommended limits', () => {
-    const rows = rowsFromConfig(DEFAULT_PAYMENTS_CONFIG);
+    const rows = rowsFromConfig(withoutEthLimits());
     expect(rows[0]?.network).toBe('bsc');
     expect(byId(rows, 'usd1@bsc')).toMatchObject({
       status: 'recommended',
@@ -37,7 +38,7 @@ describe('limit rows', () => {
     expect(byId(rows, 'eth@eth')).toMatchObject({ status: 'unset', perTx: '' });
     // Tempo has no native gas coin, so "usd" (native on Tempo) is not a spendable asset row.
     expect(rows.some((r) => r.id === 'usd@tempo')).toBe(false);
-    // ETH has no recommended limit: one undecided row per network it is on.
+    // A token without a recommended limit: one undecided row per network it is on.
     const undecided = rows.filter((r) => r.status === 'unset').map((r) => r.id);
     expect(new Set(undecided)).toEqual(
       new Set([
@@ -115,7 +116,7 @@ describe('limit rows', () => {
   });
 
   it('every row must be set or blocked; blocked rows are left out of the limit set', () => {
-    let rows = rowsFromConfig(DEFAULT_PAYMENTS_CONFIG);
+    let rows = rowsFromConfig(withoutEthLimits());
     rows = rows.map((row) => (row.tokenKey === 'eth' ? toggleExcluded(row) : row));
     expect(undecidedCount(rows)).toBe(0);
     const limits = toSpendingLimits(rows);
@@ -135,7 +136,7 @@ describe('limit rows', () => {
     const up = stepRow(row, 'perTx', 1);
     expect(up).toMatchObject({ perTx: '20', status: 'custom' });
     expect(stepRow(up, 'perTx', -1).status).toBe('recommended');
-    const unset = byId(rowsFromConfig(DEFAULT_PAYMENTS_CONFIG), 'eth@eth');
+    const unset = byId(rowsFromConfig(withoutEthLimits()), 'eth@eth');
     expect(stepRow(unset, 'daily', 1)).toMatchObject({
       status: 'custom',
       perTx: '0.001',
@@ -190,5 +191,14 @@ describe('DEFAULT_PAYMENTS_CONFIG', () => {
     expect(DEFAULT_PAYMENTS_CONFIG).toEqual(
       fixtureData<PaymentsConfig>('payments/GetConfig.response.json'),
     );
+  });
+});
+
+describe('a new wallet', () => {
+  it('starts with a recommended limit for every built-in token, so setup asks about none', () => {
+    const rows = rowsFromConfig(DEFAULT_PAYMENTS_CONFIG);
+    expect(undecidedCount(rows)).toBe(0);
+    expect(rows.every((row) => row.status === 'recommended')).toBe(true);
+    expect(rows.filter((row) => row.symbol === 'ETH').length).toBeGreaterThan(0);
   });
 });

@@ -2,10 +2,12 @@
 //! task that posts batches to `/track` (ported from `telemetry-mixpanel`).
 //!
 //! [`Mixpanel::track`] never blocks and never fails: when the queue is full
-//! the event is dropped. The task sends a batch when 50 events are queued or
-//! every 30 seconds, with a 2-second timeout. After a failed delivery it
-//! drops everything for an hour, so an offline or firewalled machine does not
-//! pay a timeout on every batch.
+//! the event is dropped. Events are not sent as they happen: the first event
+//! of a batch picks a random send time up to an hour ahead ([`MAX_DELAY`]),
+//! and every event queued until then goes with it, in requests of 50 with a
+//! 2-second timeout each. A flush (at shutdown) sends at once. After a failed
+//! delivery the task drops everything for an hour, so an offline or
+//! firewalled machine does not pay a timeout on every batch.
 
 use std::time::Duration;
 
@@ -19,8 +21,10 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_BATCH: usize = 50;
 /// Events waiting in the channel before new ones are dropped.
 const QUEUE_CAPACITY: usize = 256;
-/// How often a partial batch is sent.
-const FLUSH_INTERVAL: Duration = Duration::from_secs(30);
+/// Longest random delay between a batch's first event and its delivery.
+pub const MAX_DELAY: Duration = Duration::from_secs(60 * 60);
+/// Events held for the next delivery before new ones are dropped.
+const MAX_PENDING: usize = 2_000;
 /// How long to stop sending after a failed delivery.
 const OFFLINE_BACKOFF: Duration = Duration::from_secs(60 * 60);
 /// Timestamps are truncated to this, so events cannot be matched to block times.
@@ -50,9 +54,22 @@ impl std::fmt::Debug for Command {
 
 impl Mixpanel {
     /// Starts the task on the current Tokio runtime. `token` and `distinct_id`
-    /// are added to every event, after scrubbing.
+    /// are added to every event, after scrubbing. Each batch is sent after a
+    /// random delay of up to [`MAX_DELAY`].
     #[must_use]
     pub fn start(http: reqwest::Client, url: String, token: String, distinct_id: String) -> Self {
+        Self::start_with_delay(http, url, token, distinct_id, random_delay)
+    }
+
+    /// [`Mixpanel::start`] with each batch's delay chosen by `delay`.
+    #[must_use]
+    pub fn start_with_delay(
+        http: reqwest::Client,
+        url: String,
+        token: String,
+        distinct_id: String,
+        delay: fn() -> Duration,
+    ) -> Self {
         let (sender, receiver) = mpsc::channel(QUEUE_CAPACITY);
         let worker = Worker {
             http,
@@ -60,6 +77,8 @@ impl Mixpanel {
             token,
             distinct_id,
             batch: Vec::new(),
+            send_at: None,
+            delay,
             offline_until: None,
         };
         tokio::spawn(worker.run(receiver));
@@ -88,39 +107,53 @@ impl Mixpanel {
     }
 }
 
+/// A uniformly random delay between zero and [`MAX_DELAY`].
+fn random_delay() -> Duration {
+    Duration::from_millis(rand::random_range(0..=duration_millis(MAX_DELAY)))
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
 struct Worker {
     http: reqwest::Client,
     url: String,
     token: String,
     distinct_id: String,
     batch: Vec<Value>,
+    /// When the pending batch is sent; `None` while nothing is pending.
+    send_at: Option<Instant>,
+    delay: fn() -> Duration,
     offline_until: Option<Instant>,
 }
 
 impl Worker {
     async fn run(mut self, mut receiver: mpsc::Receiver<Command>) {
-        let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
+            let due = async {
+                match self.send_at {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
                 command = receiver.recv() => match command {
-                    Some(Command::Event(properties)) => {
-                        self.push(properties);
-                        if self.batch.len() >= MAX_BATCH {
-                            self.send().await;
-                        }
-                    }
+                    Some(Command::Event(properties)) => self.push(properties),
                     Some(Command::Flush(done)) => {
                         let delivered = self.send().await;
                         let _ = done.send(delivered);
                     }
-                    Some(Command::Discard) => self.batch.clear(),
+                    Some(Command::Discard) => {
+                        self.batch.clear();
+                        self.send_at = None;
+                    }
                     None => {
                         self.send().await;
                         return;
                     }
                 },
-                _ = ticker.tick() => {
+                () = due => {
                     self.send().await;
                 }
             }
@@ -131,8 +164,12 @@ impl Worker {
         if self
             .offline_until
             .is_some_and(|until| Instant::now() < until)
+            || self.batch.len() >= MAX_PENDING
         {
             return;
+        }
+        if self.send_at.is_none() {
+            self.send_at = Some(Instant::now() + (self.delay)());
         }
         let event = properties
             .remove("event_name")
@@ -146,6 +183,11 @@ impl Worker {
             Value::String(self.distinct_id.clone()),
         );
         properties.insert("token".into(), Value::String(self.token.clone()));
+        // Mixpanel's standard app version property (shown as "App Version").
+        properties.insert(
+            "$app_version_string".into(),
+            Value::String(env!("CARGO_PKG_VERSION").into()),
+        );
         properties.insert(
             "$insert_id".into(),
             Value::String(uuid::Uuid::new_v4().simple().to_string()),
@@ -157,25 +199,28 @@ impl Worker {
         }));
     }
 
-    /// Posts the batch; `true` when delivered or empty.
+    /// Posts the pending events, [`MAX_BATCH`] per request; `true` when all
+    /// were delivered (or none were pending). After a failed request the rest
+    /// is dropped and the task goes offline.
     async fn send(&mut self) -> bool {
-        if self.batch.is_empty() {
-            return true;
+        self.send_at = None;
+        let pending = std::mem::take(&mut self.batch);
+        for chunk in pending.chunks(MAX_BATCH) {
+            let delivered = matches!(
+                self.http
+                    .post(&self.url)
+                    .timeout(SEND_TIMEOUT)
+                    .json(&Value::Array(chunk.to_vec()))
+                    .send()
+                    .await,
+                Ok(response) if response.status().is_success()
+            );
+            if !delivered {
+                self.offline_until = Some(Instant::now() + OFFLINE_BACKOFF);
+                return false;
+            }
         }
-        let payload = Value::Array(std::mem::take(&mut self.batch));
-        let delivered = matches!(
-            self.http
-                .post(&self.url)
-                .timeout(SEND_TIMEOUT)
-                .json(&payload)
-                .send()
-                .await,
-            Ok(response) if response.status().is_success()
-        );
-        if !delivered {
-            self.offline_until = Some(Instant::now() + OFFLINE_BACKOFF);
-        }
-        delivered
+        true
     }
 }
 
@@ -276,5 +321,90 @@ mod tests {
         mixpanel.discard();
         assert!(mixpanel.flush().await);
         assert!(bodies.lock().expect("bodies").is_empty());
+    }
+
+    fn short() -> Duration {
+        Duration::from_millis(300)
+    }
+
+    fn shorter() -> Duration {
+        Duration::from_millis(100)
+    }
+
+    fn an_hour() -> Duration {
+        MAX_DELAY
+    }
+
+    #[tokio::test]
+    async fn events_wait_for_the_batch_delay_then_go_together_with_the_version() {
+        let (url, bodies) = endpoint(200).await;
+        let mixpanel = Mixpanel::start_with_delay(
+            reqwest::Client::new(),
+            url,
+            "tok".into(),
+            "id".into(),
+            short,
+        );
+        mixpanel.track("paymentd_request", properties("Status"));
+        mixpanel.track("paymentd_request", properties("MppFetch"));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            bodies.lock().expect("bodies").is_empty(),
+            "nothing before the delay"
+        );
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let sent = bodies.lock().expect("bodies").clone();
+        assert_eq!(sent.len(), 1, "one delivery for the batch");
+        let events = sent[0].as_array().expect("batch");
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0]["properties"]["$app_version_string"],
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_large_batch_goes_in_requests_of_fifty() {
+        let (url, bodies) = endpoint(200).await;
+        let mixpanel = Mixpanel::start_with_delay(
+            reqwest::Client::new(),
+            url,
+            "tok".into(),
+            "id".into(),
+            shorter,
+        );
+        for _ in 0..120 {
+            mixpanel.track("paymentd_request", properties("Status"));
+        }
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        let sizes: Vec<usize> = bodies
+            .lock()
+            .expect("bodies")
+            .iter()
+            .map(|body| body.as_array().map_or(0, Vec::len))
+            .collect();
+        assert_eq!(sizes, [50, 50, 20]);
+    }
+
+    #[tokio::test]
+    async fn a_flush_sends_at_once_whatever_the_delay() {
+        let (url, bodies) = endpoint(200).await;
+        let mixpanel = Mixpanel::start_with_delay(
+            reqwest::Client::new(),
+            url,
+            "tok".into(),
+            "id".into(),
+            an_hour,
+        );
+        mixpanel.track("paymentd_request", properties("Status"));
+        assert!(mixpanel.flush().await);
+        assert_eq!(bodies.lock().expect("bodies").len(), 1);
+    }
+
+    #[test]
+    fn the_random_delay_is_at_most_an_hour() {
+        for _ in 0..1_000 {
+            assert!(random_delay() <= MAX_DELAY);
+        }
     }
 }

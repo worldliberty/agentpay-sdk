@@ -318,7 +318,8 @@ pub const BUILTIN_TOKENS: &[BuiltinToken] = &[
         key: "eth",
         name: "ETH",
         symbol: "ETH",
-        limits: None,
+        // About $15 per payment, $150 a day, and $1,000 a week.
+        limits: Some(("0.005", "0.05", "0.35")),
         deployments: &[
             native("ethereum", 18),
             native("sepolia", 18),
@@ -532,6 +533,29 @@ pub fn upgrade_retired_defaults(config: &mut PaymentsConfig) -> Vec<String> {
         upgraded.push(key.clone());
     }
     upgraded
+}
+
+/// Gives every built-in token that has no `recommended_limits` the built-in
+/// recommendation (ETH had none before 1.0.2, so a new wallet's setup asked
+/// about each ETH row), and returns the token keys it changed. A token is
+/// only touched when its key and symbol are the built-in ones; limits
+/// someone set are never changed.
+pub fn add_missing_recommended_limits(config: &mut PaymentsConfig) -> Vec<String> {
+    let defaults = default_config();
+    let mut added = Vec::new();
+    for (key, builtin) in &defaults.tokens {
+        let Some(limits) = &builtin.recommended_limits else {
+            continue;
+        };
+        let Some(stored) = config.tokens.get_mut(key) else {
+            continue;
+        };
+        if stored.recommended_limits.is_none() && stored.symbol == builtin.symbol {
+            stored.recommended_limits = Some(limits.clone());
+            added.push(key.clone());
+        }
+    }
+    added
 }
 
 /// Moves every token deployment that is still a retired built-in default

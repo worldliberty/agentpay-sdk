@@ -433,5 +433,10 @@ mod tests {
             Some("Status: Internal: at <redacted>")
         );
         assert_eq!(event.environment.as_deref(), Some("test"));
+        // Reports carry the version, so Sentry groups them by release.
+        assert_eq!(
+            event.release.as_deref(),
+            Some(concat!("agentpay-paymentd@", env!("CARGO_PKG_VERSION")))
+        );
     }
 }

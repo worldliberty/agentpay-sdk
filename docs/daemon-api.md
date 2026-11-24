@@ -231,7 +231,7 @@ Errors: none.
   "type": "Hello",
   "data": {
     "api_version": "1.1.0",
-    "daemon_version": "1.0.1",
+    "daemon_version": "1.0.2",
     "capabilities": ["Hello", "EnrollAdminCredential", "SignForAgent", "admin_challenge.v1", "amounts.decimal_string"]
   }
 }
@@ -2201,7 +2201,7 @@ Returns the API version, the service release, and the capabilities: every paymen
   "type": "Hello",
   "data": {
     "api_version": "1.1.0",
-    "daemon_version": "1.0.1",
+    "daemon_version": "1.0.2",
     "capabilities": ["Hello", "GetConfig", "SetConfig", "TransferSol", "TransferSpl", "Transfer", "TransferNative", "Approve", "Broadcast", "SignTypedData", "ResumeApproved", "RpcChainInfo", "RpcBlockNumber", "RpcBalance", "RpcNonce", "RpcFees", "RpcGasEstimate", "RpcTx", "RpcReceipt", "RpcCode", "X402Fetch", "MppFetch", "ProxyStart", "ProxyStop", "ProxyStatus", "WalletSummary", "WalletBalance", "FundingRequest", "Status", "TelemetryStatus", "SetTelemetry", "AddToken", "LookupToken", "Activity", "amounts.decimal_string", "mpp.evm_charge", "mpp.solana_charge"]
   }
 }
@@ -2377,7 +2377,11 @@ Errors: `AgentAuthenticationFailed`, `SignerUnavailable`, `Signer`.
       "eth": {
         "name": "ETH",
         "symbol": "ETH",
-        "recommended_limits": null,
+        "recommended_limits": {
+          "per_tx": "0.005",
+          "daily": "0.05",
+          "weekly": "0.35"
+        },
         "chains": {
           "arbitrum": {
             "chain_id": 42161,
@@ -4036,12 +4040,12 @@ Errors: `AgentAuthenticationFailed`, `SignerUnavailable`, `Signer`.
   "data": {
     "service": {
       "api_version": "1.1.0",
-      "service_version": "1.0.1"
+      "service_version": "1.0.2"
     },
     "signer": {
       "reachable": true,
       "api_version": "1.1.0",
-      "daemon_version": "1.0.1",
+      "daemon_version": "1.0.2",
       "compatible": true
     },
     "agent": {
@@ -4264,7 +4268,7 @@ Errors: `AgentAuthenticationFailed`, `SignerUnavailable`, `Signer`.
 The payments service sends anonymous usage analytics (Mixpanel, `api.mixpanel.com/track?ip=0`) and crash and error reports (Sentry), on by default with an opt-out, under the rules of the TypeScript CLI:
 
 - **Identity:** a random install id (UUID v4) in `telemetry.json` (mode `0600`) in the service's state directory, nothing else.
-- **Sent:** per call, the method name, its outcome (`ok`, `approval_pending`, or `error` with the error kind), a duration bucket (`<100ms`, `100ms-1s`, `1-5s`, `5-30s`, `30s+`), and for payments an amount bucket in whole units (`0`, `<10`, `10-100`, `100-1k`, `1k-10k`, `10k+`), plus the service version, OS, CPU architecture, and environment label; timestamps are truncated to the minute. `Internal` and `SignedTransactionMismatch` errors and panics go to Sentry with the scrubbed message and stack.
+- **Sent:** per call, the method name, its outcome (`ok`, `approval_pending`, or `error` with the error kind), a duration bucket (`<100ms`, `100ms-1s`, `1-5s`, `5-30s`, `30s+`), and for payments an amount bucket in whole units (`0`, `<10`, `10-100`, `100-1k`, `1k-10k`, `10k+`), plus the service version (also as Mixpanel's `$app_version_string`), OS, CPU architecture, and environment label; timestamps are truncated to the minute. Analytics are not sent as calls happen: a batch goes out after a random delay of up to an hour from its first event (in requests of 50), and whatever is pending is sent when the service stops. Sentry reports, tagged with `service_version` and the release `agentpay-paymentd@<version>`, are sent at once. `Internal` and `SignedTransactionMismatch` errors and panics go to Sentry with the scrubbed message and stack.
 - **Never sent:** addresses, keys, tokens, signatures, transaction hashes, exact amounts, URLs beyond `scheme://host`, e-mail addresses, the host name, or the home directory. Every string passes a scrubber, and property names are checked against an allowlist.
 - **Never in the way:** recording is non-blocking; delivery is asynchronous and best effort (2 s per request, at most 3 s at shutdown); after a failed delivery the service stops sending for an hour. Telemetry never changes a payment's outcome.
 

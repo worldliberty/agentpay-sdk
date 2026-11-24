@@ -19,6 +19,7 @@ import {
 } from '../src/limits/model.js';
 import { OnboardingWizard } from '../src/screens/onboarding/OnboardingWizard.js';
 import type { OnboardingServices } from '../src/screens/types.js';
+import { withoutEthLimits } from './helpers/configs.js';
 import { AGENT_KEY_ID, AGENT_TOKEN, type TestContext, testContext } from './helpers/context.js';
 import { body, fail, type Handler, ok } from './helpers/fake-daemon.js';
 import { fixture, fixtureData } from './helpers/fixtures.js';
@@ -52,17 +53,10 @@ describe('onboarding wizard', () => {
     await press(stdin, KEY.enter);
     expect(services.enableTouchId).toHaveBeenCalled();
 
-    const limits = await waitFor(lastFrame, '4 assets need a limit or must be blocked');
+    // Every built-in token starts with its recommended limits: nothing to decide.
+    const limits = await waitFor(lastFrame, 'Every asset has a limit or is blocked.');
     expect(limits).toContain('Step 3 of 6');
     expect(limits).toMatchSnapshot('spending limits');
-    // Enter does nothing until every asset is decided.
-    await press(stdin, KEY.enter);
-    expect(lastFrame()).toContain('Set spending limits');
-    // ETH has no recommended limit: block it on Ethereum, then on every other network at once.
-    await press(stdin, ...Array.from({ length: ethRow() }, () => KEY.down), 'x');
-    await waitFor(lastFrame, '3 assets need a limit or must be blocked');
-    await press(stdin, 'X');
-    await waitFor(lastFrame, 'Every asset has a limit or is blocked.');
     await press(stdin, KEY.enter);
 
     const creating = await waitFor(lastFrame, 'Your wallet is ready.');
@@ -70,7 +64,7 @@ describe('onboarding wizard', () => {
     expect(creating).toContain('✓ Saving the credentials to your keychain');
     const [choice, rows] = vi.mocked(services.createWallet).mock.calls[0] ?? [];
     expect(choice).toEqual({ kind: 'create', replaceExisting: false, name: 'Trading bot' });
-    expect(rows?.find((row) => row.id === 'eth@eth')?.status).toBe('excluded');
+    expect(rows?.find((row) => row.id === 'eth@eth')?.status).toBe('recommended');
     expect(rows?.find((row) => row.id === 'usd1@bsc')?.status).toBe('recommended');
     // Test networks were not shown, so they are blocked, never given unseen limits.
     const testnetRows = rows?.filter(isTestnetRow) ?? [];
@@ -98,6 +92,33 @@ describe('onboarding wizard', () => {
     });
   });
 
+  it('makes every undecided asset get a limit or be blocked before continuing', async () => {
+    // A token without a recommended limit (ETH here) starts undecided on each network.
+    const services = fakeOnboardingServices({
+      loadLimits: vi.fn(async () => rowsFromConfig(withoutEthLimits())),
+    });
+    const { lastFrame, stdin } = render(<OnboardingWizard services={services} />);
+    await waitFor(lastFrame, 'Create a new wallet');
+    await press(stdin, KEY.enter);
+    await waitFor(lastFrame, 'Name this wallet (optional)');
+    await press(stdin, KEY.enter);
+    await waitFor(lastFrame, 'Turn on Touch ID (recommended)');
+    await press(stdin, KEY.enter);
+    await waitFor(lastFrame, '4 assets need a limit or must be blocked');
+    // Enter does nothing until every asset is decided.
+    await press(stdin, KEY.enter);
+    expect(lastFrame()).toContain('Set spending limits');
+    // Block ETH on Ethereum, then on every other network at once.
+    await press(stdin, ...Array.from({ length: ethRow() }, () => KEY.down), 'x');
+    await waitFor(lastFrame, '3 assets need a limit or must be blocked');
+    await press(stdin, 'X');
+    await waitFor(lastFrame, 'Every asset has a limit or is blocked.');
+    await press(stdin, KEY.enter);
+    await waitFor(lastFrame, 'Your wallet is ready.');
+    const [, rows] = vi.mocked(services.createWallet).mock.calls[0] ?? [];
+    expect(rows?.find((row) => row.id === 'eth@eth')?.status).toBe('excluded');
+  });
+
   it('restores from a backup file and shows the funding screen at the end', async () => {
     const services = fakeOnboardingServices({ touchIdState: async () => 'unavailable' });
     const { lastFrame, stdin } = render(<OnboardingWizard services={services} />);
@@ -116,7 +137,7 @@ describe('onboarding wizard', () => {
     await waitFor(lastFrame, 'Admin approvals use sudo');
     await press(stdin, KEY.enter);
     await waitFor(lastFrame, 'Set spending limits');
-    await press(stdin, ...Array.from({ length: ethRow() }, () => KEY.down), '+', 'X', KEY.enter);
+    await press(stdin, ...Array.from({ length: ethRow() }, () => KEY.down), '+', KEY.enter);
     await waitFor(lastFrame, 'Restoring wallet keys from the backup');
     expect(vi.mocked(services.createWallet).mock.calls[0]?.[0]).toEqual({
       kind: 'restore',
@@ -447,8 +468,6 @@ describe('onboarding wizard on a machine with several wallets', () => {
     await press(view.stdin, KEY.enter);
     await waitFor(view.lastFrame, 'Admin approvals use sudo');
     await press(view.stdin, KEY.enter);
-    await waitFor(view.lastFrame, '4 assets need a limit or must be blocked');
-    await press(view.stdin, 'X');
     await waitFor(view.lastFrame, 'Every asset has a limit or is blocked.');
     await press(view.stdin, KEY.enter);
     await waitFor(view.lastFrame, 'Replacing it cannot be undone');
